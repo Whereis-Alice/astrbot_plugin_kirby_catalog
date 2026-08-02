@@ -9,7 +9,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from astrbot.api import logger
 from astrbot.api import message_components as Comp
-from astrbot.api.event import AstrMessageEvent, filter
+from astrbot.api.event import AstrMessageEvent, MessageChain, filter
 from astrbot.api.star import Context, Star, register
 from astrbot.core.star import StarTools
 from astrbot.core.star.filter.event_message_type import EventMessageType
@@ -30,7 +30,7 @@ IMAGE_BASE_URL = "http://save.my996.top/?/img/"
     PLUGIN_ID,
     "Whereis-Alice",
     "星之卡比盟友抽取、图鉴、猜名与排行榜插件",
-    "2.0.0",
+    "2.0.1",
     "https://github.com/Whereis-Alice/astrbot_plugin_kirby_catalog",
 )
 class KirbyCatalogPlugin(Star):
@@ -49,6 +49,77 @@ class KirbyCatalogPlugin(Star):
         self._draw_lock = asyncio.Lock()
         self._cooldowns: Dict[str, Dict[str, float]] = {}
         self._guess_sessions: Dict[str, Dict[str, Any]] = {}
+        self._guess_timeout_tasks: Dict[str, asyncio.Task[None]] = {}
+
+    def _cancel_guess_timeout(self, group_id: str) -> None:
+        task = self._guess_timeout_tasks.pop(group_id, None)
+        if task and not task.done() and task is not asyncio.current_task():
+            task.cancel()
+
+    def _schedule_guess_timeout(
+        self,
+        group_id: str,
+        filename: str,
+        started_at: float,
+        timeout: int,
+        umo: str,
+    ) -> None:
+        self._cancel_guess_timeout(group_id)
+        self._guess_timeout_tasks[group_id] = asyncio.create_task(
+            self._guess_timeout_worker(
+                group_id,
+                filename,
+                started_at,
+                timeout,
+                umo,
+            )
+        )
+
+    async def _guess_timeout_worker(
+        self,
+        group_id: str,
+        filename: str,
+        started_at: float,
+        timeout: int,
+        umo: str,
+    ) -> None:
+        current_task = asyncio.current_task()
+        try:
+            await asyncio.sleep(timeout)
+            session = self._guess_sessions.get(group_id)
+            if (
+                not session
+                or session.get("filename") != filename
+                or session.get("started_at") != started_at
+            ):
+                return
+            self._guess_sessions.pop(group_id, None)
+            entry = self.store.resolve_entry(filename)
+            if entry:
+                text = (
+                    f"猜盟友超时，本轮结束。正确答案是 #{entry['id']} "
+                    f"{self._display_name(entry)}。"
+                )
+            else:
+                text = "猜盟友超时，本轮结束，但答案素材已经失效。"
+            await self.context.send_message(umo, MessageChain([Comp.Plain(text)]))
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.exception("[%s] 猜盟友超时揭晓失败: %s", PLUGIN_ID, exc)
+        finally:
+            if self._guess_timeout_tasks.get(group_id) is current_task:
+                self._guess_timeout_tasks.pop(group_id, None)
+
+    async def terminate(self) -> None:
+        tasks = list(self._guess_timeout_tasks.values())
+        self._guess_timeout_tasks.clear()
+        self._guess_sessions.clear()
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     def _legacy_data_dirs(self) -> List[Path]:
         candidates = [Path("data") / "plugins" / LEGACY_PLUGIN_ID]
@@ -264,9 +335,7 @@ class KirbyCatalogPlugin(Star):
             for candidate in candidates
         )
 
-    @filter.command("今日盟友", alias={"抽盟友", "抽取盟友"})
-    @filter.event_message_type(EventMessageType.GROUP_MESSAGE)
-    async def draw_ally(self, event: AstrMessageEvent):
+    async def _draw_ally_impl(self, event: AstrMessageEvent):
         """每天抽取盟友，重复时使用连续未出新保底。"""
         group_id = self._group_id(event)
         if not group_id:
@@ -328,6 +397,19 @@ class KirbyCatalogPlugin(Star):
             f"今日剩余次数：{remaining}"
         )
         yield event.chain_result(await self._ally_chain(entry, text))
+
+    @filter.command("今日盟友", alias={"抽盟友", "抽取盟友"})
+    @filter.event_message_type(EventMessageType.GROUP_MESSAGE)
+    async def draw_ally(self, event: AstrMessageEvent):
+        async for result in self._draw_ally_impl(event):
+            yield result
+
+    @filter.regex(r"^今日盟友$")
+    @filter.event_message_type(EventMessageType.GROUP_MESSAGE)
+    async def draw_ally_plain(self, event: AstrMessageEvent):
+        """让普通文本“今日盟友”也能触发抽取。"""
+        async for result in self._draw_ally_impl(event):
+            yield result
 
     @filter.command("查盟友", alias={"我的盟友"})
     @filter.event_message_type(EventMessageType.GROUP_MESSAGE)
@@ -461,16 +543,32 @@ class KirbyCatalogPlugin(Star):
         timeout = max(30, int(self._config_value("guess_timeout_seconds", 180)))
         if remainder:
             if not session or time.monotonic() - session["started_at"] > timeout:
+                if session:
+                    self._guess_sessions.pop(group_id, None)
+                    self._cancel_guess_timeout(group_id)
+                    entry = self.store.resolve_entry(session["filename"])
+                    if entry:
+                        yield event.plain_result(
+                            f"猜盟友超时，本轮结束。正确答案是 #{entry['id']} "
+                            f"{self._display_name(entry)}。"
+                        )
+                        return
                 self._guess_sessions.pop(group_id, None)
                 yield event.plain_result("当前没有有效的猜盟友题目，请先发送“猜盟友”。")
                 return
             entry = self.store.resolve_entry(session["filename"])
             if not entry:
                 self._guess_sessions.pop(group_id, None)
+                self._cancel_guess_timeout(group_id)
                 yield event.plain_result("题目素材已失效，请重新出题。")
                 return
             if not self._guess_matches(entry, remainder):
-                yield event.plain_result("还不对，再猜一次吧。")
+                self._guess_sessions.pop(group_id, None)
+                self._cancel_guess_timeout(group_id)
+                yield event.plain_result(
+                    f"猜错了，本轮结束。正确答案是 #{entry['id']} "
+                    f"{self._display_name(entry)}。"
+                )
                 return
             user_id = self._sender_id(event)
             config = self.store.load_group(group_id)
@@ -479,6 +577,7 @@ class KirbyCatalogPlugin(Star):
             config[user_id] = user
             self.store.save_group(group_id, config)
             self._guess_sessions.pop(group_id, None)
+            self._cancel_guess_timeout(group_id)
             status = "并已收入你的图鉴" if is_new else "但你已经解锁过它了"
             yield event.plain_result(
                 f"答对啦！答案是 #{entry['id']} {self._display_name(entry)}，{status}。"
@@ -490,10 +589,19 @@ class KirbyCatalogPlugin(Star):
             yield event.plain_result("当前没有可用盟友素材，请管理员先添加图片。")
             return
         entry = random.choice(pool)
+        started_at = time.monotonic()
         self._guess_sessions[group_id] = {
             "filename": entry["filename"],
-            "started_at": time.monotonic(),
+            "started_at": started_at,
+            "umo": event.unified_msg_origin,
         }
+        self._schedule_guess_timeout(
+            group_id,
+            entry["filename"],
+            started_at,
+            timeout,
+            event.unified_msg_origin,
+        )
         clue = (
             f"来源：{entry['source']}"
             if entry.get("source")

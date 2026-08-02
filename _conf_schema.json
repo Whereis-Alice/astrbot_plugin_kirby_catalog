@@ -18,7 +18,7 @@
         "max": 60
       },
       "guess_timeout_seconds": {
-        "description": "猜盟友题目有效时间（秒）",
+        "description": "猜盟友题目有效时间（秒），超时后自动公布答案",
         "type": "int",
         "default": 180,
         "min": 30,
