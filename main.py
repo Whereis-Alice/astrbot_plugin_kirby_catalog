@@ -30,7 +30,7 @@ IMAGE_BASE_URL = "http://save.my996.top/?/img/"
     PLUGIN_ID,
     "Whereis-Alice",
     "星之卡比盟友抽取、图鉴、猜名与排行榜插件",
-    "2.0.1",
+    "2.0.2",
     "https://github.com/Whereis-Alice/astrbot_plugin_kirby_catalog",
 )
 class KirbyCatalogPlugin(Star):
@@ -739,8 +739,16 @@ class KirbyCatalogPlugin(Star):
         """管理员修改盟友名字，并同步所有用户的历史记录。"""
         remainder = self._command_remainder(event, {"星之卡比图鉴改名"})
         target, separator, new_value = remainder.partition(" ")
-        if not separator or not target or not new_value.strip():
-            yield event.plain_result("用法：星之卡比图鉴改名 <编号> <新名字>。")
+        if not separator:
+            quoted_target = self._quoted_target(event)
+            if quoted_target:
+                target = quoted_target
+                new_value = remainder
+        if not target or not new_value.strip():
+            yield event.plain_result(
+                "用法：星之卡比图鉴改名 <编号> <新名字>，"
+                "或引用盟友消息后使用：星之卡比图鉴改名 <新名字>。"
+            )
             return
         new_name, separator, source = new_value.partition("|")
         entry, error = self._entry_or_error(target)

@@ -3,6 +3,8 @@ import time
 import unittest
 from types import SimpleNamespace
 
+from astrbot.api import message_components as Comp
+
 from astrbot_plugin_kirby_catalog.main import KirbyCatalogPlugin
 
 
@@ -12,6 +14,21 @@ class FakeStore:
 
     def resolve_entry(self, filename):
         return self.entry if filename == self.entry["filename"] else None
+
+    def find_entries(self, target):
+        target = str(target)
+        return (
+            [self.entry]
+            if target in {str(self.entry["id"]), self.entry["name"]}
+            else []
+        )
+
+    def rename_entry(self, entry, new_name, source=None):
+        updated = dict(entry)
+        updated["name"] = new_name
+        if source is not None:
+            updated["source"] = source
+        return updated
 
 
 class FakeContext:
@@ -24,9 +41,9 @@ class FakeContext:
 
 
 class FakeEvent:
-    def __init__(self, message_str):
+    def __init__(self, message_str, message=None):
         self.message_str = message_str
-        self.message_obj = SimpleNamespace(group_id="group-1")
+        self.message_obj = SimpleNamespace(group_id="group-1", message=message or [])
 
     def get_sender_id(self):
         return "user-1"
@@ -98,6 +115,25 @@ class GuessFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(task.cancelled())
         self.assertFalse(plugin._guess_timeout_tasks)
         self.assertFalse(plugin._guess_sessions)
+
+    async def test_rename_can_use_quoted_ally_id(self):
+        plugin = make_plugin(self.entry)
+        quoted_message = Comp.Reply(
+            id="reply-1",
+            message_str="测试用户，你今天的盟友是 #12 星之卡比。",
+        )
+
+        results = [
+            result
+            async for result in plugin.rename_ally(
+                FakeEvent("星之卡比图鉴改名 结晶化天鹅罗利那", [quoted_message])
+            )
+        ]
+
+        self.assertEqual(
+            results,
+            ["已将 #12 改为 结晶化天鹅罗利那，所有用户解锁记录已同步。"],
+        )
 
 
 if __name__ == "__main__":
