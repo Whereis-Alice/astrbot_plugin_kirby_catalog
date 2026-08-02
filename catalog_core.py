@@ -299,7 +299,53 @@ class CatalogStore:
         ids = [int(item.get("id", 0)) for item in self._catalog.values()]
         return max(ids, default=0) + 1
 
+    def _deduplicate_ids(self) -> None:
+        """Repair legacy catalogues where multiple files share one id."""
+        entries = list(self._catalog.values())
+        ordered: List[Dict[str, Any]] = []
+        processed_ids: Set[int] = set()
+        for entry in entries:
+            try:
+                entry_id = int(entry.get("id", 0) or 0)
+            except (TypeError, ValueError):
+                entry_id = 0
+            if entry_id in processed_ids:
+                continue
+            same_id = [
+                candidate
+                for candidate in entries
+                if int(candidate.get("id", 0) or 0) == entry_id
+            ]
+            same_id.sort(
+                key=lambda candidate: bool(candidate.get("aliases")),
+                reverse=True,
+            )
+            ordered.extend(same_id)
+            processed_ids.add(entry_id)
+
+        used: Set[int] = set()
+        next_id = (
+            max(
+                (int(item.get("id", 0) or 0) for item in self._catalog.values()),
+                default=0,
+            )
+            + 1
+        )
+        for entry in ordered:
+            try:
+                entry_id = int(entry.get("id", 0) or 0)
+            except (TypeError, ValueError):
+                entry_id = 0
+            if entry_id <= 0 or entry_id in used:
+                while next_id in used:
+                    next_id += 1
+                entry_id = next_id
+                next_id += 1
+            entry["id"] = entry_id
+            used.add(entry_id)
+
     def _save_catalog(self) -> None:
+        self._deduplicate_ids()
         items = sorted(self._catalog.values(), key=lambda item: int(item["id"]))
         _atomic_write_json(self.catalog_path, {"version": 1, "items": items})
 
@@ -371,16 +417,28 @@ class CatalogStore:
     def _save_draw_limits(self) -> None:
         _atomic_write_json(self.draw_limits_path, self._draw_limits)
 
+    def _is_retired_legacy_asset(self, filename: str) -> bool:
+        return any(
+            filename in entry.get("aliases", []) for entry in self._catalog.values()
+        )
+
     def _refresh_catalog(self) -> None:
         with self._lock:
             for asset_dir in [
                 self.assets_dir,
                 *[legacy / "img" / "wife" for legacy in self.legacy_dirs],
             ]:
+                is_legacy_dir = asset_dir != self.assets_dir
                 if not asset_dir.is_dir():
                     continue
                 for path in asset_dir.iterdir():
-                    if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS:
+                    if (
+                        path.is_file()
+                        and path.suffix.lower() in IMAGE_EXTENSIONS
+                        and not (
+                            is_legacy_dir and self._is_retired_legacy_asset(path.name)
+                        )
+                    ):
                         self._set_entry(path.name)
 
             for group_file in self.config_dir.glob("*.json"):
@@ -534,10 +592,17 @@ class CatalogStore:
             old_filename = Path(_as_text(entry["filename"])).name
             old_path = self.asset_path(entry)
             suffix = old_path.suffix if old_path else ".png"
-            new_filename = (
-                f"ally_{int(entry['id']):04d}_{_safe_filename(new_name)}"
-                f"{suffix.lower()}"
-            )
+            old_stem = Path(old_filename).stem
+            prefix, separator, _old_name = old_stem.rpartition(".")
+            if not separator:
+                prefix = _as_text(entry.get("source"))
+            if prefix:
+                new_filename = f"{prefix}.{_safe_filename(new_name)}{suffix.lower()}"
+            else:
+                new_filename = (
+                    f"ally_{int(entry['id']):04d}_{_safe_filename(new_name)}"
+                    f"{suffix.lower()}"
+                )
             if new_filename != old_filename:
                 new_path = self.assets_dir / new_filename
                 if new_path.exists():

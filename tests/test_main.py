@@ -11,6 +11,7 @@ from astrbot_plugin_kirby_catalog.main import KirbyCatalogPlugin
 class FakeStore:
     def __init__(self, entry):
         self.entry = entry
+        self.group = {}
 
     def resolve_entry(self, filename):
         return self.entry if filename == self.entry["filename"] else None
@@ -29,6 +30,27 @@ class FakeStore:
         if source is not None:
             updated["source"] = source
         return updated
+
+    def load_group(self, group_id):
+        return self.group
+
+    def unlock(self, user, filename):
+        user.setdefault("unlocked", []).append(
+            {"ally_filename": filename, "unlock_date": "2026-08-03"}
+        )
+        return True
+
+    def save_group(self, group_id, config):
+        self.group = config
+
+    def refresh(self):
+        return None
+
+    def get_draw_pool(self):
+        return [self.entry]
+
+    def asset_bytes(self, entry, download=False):
+        return None
 
 
 class FakeContext:
@@ -53,6 +75,9 @@ class FakeEvent:
 
     def plain_result(self, text):
         return text
+
+    def chain_result(self, chain):
+        return chain
 
 
 def make_plugin(entry):
@@ -134,6 +159,51 @@ class GuessFlowTests(unittest.IsolatedAsyncioTestCase):
             results,
             ["已将 #12 改为 结晶化天鹅罗利那，所有用户解锁记录已同步。"],
         )
+
+    async def test_quoted_image_can_answer_without_guess_command(self):
+        plugin = make_plugin(self.entry)
+        plugin._guess_sessions["group-1"] = {
+            "filename": "ally.png",
+            "started_at": time.monotonic(),
+        }
+        quoted_image = Comp.Image.fromURL("https://example.com/ally.png")
+        quoted_message = Comp.Reply(id="reply-2", chain=[quoted_image])
+
+        results = [
+            result
+            async for result in plugin.guess_ally_by_quoted_image(
+                FakeEvent("星之卡比", [quoted_message])
+            )
+        ]
+
+        self.assertEqual(
+            results,
+            ["答对啦！答案是 #12 星之卡比，并已收入你的图鉴。"],
+        )
+        self.assertNotIn("group-1", plugin._guess_sessions)
+
+    async def test_active_guess_cannot_be_replaced_by_new_command(self):
+        plugin = make_plugin(self.entry)
+        plugin._guess_sessions["group-1"] = {
+            "filename": "ally.png",
+            "started_at": time.monotonic(),
+        }
+
+        results = [result async for result in plugin.guess_ally(FakeEvent("猜盟友"))]
+
+        self.assertEqual(
+            results,
+            ["本群已有一轮猜盟友正在进行，请直接引用题目图片并发送名字作答。"],
+        )
+        self.assertEqual(plugin._guess_sessions["group-1"]["filename"], "ally.png")
+
+    async def test_random_ally_only_displays_entry(self):
+        plugin = make_plugin(self.entry)
+
+        results = [result async for result in plugin.random_ally(FakeEvent("随机盟友"))]
+
+        self.assertTrue(results[0][0].text.startswith("随机盟友：#12 星之卡比"))
+        self.assertFalse(plugin.store.group)
 
 
 if __name__ == "__main__":

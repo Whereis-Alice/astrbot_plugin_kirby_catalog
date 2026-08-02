@@ -30,7 +30,7 @@ IMAGE_BASE_URL = "http://save.my996.top/?/img/"
     PLUGIN_ID,
     "Whereis-Alice",
     "星之卡比盟友抽取、图鉴、猜名与排行榜插件",
-    "2.0.2",
+    "2.1.0",
     "https://github.com/Whereis-Alice/astrbot_plugin_kirby_catalog",
 )
 class KirbyCatalogPlugin(Star):
@@ -282,6 +282,7 @@ class KirbyCatalogPlugin(Star):
     def _entry_or_error(
         self, target: str
     ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+        self.store.refresh()
         matches = self.store.find_entries(target)
         if len(matches) == 1:
             return matches[0], None
@@ -334,6 +335,91 @@ class KirbyCatalogPlugin(Star):
             answer and answer == self._normalise_guess(candidate)
             for candidate in candidates
         )
+
+    @classmethod
+    def _quoted_contains_image(cls, event: AstrMessageEvent) -> bool:
+        components = getattr(getattr(event, "message_obj", None), "message", []) or []
+        for component in components:
+            if isinstance(component, Comp.Reply):
+                for nested in cls._nested_components(component.chain):
+                    if isinstance(nested, Comp.Image) or (
+                        isinstance(nested, dict)
+                        and str(nested.get("type", "")).lower() == "image"
+                    ):
+                        return True
+            elif isinstance(component, dict) and str(
+                component.get("type", "")
+            ).lower() in {"reply", "Reply"}:
+                for nested in cls._nested_components(component.get("chain")):
+                    if isinstance(nested, Comp.Image) or (
+                        isinstance(nested, dict)
+                        and str(nested.get("type", "")).lower() == "image"
+                    ):
+                        return True
+
+        raw_message = getattr(getattr(event, "message_obj", None), "raw_message", None)
+        if isinstance(raw_message, dict):
+            reply = raw_message.get("reply")
+            if isinstance(reply, dict):
+                segments = reply.get("message", reply.get("chain", []))
+                for segment in segments or []:
+                    if (
+                        isinstance(segment, dict)
+                        and str(segment.get("type", "")).lower() == "image"
+                    ):
+                        return True
+        return False
+
+    async def _answer_guess(
+        self,
+        event: AstrMessageEvent,
+        answer: str,
+        announce_missing: bool = False,
+    ) -> Optional[str]:
+        group_id = self._group_id(event)
+        session = self._guess_sessions.get(group_id)
+        if not session:
+            return (
+                "当前没有有效的猜盟友题目，请先发送“猜盟友”。"
+                if announce_missing
+                else None
+            )
+
+        timeout = max(30, int(self._config_value("guess_timeout_seconds", 180)))
+        if time.monotonic() - session["started_at"] > timeout:
+            self._guess_sessions.pop(group_id, None)
+            self._cancel_guess_timeout(group_id)
+            entry = self.store.resolve_entry(session["filename"])
+            if entry:
+                return (
+                    f"猜盟友超时，本轮结束。正确答案是 #{entry['id']} "
+                    f"{self._display_name(entry)}。"
+                )
+            return "猜盟友超时，本轮结束，但答案素材已经失效。"
+
+        entry = self.store.resolve_entry(session["filename"])
+        if not entry:
+            self._guess_sessions.pop(group_id, None)
+            self._cancel_guess_timeout(group_id)
+            return "题目素材已失效，请重新出题。"
+        if not self._guess_matches(entry, answer):
+            self._guess_sessions.pop(group_id, None)
+            self._cancel_guess_timeout(group_id)
+            return (
+                f"猜错了，本轮结束。正确答案是 #{entry['id']} "
+                f"{self._display_name(entry)}。"
+            )
+
+        user_id = self._sender_id(event)
+        config = self.store.load_group(group_id)
+        user = self._user_data(config, user_id, self._sender_name(event))
+        is_new = self.store.unlock(user, entry["filename"])
+        config[user_id] = user
+        self.store.save_group(group_id, config)
+        self._guess_sessions.pop(group_id, None)
+        self._cancel_guess_timeout(group_id)
+        status = "并已收入你的图鉴" if is_new else "但你已经解锁过它了"
+        return f"答对啦！答案是 #{entry['id']} {self._display_name(entry)}，{status}。"
 
     async def _draw_ally_impl(self, event: AstrMessageEvent):
         """每天抽取盟友，重复时使用连续未出新保底。"""
@@ -410,6 +496,20 @@ class KirbyCatalogPlugin(Star):
         """让普通文本“今日盟友”也能触发抽取。"""
         async for result in self._draw_ally_impl(event):
             yield result
+
+    @filter.command("随机盟友", alias={"随机查看盟友"})
+    @filter.event_message_type(EventMessageType.GROUP_MESSAGE)
+    async def random_ally(self, event: AstrMessageEvent):
+        """随机展示一位盟友，不写入用户抽取或解锁记录。"""
+        self.store.refresh()
+        pool = self.store.get_draw_pool()
+        if not pool:
+            yield event.plain_result("当前没有可用盟友素材，请管理员先添加图片。")
+            return
+        entry = random.choice(pool)
+        source = f"，来自《{entry['source']}》" if entry.get("source") else ""
+        text = f"随机盟友：#{entry['id']} {self._display_name(entry)}{source}"
+        yield event.chain_result(await self._ally_chain(entry, text))
 
     @filter.command("查盟友", alias={"我的盟友"})
     @filter.event_message_type(EventMessageType.GROUP_MESSAGE)
@@ -542,47 +642,26 @@ class KirbyCatalogPlugin(Star):
         session = self._guess_sessions.get(group_id)
         timeout = max(30, int(self._config_value("guess_timeout_seconds", 180)))
         if remainder:
-            if not session or time.monotonic() - session["started_at"] > timeout:
-                if session:
-                    self._guess_sessions.pop(group_id, None)
-                    self._cancel_guess_timeout(group_id)
-                    entry = self.store.resolve_entry(session["filename"])
-                    if entry:
-                        yield event.plain_result(
-                            f"猜盟友超时，本轮结束。正确答案是 #{entry['id']} "
-                            f"{self._display_name(entry)}。"
-                        )
-                        return
-                self._guess_sessions.pop(group_id, None)
-                yield event.plain_result("当前没有有效的猜盟友题目，请先发送“猜盟友”。")
-                return
-            entry = self.store.resolve_entry(session["filename"])
-            if not entry:
+            result = await self._answer_guess(event, remainder, announce_missing=True)
+            if result:
+                yield event.plain_result(result)
+            return
+
+        if session:
+            if time.monotonic() - session["started_at"] > timeout:
                 self._guess_sessions.pop(group_id, None)
                 self._cancel_guess_timeout(group_id)
-                yield event.plain_result("题目素材已失效，请重新出题。")
-                return
-            if not self._guess_matches(entry, remainder):
-                self._guess_sessions.pop(group_id, None)
-                self._cancel_guess_timeout(group_id)
+                entry = self.store.resolve_entry(session["filename"])
+                if entry:
+                    yield event.plain_result(
+                        f"猜盟友超时，本轮结束。正确答案是 #{entry['id']} "
+                        f"{self._display_name(entry)}。"
+                    )
+            else:
                 yield event.plain_result(
-                    f"猜错了，本轮结束。正确答案是 #{entry['id']} "
-                    f"{self._display_name(entry)}。"
+                    "本群已有一轮猜盟友正在进行，请直接引用题目图片并发送名字作答。"
                 )
                 return
-            user_id = self._sender_id(event)
-            config = self.store.load_group(group_id)
-            user = self._user_data(config, user_id, self._sender_name(event))
-            is_new = self.store.unlock(user, entry["filename"])
-            config[user_id] = user
-            self.store.save_group(group_id, config)
-            self._guess_sessions.pop(group_id, None)
-            self._cancel_guess_timeout(group_id)
-            status = "并已收入你的图鉴" if is_new else "但你已经解锁过它了"
-            yield event.plain_result(
-                f"答对啦！答案是 #{entry['id']} {self._display_name(entry)}，{status}。"
-            )
-            return
 
         pool = self.store.get_draw_pool()
         if not pool:
@@ -612,6 +691,22 @@ class KirbyCatalogPlugin(Star):
             f"题目编号不会显示，{timeout} 秒后失效。"
         )
         yield event.chain_result(await self._ally_chain(entry, text))
+
+    @filter.event_message_type(EventMessageType.GROUP_MESSAGE)
+    async def guess_ally_by_quoted_image(self, event: AstrMessageEvent):
+        """允许引用题目图片并直接发送名字作答。"""
+        group_id = self._group_id(event)
+        if not self._guess_sessions.get(group_id):
+            return
+        text = (event.message_str or "").strip()
+        command_text = text[1:].lstrip() if text.startswith("/") else text
+        if command_text == "猜盟友" or command_text.startswith("猜盟友 "):
+            return
+        if not text or not self._quoted_contains_image(event):
+            return
+        result = await self._answer_guess(event, text)
+        if result:
+            yield event.plain_result(result)
 
     @filter.command("盟友排行榜", alias={"星之卡比排行榜", "图鉴排行榜"})
     @filter.event_message_type(EventMessageType.GROUP_MESSAGE)
@@ -664,6 +759,7 @@ class KirbyCatalogPlugin(Star):
             "查盟友：查看自己今天的盟友，可 @ 成员\n"
             "我的盟友图鉴：查看个人收藏\n"
             "星之卡比图鉴：查看本群图鉴（编号和名字）\n"
+            "随机盟友：随机查看一位盟友，不计入抽取记录\n"
             "猜盟友：发起猜名，回复“猜盟友 名字”作答\n"
             "盟友排行榜：查看本群收藏排行\n"
             "盟友名单 [关键词]：检索图鉴编号和名字\n"

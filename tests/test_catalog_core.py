@@ -110,6 +110,75 @@ class CatalogStoreTests(unittest.TestCase):
                 self.assertGreater(image.width, 0)
                 self.assertGreater(image.height, 0)
 
+    def test_repairs_duplicate_legacy_ids_without_losing_entries(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            new = root / "new"
+            assets = new / "img" / "allies"
+            assets.mkdir(parents=True)
+            assets.joinpath("first.png").write_bytes(self.make_image())
+            assets.joinpath("second.png").write_bytes(self.make_image((0, 255, 0)))
+            (new / "catalog.json").write_text(
+                json.dumps(
+                    {
+                        "version": 1,
+                        "items": [
+                            {"filename": "first.png", "id": 227, "name": "第一条"},
+                            {"filename": "second.png", "id": 227, "name": "第二条"},
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            store = CatalogStore(new, image_base_url="")
+
+            entries = store.entries()
+            self.assertEqual(len(entries), 2)
+            self.assertEqual(len({entry["id"] for entry in entries}), 2)
+            self.assertEqual(store.find_entries("227")[0]["filename"], "first.png")
+            self.assertEqual(len(store.find_entries("second.png")), 1)
+
+    def test_rename_preserves_source_prefix_in_filename(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = CatalogStore(root / "new", image_base_url="")
+            filename = "星之卡比 探索发现.水晶针卡比.png"
+            path = store.assets_dir / filename
+            path.write_bytes(self.make_image())
+            store.refresh()
+            entry = store.resolve_entry("水晶针卡比")
+
+            self.assertIsNotNone(entry)
+            renamed = store.rename_entry(entry or {}, "结晶化针卡比")
+
+            self.assertEqual(renamed["filename"], "星之卡比 探索发现.结晶化针卡比.png")
+            self.assertFalse(path.exists())
+            self.assertTrue(store.asset_path(renamed).is_file())
+
+    def test_renamed_legacy_asset_is_not_reintroduced_on_refresh(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            legacy = root / "legacy"
+            legacy_assets = legacy / "img" / "wife"
+            legacy_assets.mkdir(parents=True)
+            filename = "星之卡比 探索发现.水晶针卡比.png"
+            (legacy_assets / filename).write_bytes(self.make_image())
+            (legacy / "wife_index.json").write_text(
+                json.dumps({filename: 227}, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            store = CatalogStore(root / "new", [legacy], image_base_url="")
+            entry = store.resolve_entry("227")
+
+            renamed = store.rename_entry(entry or {}, "结晶化针卡比")
+            store.refresh()
+
+            filenames = {item["filename"] for item in store.entries()}
+            self.assertIn(renamed["filename"], filenames)
+            self.assertNotIn(filename, filenames)
+
 
 if __name__ == "__main__":
     unittest.main()
