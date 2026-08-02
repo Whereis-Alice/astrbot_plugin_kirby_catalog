@@ -30,7 +30,7 @@ IMAGE_BASE_URL = "http://save.my996.top/?/img/"
     PLUGIN_ID,
     "Whereis-Alice",
     "星之卡比盟友抽取、图鉴、猜名与排行榜插件",
-    "2.1.0",
+    "2.1.1",
     "https://github.com/Whereis-Alice/astrbot_plugin_kirby_catalog",
 )
 class KirbyCatalogPlugin(Star):
@@ -763,7 +763,7 @@ class KirbyCatalogPlugin(Star):
             "猜盟友：发起猜名，回复“猜盟友 名字”作答\n"
             "盟友排行榜：查看本群收藏排行\n"
             "盟友名单 [关键词]：检索图鉴编号和名字\n"
-            "管理员命令：星之卡比图鉴添加、换图、改名、迁移"
+            "管理员命令：星之卡比图鉴添加、换图、改名、迁移、清理旧名"
         )
 
     @filter.command("星之卡比图鉴换图", alias={"星之卡比图鉴替换图片"})
@@ -880,3 +880,37 @@ class KirbyCatalogPlugin(Star):
             yield event.plain_result("迁移失败，请查看 AstrBot 日志。")
             return
         yield event.plain_result("旧插件数据扫描完成，已有收藏记录已保留。")
+
+    @filter.command("星之卡比图鉴清理旧名")
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.event_message_type(EventMessageType.GROUP_MESSAGE)
+    async def cleanup_renamed_names(self, event: AstrMessageEvent):
+        """管理员一次性合并改名前缀，并保留指定的旧名。"""
+        remainder = self._command_remainder(event, {"星之卡比图鉴清理旧名"})
+        parts = remainder.split()
+        if len(parts) < 2:
+            yield event.plain_result(
+                "用法：星之卡比图鉴清理旧名 <旧前缀> <新前缀> [保留名]"
+            )
+            return
+        old_prefix, new_prefix = parts[:2]
+        keep_names = parts[2:]
+        try:
+            result = await asyncio.to_thread(
+                self.store.cleanup_renamed_prefix,
+                old_prefix,
+                new_prefix,
+                keep_names,
+            )
+        except Exception as exc:
+            logger.exception("[%s] 清理旧名失败: %s", PLUGIN_ID, exc)
+            yield event.plain_result("清理失败，请查看 AstrBot 日志。")
+            return
+        lines = [f"旧名清理完成，已合并 {len(result['removed'])} 个条目。"]
+        if result["kept"]:
+            lines.append("保留：" + "、".join(result["kept"]))
+        if result["unresolved"]:
+            lines.append(
+                "未处理（找不到唯一的新名）：" + "、".join(result["unresolved"])
+            )
+        yield event.plain_result("\n".join(lines))

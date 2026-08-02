@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import os
 import re
@@ -392,6 +393,14 @@ class CatalogStore:
 
     def _migrate_legacy_assets(self) -> None:
         """Copy legacy local assets so the new plugin is self-contained."""
+        existing_digests = {
+            digest
+            for path in self.assets_dir.iterdir()
+            if path.is_file()
+            and path.suffix.lower() in IMAGE_EXTENSIONS
+            for digest in [self._asset_digest(path)]
+            if digest
+        }
         for legacy_dir in self.legacy_dirs:
             legacy_assets_dir = legacy_dir / "img" / "wife"
             if not legacy_assets_dir.is_dir():
@@ -405,8 +414,13 @@ class CatalogStore:
                 target = self.assets_dir / source.name
                 if target.exists():
                     continue
+                digest = self._asset_digest(source)
+                if digest and digest in existing_digests:
+                    continue
                 try:
                     shutil.copy2(source, target)
+                    if digest:
+                        existing_digests.add(digest)
                 except OSError:
                     continue
 
@@ -417,27 +431,163 @@ class CatalogStore:
     def _save_draw_limits(self) -> None:
         _atomic_write_json(self.draw_limits_path, self._draw_limits)
 
-    def _is_retired_legacy_asset(self, filename: str) -> bool:
+    def _is_retired_asset(self, filename: str) -> bool:
         return any(
             filename in entry.get("aliases", []) for entry in self._catalog.values()
         )
 
+    @staticmethod
+    def _asset_digest(path: Path) -> Optional[str]:
+        try:
+            digest = hashlib.sha256()
+            with path.open("rb") as handle:
+                for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            return digest.hexdigest()
+        except OSError:
+            return None
+
+    def _merge_legacy_duplicate_assets(self) -> None:
+        """Retire old files that are byte-identical to a current local asset.
+
+        Older releases renamed only the copied file in the new data directory.
+        The original file in the legacy directory was then scanned as a new
+        catalogue entry on the next reload.  The digest match lets us repair
+        those records without guessing from display names.
+        """
+        local_paths = [
+            path
+            for path in self.assets_dir.iterdir()
+            if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS
+        ]
+        by_digest: Dict[str, List[Path]] = {}
+        for path in local_paths:
+            digest = self._asset_digest(path)
+            if digest:
+                by_digest.setdefault(digest, []).append(path)
+
+        for legacy_dir in self.legacy_dirs:
+            legacy_assets_dir = legacy_dir / "img" / "wife"
+            if not legacy_assets_dir.is_dir():
+                continue
+            for old_path in legacy_assets_dir.iterdir():
+                if (
+                    not old_path.is_file()
+                    or old_path.suffix.lower() not in IMAGE_EXTENSIONS
+                    or old_path.name in {path.name for path in local_paths}
+                ):
+                    continue
+                digest = self._asset_digest(old_path)
+                matches = by_digest.get(digest or "", [])
+                if len(matches) != 1:
+                    continue
+
+                current_path = matches[0]
+                current = self._catalog.get(current_path.name)
+                if current is None:
+                    current = self._set_entry(current_path.name)
+                stale = self._catalog.pop(old_path.name, None)
+                aliases = set(current.get("aliases", []))
+                aliases.add(old_path.name)
+                if stale:
+                    aliases.update(stale.get("aliases", []))
+                current["aliases"] = sorted(alias for alias in aliases if alias)
+                self._replace_references(old_path.name, current_path.name)
+
+    def _merge_duplicate_local_assets(self) -> None:
+        """Retire stale copied files that duplicate a renamed local asset."""
+        paths_by_digest: Dict[str, List[Path]] = {}
+        for path in self.assets_dir.iterdir():
+            if not path.is_file() or path.suffix.lower() not in IMAGE_EXTENSIONS:
+                continue
+            digest = self._asset_digest(path)
+            if digest:
+                paths_by_digest.setdefault(digest, []).append(path)
+
+        for paths in paths_by_digest.values():
+            if len(paths) < 2:
+                continue
+            parsed_sources = {_parse_filename(path.name)[1] for path in paths}
+            if len(parsed_sources) != 1 or not next(iter(parsed_sources)):
+                continue
+            entries = [self._catalog.get(path.name) for path in paths]
+            entries = [entry for entry in entries if entry is not None]
+            if len(entries) < 2:
+                continue
+            entries.sort(
+                key=lambda item: (
+                    not bool(item.get("aliases")),
+                    int(item.get("id", 0) or 0),
+                    _as_text(item.get("filename")),
+                )
+            )
+            current = entries[0]
+            current_filename = Path(_as_text(current["filename"])).name
+            aliases = set(current.get("aliases", []))
+            for duplicate in entries[1:]:
+                duplicate_filename = Path(_as_text(duplicate["filename"])).name
+                aliases.add(duplicate_filename)
+                aliases.update(duplicate.get("aliases", []))
+                self._replace_references(duplicate_filename, current_filename)
+                self._catalog.pop(duplicate_filename, None)
+            current["aliases"] = sorted(alias for alias in aliases if alias)
+
+    def _merge_duplicate_named_assets(self) -> None:
+        """Merge duplicate local entries with the same source and name."""
+        groups: Dict[Tuple[str, str], List[Dict[str, Any]]] = {}
+        for entry in self._catalog.values():
+            filename = Path(_as_text(entry.get("filename"))).name
+            if not filename or not (self.assets_dir / filename).is_file():
+                continue
+            key = (
+                _as_text(entry.get("source")).casefold(),
+                _as_text(entry.get("name")).casefold(),
+            )
+            if not key[1]:
+                continue
+            groups.setdefault(key, []).append(entry)
+
+        for entries in groups.values():
+            if len(entries) < 2:
+                continue
+            entries.sort(
+                key=lambda item: (
+                    not bool(item.get("aliases")),
+                    int(item.get("id", 0) or 0),
+                    _as_text(item.get("filename")),
+                )
+            )
+            current = entries[0]
+            current_filename = Path(_as_text(current["filename"])).name
+            aliases = set(current.get("aliases", []))
+            for duplicate in entries[1:]:
+                duplicate_filename = Path(_as_text(duplicate["filename"])).name
+                aliases.add(duplicate_filename)
+                aliases.update(duplicate.get("aliases", []))
+                self._replace_references(duplicate_filename, current_filename)
+                self._catalog.pop(duplicate_filename, None)
+            current["aliases"] = sorted(alias for alias in aliases if alias)
+
+    def _is_retired_legacy_asset(self, filename: str) -> bool:
+        """Backward-compatible name for callers from older plugin versions."""
+        return self._is_retired_asset(filename)
+
     def _refresh_catalog(self) -> None:
         with self._lock:
+            self._merge_legacy_duplicate_assets()
+            self._merge_duplicate_local_assets()
+            self._merge_duplicate_named_assets()
             for asset_dir in [
                 self.assets_dir,
                 *[legacy / "img" / "wife" for legacy in self.legacy_dirs],
             ]:
-                is_legacy_dir = asset_dir != self.assets_dir
                 if not asset_dir.is_dir():
                     continue
                 for path in asset_dir.iterdir():
                     if (
                         path.is_file()
                         and path.suffix.lower() in IMAGE_EXTENSIONS
-                        and not (
-                            is_legacy_dir and self._is_retired_legacy_asset(path.name)
-                        )
+                        and not self._is_retired_asset(path.name)
                     ):
                         self._set_entry(path.name)
 
@@ -629,6 +779,96 @@ class CatalogStore:
             self._catalog[new_filename] = updated
             self._save_catalog()
             return dict(updated)
+
+    def cleanup_renamed_prefix(
+        self,
+        old_prefix: str,
+        new_prefix: str,
+        keep_names: Sequence[str] = (),
+    ) -> Dict[str, Any]:
+        """Merge old-prefixed entries into their renamed counterparts.
+
+        This is intended for one-time repairs after an older release left the
+        pre-rename files in the new data directory.
+        """
+        old_prefix = _as_text(old_prefix)
+        new_prefix = _as_text(new_prefix)
+        keep = {_as_text(name) for name in keep_names if _as_text(name)}
+        removed: List[str] = []
+        unresolved: List[str] = []
+        kept: List[str] = []
+
+        with self._lock:
+            self._refresh_catalog()
+            candidates = list(self._catalog.values())
+            for entry in candidates:
+                old_name = _as_text(entry.get("name"))
+                if not old_name.startswith(old_prefix) or old_name in keep:
+                    continue
+                target_name = f"{new_prefix}{old_name[len(old_prefix):]}"
+                matches = [
+                    item
+                    for item in self._catalog.values()
+                    if _as_text(item.get("name")) == target_name
+                    and _as_text(item.get("source"))
+                    == _as_text(entry.get("source"))
+                ]
+                if len(matches) != 1:
+                    unresolved.append(old_name)
+                    continue
+                target = matches[0]
+                old_filename = Path(_as_text(entry["filename"])).name
+                target_filename = Path(_as_text(target["filename"])).name
+                if old_filename == target_filename:
+                    continue
+                aliases = set(target.get("aliases", []))
+                aliases.add(old_filename)
+                aliases.update(entry.get("aliases", []))
+                target["aliases"] = sorted(alias for alias in aliases if alias)
+                self._replace_references(old_filename, target_filename)
+                old_path = self.assets_dir / old_filename
+                if old_path.is_file() and old_path != self.assets_dir / target_filename:
+                    try:
+                        old_path.unlink()
+                    except OSError:
+                        pass
+                self._catalog.pop(old_filename, None)
+                removed.append(f"{old_name} -> {target_name}")
+
+            for keep_name in keep:
+                matching = [
+                    item
+                    for item in self._catalog.values()
+                    if _as_text(item.get("name")) == keep_name
+                ]
+                if len(matching) < 2:
+                    if matching:
+                        kept.append(keep_name)
+                    continue
+                matching.sort(key=lambda item: int(item.get("id", 0) or 0))
+                target = matching[0]
+                target_filename = Path(_as_text(target["filename"])).name
+                aliases = set(target.get("aliases", []))
+                for duplicate in matching[1:]:
+                    duplicate_filename = Path(
+                        _as_text(duplicate["filename"])
+                    ).name
+                    aliases.add(duplicate_filename)
+                    aliases.update(duplicate.get("aliases", []))
+                    self._replace_references(duplicate_filename, target_filename)
+                    duplicate_path = self.assets_dir / duplicate_filename
+                    if duplicate_path.is_file():
+                        try:
+                            duplicate_path.unlink()
+                        except OSError:
+                            pass
+                    self._catalog.pop(duplicate_filename, None)
+                    removed.append(f"{keep_name}#{duplicate.get('id')}")
+                target["aliases"] = sorted(alias for alias in aliases if alias)
+                kept.append(keep_name)
+
+            self._save_catalog()
+        return {"removed": removed, "unresolved": unresolved, "kept": kept}
 
     def _replace_references(self, old_filename: str, new_filename: str) -> None:
         for group_file in self.config_dir.glob("*.json"):

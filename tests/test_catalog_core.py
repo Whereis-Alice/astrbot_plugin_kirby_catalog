@@ -179,6 +179,98 @@ class CatalogStoreTests(unittest.TestCase):
             self.assertIn(renamed["filename"], filenames)
             self.assertNotIn(filename, filenames)
 
+    def test_repairs_duplicate_local_files_left_by_old_rename(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            new = root / "new"
+            assets = new / "img" / "allies"
+            assets.mkdir(parents=True)
+            image = self.make_image()
+            old_filename = "星之卡比 探索发现.水晶针卡比.png"
+            new_filename = "星之卡比 探索发现.结晶化针卡比.png"
+            assets.joinpath(old_filename).write_bytes(image)
+            assets.joinpath(new_filename).write_bytes(image)
+            (new / "catalog.json").write_text(
+                json.dumps(
+                    {
+                        "version": 1,
+                        "items": [
+                            {
+                                "filename": old_filename,
+                                "id": 417,
+                                "name": "水晶针卡比",
+                                "source": "星之卡比 探索发现",
+                            },
+                            {
+                                "filename": new_filename,
+                                "id": 227,
+                                "name": "结晶化针卡比",
+                                "source": "星之卡比 探索发现",
+                            },
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            store = CatalogStore(new, image_base_url="")
+
+            entries = store.entries()
+            self.assertEqual([entry["id"] for entry in entries], [227])
+            self.assertEqual(entries[0]["name"], "结晶化针卡比")
+            self.assertIn(old_filename, entries[0]["aliases"])
+
+    def test_cleanup_renamed_prefix_preserves_users_and_one_kept_name(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = CatalogStore(root / "new", image_base_url="")
+            old = store.add_asset("水晶天鹅罗利那", self.make_image(), "星之卡比")
+            renamed = store.add_asset(
+                "结晶化天鹅罗利那", self.make_image((0, 255, 0)), "星之卡比"
+            )
+            store.add_asset("水晶针卡比", self.make_image((0, 0, 255)), "星之卡比")
+            duplicate_needle = store.add_asset(
+                "水晶针卡比", self.make_image((255, 255, 0)), "星之卡比"
+            )
+            store.save_group(
+                "100",
+                {
+                    "1": {
+                        "current": {
+                            "ally_filename": old["filename"],
+                            "date": get_today(),
+                        },
+                        "unlocked": [
+                            {
+                                "ally_filename": old["filename"],
+                                "unlock_date": get_today(),
+                            },
+                            {
+                                "ally_filename": duplicate_needle["filename"],
+                                "unlock_date": get_today(),
+                            },
+                        ],
+                        "nickname": "用户",
+                    }
+                },
+            )
+
+            result = store.cleanup_renamed_prefix(
+                "水晶", "结晶化", ["水晶针卡比"]
+            )
+
+            self.assertEqual(result["unresolved"], [])
+            names = [entry["name"] for entry in store.entries()]
+            self.assertEqual(names.count("水晶针卡比"), 1)
+            self.assertIn("结晶化天鹅罗利那", names)
+            user = store.load_group("100")["1"]
+            self.assertNotIn(old["filename"], store.unlocked_filenames(user))
+            self.assertEqual(
+                store.load_group("100")["1"]["current"]["ally_filename"],
+                renamed["filename"],
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
