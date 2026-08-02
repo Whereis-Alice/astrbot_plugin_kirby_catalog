@@ -28,14 +28,17 @@
 4. 新插件第一次启动时，会自动扫描标准旧数据目录：
 
    ```text
-   data/plugins/astrbot_plugin_AnimeWife
+   data/plugin_data/astrbot_plugin_AnimeWife
    ```
 
    新插件的数据会写入独立目录：
 
    ```text
-   data/plugins/astrbot_plugin_kirby_catalog
+   data/plugin_data/astrbot_plugin_kirby_catalog
    ```
+
+   这里的 `data` 是 AstrBot 的数据目录；例如 AstrBot 安装在 `/root/AstrBot` 时，完整路径就是
+   `/root/AstrBot/data/plugin_data/astrbot_plugin_kirby_catalog`。
 
    两个插件不会共用写入目录，因此不会因为插件标识相同而互相覆盖。
 
@@ -44,13 +47,13 @@
 新素材放在：
 
 ```text
-data/plugins/astrbot_plugin_kirby_catalog/img/allies
+data/plugin_data/astrbot_plugin_kirby_catalog/img/allies
 ```
 
 首次启动或执行迁移命令时，旧目录中的本地素材会复制到新目录；原目录不会被删除：
 
 ```text
-data/plugins/astrbot_plugin_AnimeWife/img/wife
+data/plugin_data/astrbot_plugin_AnimeWife/img/wife
 ```
 
 迁移完成后，新插件优先使用自己的素材目录，不再依赖旧插件文件。旧目录仍会作为迁移失败时的只读兼容来源。确认新目录素材完整后即可删除旧插件及旧数据。
