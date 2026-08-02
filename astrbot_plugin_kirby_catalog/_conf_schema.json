@@ -1,0 +1,54 @@
+{
+  "draw_settings": {
+    "description": "抽取与图鉴设置",
+    "type": "object",
+    "items": {
+      "daily_draw_limit": {
+        "description": "每人每日抽取次数",
+        "type": "int",
+        "default": 3,
+        "min": 1,
+        "max": 100
+      },
+      "draw_cooldown_seconds": {
+        "description": "连续抽取冷却时间（秒）",
+        "type": "float",
+        "default": 3,
+        "min": 0,
+        "max": 60
+      },
+      "guess_timeout_seconds": {
+        "description": "猜盟友题目有效时间（秒）",
+        "type": "int",
+        "default": 180,
+        "min": 30,
+        "max": 3600
+      },
+      "gallery_columns": {
+        "description": "图鉴每行显示数量",
+        "type": "int",
+        "default": 10,
+        "min": 4,
+        "max": 12
+      }
+    }
+  },
+  "data_settings": {
+    "description": "数据兼容设置",
+    "type": "object",
+    "items": {
+      "image_base_url": {
+        "description": "旧素材图床地址",
+        "type": "string",
+        "default": "http://save.my996.top/?/img/",
+        "hint": "本地找不到旧素材时才会尝试使用。完全本地运行可留空。"
+      },
+      "legacy_data_dir": {
+        "description": "旧插件数据目录（可选）",
+        "type": "string",
+        "default": "",
+        "hint": "旧插件使用标准 data/plugins/astrbot_plugin_AnimeWife 目录时无需填写。"
+      }
+    }
+  }
+}
