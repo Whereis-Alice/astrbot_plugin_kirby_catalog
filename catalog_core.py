@@ -870,6 +870,58 @@ class CatalogStore:
             self._save_catalog()
         return {"removed": removed, "unresolved": unresolved, "kept": kept}
 
+    def merge_duplicate_entries(
+        self, mappings: Sequence[Tuple[int, int]]
+    ) -> Dict[str, Any]:
+        """Merge explicitly mapped duplicate ids into their correct entries."""
+        removed: List[str] = []
+        unresolved: List[str] = []
+
+        with self._lock:
+            for duplicate_id, target_id in mappings:
+                duplicate = next(
+                    (
+                        item
+                        for item in self._catalog.values()
+                        if int(item.get("id", 0) or 0) == int(duplicate_id)
+                    ),
+                    None,
+                )
+                target = next(
+                    (
+                        item
+                        for item in self._catalog.values()
+                        if int(item.get("id", 0) or 0) == int(target_id)
+                    ),
+                    None,
+                )
+                if duplicate is None or target is None or duplicate is target:
+                    unresolved.append(f"#{duplicate_id} -> #{target_id}（编号不存在）")
+                    continue
+
+                old_filename = Path(_as_text(duplicate["filename"])).name
+                target_filename = Path(_as_text(target["filename"])).name
+                aliases = set(target.get("aliases", []))
+                aliases.add(old_filename)
+                aliases.update(duplicate.get("aliases", []))
+                target["aliases"] = sorted(alias for alias in aliases if alias)
+                self._replace_references(old_filename, target_filename)
+
+                asset_path = self.assets_dir / old_filename
+                if asset_path.is_file():
+                    try:
+                        asset_path.unlink()
+                    except OSError:
+                        pass
+                self._catalog.pop(old_filename, None)
+                removed.append(
+                    f"#{duplicate_id} {_as_text(duplicate.get('name'))}"
+                    f" -> #{target_id} {_as_text(target.get('name'))}"
+                )
+
+            self._save_catalog()
+        return {"removed": removed, "unresolved": unresolved}
+
     def _replace_references(self, old_filename: str, new_filename: str) -> None:
         for group_file in self.config_dir.glob("*.json"):
             if group_file.name == self.draw_limits_path.name:

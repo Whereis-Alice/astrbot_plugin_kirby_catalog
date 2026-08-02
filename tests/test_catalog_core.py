@@ -271,6 +271,41 @@ class CatalogStoreTests(unittest.TestCase):
                 renamed["filename"],
             )
 
+    def test_merge_duplicate_entries_uses_explicit_targets(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = CatalogStore(root / "new", image_base_url="")
+            duplicate = store.add_asset("皮鞭卡比", self.make_image(), "星之卡比")
+            target = store.add_asset(
+                "鞭子卡比", self.make_image((0, 255, 0)), "星之卡比"
+            )
+            store.save_group(
+                "100",
+                {
+                    "1": {
+                        "current": {
+                            "ally_filename": duplicate["filename"],
+                            "date": get_today(),
+                        },
+                        "unlocked": [
+                            {
+                                "ally_filename": duplicate["filename"],
+                                "unlock_date": get_today(),
+                            }
+                        ],
+                        "nickname": "用户",
+                    }
+                },
+            )
+
+            result = store.merge_duplicate_entries([(duplicate["id"], target["id"])])
+
+            self.assertEqual(len(result["removed"]), 1)
+            self.assertIsNotNone(store.resolve_entry(str(target["id"])))
+            user = store.load_group("100")["1"]
+            self.assertEqual(user["current"]["ally_filename"], target["filename"])
+            self.assertEqual(user["unlocked"][0]["ally_filename"], target["filename"])
+
 
 if __name__ == "__main__":
     unittest.main()

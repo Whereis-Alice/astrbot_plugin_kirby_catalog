@@ -30,7 +30,7 @@ IMAGE_BASE_URL = "http://save.my996.top/?/img/"
     PLUGIN_ID,
     "Whereis-Alice",
     "星之卡比盟友抽取、图鉴、猜名与排行榜插件",
-    "2.1.1",
+    "2.1.2",
     "https://github.com/Whereis-Alice/astrbot_plugin_kirby_catalog",
 )
 class KirbyCatalogPlugin(Star):
@@ -763,7 +763,7 @@ class KirbyCatalogPlugin(Star):
             "猜盟友：发起猜名，回复“猜盟友 名字”作答\n"
             "盟友排行榜：查看本群收藏排行\n"
             "盟友名单 [关键词]：检索图鉴编号和名字\n"
-            "管理员命令：星之卡比图鉴添加、换图、改名、迁移、清理旧名"
+            "管理员命令：星之卡比图鉴添加、换图、改名、迁移、清理旧名、删除重复"
         )
 
     @filter.command("星之卡比图鉴换图", alias={"星之卡比图鉴替换图片"})
@@ -913,4 +913,40 @@ class KirbyCatalogPlugin(Star):
             lines.append(
                 "未处理（找不到唯一的新名）：" + "、".join(result["unresolved"])
             )
+        yield event.plain_result("\n".join(lines))
+
+    @filter.command(
+        "星之卡比图鉴删除重复", alias={"星之卡比图鉴合并重复"}
+    )
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.event_message_type(EventMessageType.GROUP_MESSAGE)
+    async def remove_duplicate_entries(self, event: AstrMessageEvent):
+        """管理员按“重复编号 正确编号”合并重复条目。"""
+        remainder = self._command_remainder(
+            event, {"星之卡比图鉴删除重复", "星之卡比图鉴合并重复"}
+        )
+        parts = remainder.split()
+        ids: List[int] = []
+        for part in parts:
+            try:
+                ids.append(int(part.lstrip("#")))
+            except ValueError:
+                pass
+        if not ids or len(ids) % 2:
+            yield event.plain_result(
+                "用法：星之卡比图鉴删除重复 <重复编号> <正确编号> [重复编号] [正确编号]"
+            )
+            return
+        mappings = list(zip(ids[::2], ids[1::2]))
+        try:
+            result = await asyncio.to_thread(
+                self.store.merge_duplicate_entries, mappings
+            )
+        except Exception as exc:
+            logger.exception("[%s] 删除重复条目失败: %s", PLUGIN_ID, exc)
+            yield event.plain_result("删除失败，请查看 AstrBot 日志。")
+            return
+        lines = [f"重复条目合并完成，已处理 {len(result['removed'])} 个。"]
+        if result["unresolved"]:
+            lines.append("未处理：" + "、".join(result["unresolved"]))
         yield event.plain_result("\n".join(lines))
