@@ -276,6 +276,16 @@ def parse_locations_html(rendered_html: str) -> list[str]:
 
     locations: list[str] = []
     for table in parser.tables:
+        table_headers = {
+            re.sub(r"\s+", " ", " ".join(cell["text"])).strip().casefold()
+            for row in table
+            for cell in row
+            if cell["tag"] == "th"
+        }
+        if not any("stage" == header for header in table_headers):
+            continue
+        if not any("appearance" in header for header in table_headers):
+            continue
         for row in table:
             for index in range(len(row) - 1):
                 stage_cell = row[index]

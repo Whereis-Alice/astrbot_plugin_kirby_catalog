@@ -289,6 +289,7 @@ Driblee can be found in the following stages:
 """,
             """
             <table class="wikitable">
+              <tr><th>Stage</th><th>Appearance?</th></tr>
               <tr><td><a>Donut Dome</a></td><td><img alt="Yes"></td></tr>
             </table>
             """,
