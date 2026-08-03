@@ -47,11 +47,17 @@
         "type": "bool",
         "default": true
       },
+      "wikirby_show_details": {
+        "description": "显示页面资料、出现地点和趣闻",
+        "type": "bool",
+        "default": true,
+        "hint": "默认读取页面信息框和部分正文栏目；关闭后只显示简介、来源和首图。"
+      },
       "wikirby_translate_enabled": {
-        "description": "使用 LLM 将百科简介翻译成简体中文",
+        "description": "使用 LLM 将百科简介和页面资料翻译成简体中文",
         "type": "bool",
         "default": false,
-        "hint": "关闭时保留 WiKirby 原文；开启后使用 AstrBot 原生文本模型翻译简介，翻译失败会自动显示原文。"
+        "hint": "关闭时保留 WiKirby 原文；开启后使用 AstrBot 原生文本模型翻译简介和页面资料，翻译失败会自动显示原文。"
       },
       "wikirby_translate_provider_id": {
         "description": "百科翻译使用的模型提供商",

@@ -31,7 +31,7 @@ IMAGE_BASE_URL = "http://save.my996.top/?/img/"
     PLUGIN_ID,
     "Whereis-Alice",
     "星之卡比盟友抽取、图鉴、猜名与排行榜插件",
-    "2.4.1",
+    "2.6.1",
     "https://github.com/Whereis-Alice/astrbot_plugin_kirby_catalog",
 )
 class KirbyCatalogPlugin(Star):
@@ -344,10 +344,10 @@ class KirbyCatalogPlugin(Star):
             return value
         return str(value).strip().casefold() not in {"0", "false", "no", "off"}
 
-    async def _wikirby_translate_summary(
+    async def _wikirby_translate_text(
         self, event: AstrMessageEvent, summary: str
     ) -> str:
-        """Translate a WiKirby summary with AstrBot's configured chat provider."""
+        """Translate WiKirby text with AstrBot's configured chat provider."""
         if not summary or not self._wikirby_translate_enabled():
             return summary
 
@@ -363,7 +363,7 @@ class KirbyCatalogPlugin(Star):
         response = await self.context.llm_generate(
             chat_provider_id=provider_id,
             prompt=(
-                "请将下面的 WiKirby 百科简介准确翻译成简体中文。"
+                "请将下面的 WiKirby 百科内容准确翻译成简体中文。"
                 "只输出译文，不要解释、不要加标题、不要使用 Markdown，"
                 "保留角色名、作品名和专有名词的原文或常见译名。\n\n"
                 f"原文：\n{summary}"
@@ -418,6 +418,62 @@ class KirbyCatalogPlugin(Star):
         lines.append(f"例如：{command} {candidates[0].get('title', '')}")
         return "\n".join(lines)
 
+    async def _wikirby_names_text(
+        self, query: str, resolved: Optional[Dict[str, Any]] = None
+    ) -> str:
+        """Return the official names text shared by the command and LLM tool."""
+        client = getattr(self, "wikirby", None)
+        if client is None:
+            return "WiKirby 查询功能尚未初始化。"
+        resolved = resolved or await client.resolve(query)
+        if resolved.get("kind") == "candidates":
+            return self._wikirby_candidate_text(
+                resolved.get("candidates", []), True
+            )
+        if resolved.get("kind") != "page":
+            return (
+                f"没有找到 WiKirby 页面：{query}\n"
+                "可以尝试使用英文页面名，或换一个更具体的中文名称。"
+            )
+
+        page = resolved["page"]
+        names = await client.get_language_names(page)
+        if not names:
+            return (
+                f"没有在「{page['title']}」页面找到“Names in other languages”名称表。\n"
+                f"来源：{page.get('url') or 'https://wikirby.com'}"
+            )
+        lines = [f"{page['title']} 的官方名称："]
+        for row in names:
+            value = row["name"]
+            if row.get("romanisation"):
+                value += f"（{row['romanisation']}）"
+            lines.append(f"{row['language']}：{value}")
+        lines.append(f"来源：{page.get('url') or 'https://wikirby.com'}")
+        return "\n".join(lines)
+
+    @filter.llm_tool(name="kirby_catalog_lookup_official_names")
+    async def wikirby_lookup_official_names(
+        self, event: AstrMessageEvent, query: str
+    ) -> str:
+        """查询 WiKirby 页面中的角色官方名称。
+
+        这个工具只读取页面的多语言官方名称表，不修改图鉴数据。
+
+        Args:
+            query(string): 要查询的角色名、英文页面名或 WiKirby 页面标题。
+        """
+        if not self._wikirby_enabled():
+            return "WiKirby 查询功能当前已关闭。"
+        try:
+            return await self._wikirby_names_text(query.strip())
+        except WikirbyError as exc:
+            logger.warning("[%s] LLM 调用 WiKirby 名称查询失败: %s", PLUGIN_ID, exc)
+            return f"WiKirby 查询失败：{exc}"
+        except Exception as exc:
+            logger.exception("[%s] LLM 调用 WiKirby 名称查询异常: %s", PLUGIN_ID, exc)
+            return "WiKirby 查询失败，请稍后再试。"
+
     async def _wikirby_query_impl(self, event: AstrMessageEvent):
         if not self._wikirby_enabled():
             yield event.plain_result("WiKirby 查询功能当前已关闭。")
@@ -449,34 +505,54 @@ class KirbyCatalogPlugin(Star):
 
             page = resolved["page"]
             if names_only:
-                names = await client.get_language_names(page)
-                if not names:
-                    yield event.plain_result(
-                        f"没有在「{page['title']}」页面找到“Names in other languages”名称表。\n"
-                        f"来源：{page.get('url') or 'https://wikirby.com'}"
-                    )
-                    return
-                lines = [f"{page['title']} 的官方名称："]
-                for row in names:
-                    value = row["name"]
-                    if row.get("romanisation"):
-                        value += f"（{row['romanisation']}）"
-                    lines.append(f"{row['language']}：{value}")
-                lines.append(f"来源：{page.get('url') or 'https://wikirby.com'}")
-                yield event.plain_result("\n".join(lines))
+                yield event.plain_result(
+                    await self._wikirby_names_text(query, resolved)
+                )
                 return
 
             lines = [f"WiKirby：{page['title']}"]
             summary = str(page.get("summary", "") or "").strip()
             if summary:
                 try:
-                    summary = await self._wikirby_translate_summary(event, summary)
+                    summary = await self._wikirby_translate_text(event, summary)
                 except Exception as exc:
                     logger.warning("[%s] WiKirby AI 翻译失败，保留原文: %s", PLUGIN_ID, exc)
                 lines.extend(["简介：", summary])
+            show_details = self._config_value("wikirby_show_details", True)
+            if isinstance(show_details, str):
+                show_details = show_details.strip().casefold() not in {
+                    "0",
+                    "false",
+                    "no",
+                    "off",
+                }
+            if show_details:
+                try:
+                    details = await client.get_page_details(page)
+                except Exception as exc:
+                    logger.warning("[%s] WiKirby 详细栏目读取失败: %s", PLUGIN_ID, exc)
+                    details = {"infobox": [], "sections": []}
+                detail_lines: list[str] = []
+                for row in details.get("infobox", []):
+                    detail_lines.append(f"{row['label']}：{row['value']}")
+                for section in details.get("sections", []):
+                    detail_lines.extend([f"{section['title']}：", section["text"]])
+                if detail_lines:
+                    detail_text = "\n".join(detail_lines)
+                    if self._wikirby_translate_enabled():
+                        try:
+                            detail_text = await self._wikirby_translate_text(
+                                event, detail_text
+                            )
+                        except Exception as exc:
+                            logger.warning(
+                                "[%s] WiKirby 详细栏目翻译失败，保留原文: %s",
+                                PLUGIN_ID,
+                                exc,
+                            )
+                    lines.extend(["资料：", detail_text])
             lines.extend(
                 [
-                    "提示：WiKirby 页面可能包含剧透。",
                     f"来源：{page.get('url') or 'https://wikirby.com'}",
                 ]
             )
@@ -951,7 +1027,7 @@ class KirbyCatalogPlugin(Star):
             "猜盟友：发起猜名，答对只公布答案，不改变图鉴\n"
             "盟友排行榜：查看本群收藏排行\n"
             "盟友名单 [关键词]：检索图鉴编号和名字\n"
-            "卡比百科 [角色名]：查询 WiKirby 页面摘要和首图\n"
+            "卡比百科 [角色名]：查询 WiKirby 页面简介、资料和首图\n"
             "卡比百科名称 [角色名]：只查询页面的多语言官方名称\n"
             "管理员命令：星之卡比图鉴添加、换图、改名、迁移、清理旧名、删除重复"
         )

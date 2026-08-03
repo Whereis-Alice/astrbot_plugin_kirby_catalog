@@ -6,6 +6,7 @@ import html
 import json
 import re
 import time
+from html.parser import HTMLParser
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, unquote, urlencode, urlparse
@@ -16,7 +17,7 @@ FALLBACK_API_URL = "https://www.wikirby.com/w/api.php"
 DEFAULT_REST_URL = "https://wikirby.com/w/rest.php"
 FALLBACK_REST_URL = "https://www.wikirby.com/w/rest.php"
 USER_AGENT = (
-    "astrbot-plugin-kirby-catalog/2.4.1 "
+    "astrbot-plugin-kirby-catalog/2.6.1 "
     "(+https://github.com/Whereis-Alice/astrbot_plugin_kirby_catalog)"
 )
 _RETRYABLE_HTTP_CODES = {403, 408, 425, 429, 500, 502, 503, 504}
@@ -24,6 +25,26 @@ _RETRYABLE_HTTP_CODES = {403, 408, 425, 429, 500, 502, 503, 504}
 _NAMES_HEADING = re.compile(
     r"^==+\s*Names in other languages\s*==+\s*$", re.IGNORECASE | re.MULTILINE
 )
+_SECTION_HEADING = re.compile(r"^==\s*([^=\n]+?)\s*==\s*$", re.MULTILINE)
+_DETAIL_SECTION_LABELS = {
+    "locations": "出现地点",
+    "trivia": "趣闻",
+}
+_SKIPPED_DETAIL_SECTIONS = {
+    "gallery",
+    "names in other languages",
+    "references",
+}
+_INFOBOX_LABELS = {
+    "game1": "出现作品",
+    "game2": "出现作品",
+    "game3": "出现作品",
+    "copy ability": "提供能力",
+    "similar": "相似角色",
+    "species": "种类",
+    "gender": "性别",
+    "location": "出现地点",
+}
 _LANGUAGE_FIELDS = (
     ("ja", "日语", "jaR"),
     ("en", "英语", "enR"),
@@ -74,6 +95,86 @@ def _clean_wiki_value(value: str) -> str:
     return re.sub(r"\s+", " ", text).strip(" /")
 
 
+def _clean_wiki_block(value: str) -> str:
+    """Convert a small wikitext section to readable plain text."""
+    text = value or ""
+    while "{{" in text:
+        start = text.find("{{")
+        end = _find_template_end(text, start)
+        text = text[:start] + " " + text[end:]
+    text = re.sub(r"<!--[\s\S]*?-->", "", text)
+    text = re.sub(r"<gallery[\s\S]*?</gallery>", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"<ref[^>]*>[\s\S]*?</ref>|<ref[^>]*/>", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\[https?://[^\s\]]+\s+([^]]+)\]", r"\1", text)
+    text = re.sub(r"\[\[([^]|]+)\|([^]]+)\]\]", r"\2", text)
+    text = re.sub(r"\[\[([^]]+)\]\]", r"\1", text)
+    text = re.sub(r"<br\s*/?>", " ", text, flags=re.IGNORECASE)
+    text = re.sub(r"<[^>]+>", "", text)
+    text = text.replace("'''", "").replace("''", "")
+    text = html.unescape(text)
+    lines = []
+    for line in text.splitlines():
+        line = re.sub(r"[ \t]+", " ", line).strip()
+        if not line:
+            continue
+        if line.startswith(("*", "#")):
+            line = "• " + line.lstrip("*#").strip()
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def parse_page_details(
+    wikitext: str, rendered_html: str = ""
+) -> dict[str, list[dict[str, str]]]:
+    """Extract selected infobox fields and useful prose sections."""
+    source = wikitext or ""
+    infobox_rows: list[dict[str, str]] = []
+    infobox_match = re.search(r"\{\{\s*Infobox[^\n]*", source, re.IGNORECASE)
+    if infobox_match:
+        end = _find_template_end(source, infobox_match.start())
+        block = source[infobox_match.start() : end]
+        for raw_line in block.splitlines():
+            line = raw_line.strip()
+            if not line.startswith("|") or "=" not in line:
+                continue
+            key, value = line[1:].split("=", 1)
+            label = _INFOBOX_LABELS.get(key.strip().casefold())
+            clean_value = _clean_wiki_value(value)
+            if label and clean_value:
+                if infobox_rows and infobox_rows[-1]["label"] == label:
+                    infobox_rows[-1]["value"] += "、" + clean_value
+                else:
+                    infobox_rows.append({"label": label, "value": clean_value})
+
+    sections: list[dict[str, str]] = []
+    headings = list(_SECTION_HEADING.finditer(source))
+    for index, heading in enumerate(headings):
+        title = heading.group(1).strip()
+        folded_title = title.casefold()
+        if folded_title in _SKIPPED_DETAIL_SECTIONS:
+            continue
+        section_end = headings[index + 1].start() if index + 1 < len(headings) else len(source)
+        content = _clean_wiki_block(source[heading.end() : section_end])
+        if not content:
+            continue
+        sections.append(
+            {
+                "title": _DETAIL_SECTION_LABELS.get(folded_title, title),
+                "text": content,
+            }
+        )
+    locations = parse_locations_html(rendered_html)
+    if locations:
+        for section in sections:
+            if section["title"] == "出现地点":
+                section["text"] = (
+                    f'{section["text"].rstrip()}\n'
+                    + "\n".join(f"• {location}" for location in locations)
+                )
+                break
+    return {"infobox": infobox_rows, "sections": sections}
+
+
 def _find_template_end(text: str, start: int) -> int:
     depth = 0
     index = start
@@ -90,6 +191,109 @@ def _find_template_end(text: str, start: int) -> int:
             continue
         index += 1
     return len(text)
+
+
+class _RenderedTableParser(HTMLParser):
+    """Collect simple cells from rendered MediaWiki tables."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.tables: list[list[list[dict[str, Any]]]] = []
+        self._table_depth = 0
+        self._current_table: list[list[dict[str, Any]]] | None = None
+        self._current_row: list[dict[str, Any]] | None = None
+        self._current_cell: dict[str, Any] | None = None
+        self._current_link: list[str] | None = None
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attributes = dict(attrs)
+        if tag == "table":
+            if self._table_depth == 0 and "wikitable" in {
+                value for value in (attributes.get("class") or "").split()
+            }:
+                self._current_table = []
+            self._table_depth += 1
+            return
+        if self._table_depth != 1 or self._current_table is None:
+            return
+        if tag == "tr":
+            self._current_row = []
+            return
+        if tag in {"th", "td"} and self._current_row is not None:
+            self._current_cell = {
+                "tag": tag,
+                "text": [],
+                "links": [],
+                "image_alts": [],
+            }
+            self._current_row.append(self._current_cell)
+            return
+        if tag == "a" and self._current_cell is not None:
+            self._current_link = []
+            return
+        if tag == "img" and self._current_cell is not None:
+            alt = (attributes.get("alt") or "").strip()
+            if alt:
+                self._current_cell["image_alts"].append(alt)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "table":
+            self._table_depth = max(0, self._table_depth - 1)
+            if self._table_depth == 0 and self._current_table is not None:
+                self.tables.append(self._current_table)
+                self._current_table = None
+            return
+        if self._table_depth != 1:
+            return
+        if tag == "a" and self._current_cell is not None and self._current_link is not None:
+            link_text = " ".join(self._current_link).strip()
+            if link_text:
+                self._current_cell["links"].append(link_text)
+            self._current_link = None
+        elif tag in {"th", "td"}:
+            self._current_cell = None
+            self._current_link = None
+        elif tag == "tr" and self._current_table is not None and self._current_row is not None:
+            if self._current_row:
+                self._current_table.append(self._current_row)
+            self._current_row = None
+
+    def handle_data(self, data: str) -> None:
+        if self._current_cell is None:
+            return
+        self._current_cell["text"].append(data)
+        if self._current_link is not None:
+            self._current_link.append(data)
+
+
+def parse_locations_html(rendered_html: str) -> list[str]:
+    """Extract stages marked Yes from the rendered Locations table."""
+    if not rendered_html:
+        return []
+    parser = _RenderedTableParser()
+    parser.feed(rendered_html)
+    parser.close()
+
+    locations: list[str] = []
+    for table in parser.tables:
+        for row in table:
+            for index in range(len(row) - 1):
+                stage_cell = row[index]
+                appearance_cell = row[index + 1]
+                if stage_cell["tag"] != "td" or appearance_cell["tag"] != "td":
+                    continue
+                if not any(
+                    str(value).casefold() == "yes"
+                    for value in appearance_cell["image_alts"]
+                ):
+                    continue
+                names = stage_cell["links"] or [
+                    re.sub(r"\s+", " ", " ".join(stage_cell["text"])).strip()
+                ]
+                name = names[0].strip() if names else ""
+                if name and name not in locations:
+                    locations.append(name)
+    return locations
 
 
 def _names_template_block(wikitext: str) -> str:
@@ -712,5 +916,45 @@ class WikirbyClient:
         if not wikitext:
             wikitext = await self.get_wikitext(str(page.get("title", "")))
         result = parse_language_names(wikitext)
+        self._cache_set(key, result)
+        return result
+
+    async def _get_rendered_page_html(self, title: str) -> str:
+        """Render a page through MediaWiki so template-backed tables are readable."""
+        data = await self._request(
+            {
+                "action": "parse",
+                "page": title,
+                "prop": "text",
+                "disabletoc": 1,
+            }
+        )
+        parsed = data.get("parse", {})
+        rendered = parsed.get("text", "") if isinstance(parsed, dict) else ""
+        if isinstance(rendered, dict):
+            rendered = rendered.get("*", "")
+        return str(rendered or "")
+
+    async def get_page_details(self, page: dict[str, Any]) -> dict[str, list[dict[str, str]]]:
+        """Load selected readable details from a page's full wikitext."""
+        pageid = page.get("pageid", 0)
+        revision = page.get("lastrevid", 0)
+        key = f"details:{pageid}:{revision}"
+        cached = self._cache_get(key)
+        if cached is not None:
+            return cached
+        wikitext = str(page.get("wikitext", "") or "")
+        if not wikitext:
+            wikitext = await self.get_wikitext(str(page.get("title", "")))
+        rendered_html = ""
+        if re.search(r"^==+\s*Locations\s*==+", wikitext, re.IGNORECASE | re.MULTILINE):
+            try:
+                rendered_html = await self._get_rendered_page_html(
+                    str(page.get("title", ""))
+                )
+            except WikirbyError:
+                # Wikitext still provides the section introduction if rendering is blocked.
+                pass
+        result = parse_page_details(wikitext, rendered_html)
         self._cache_set(key, result)
         return result

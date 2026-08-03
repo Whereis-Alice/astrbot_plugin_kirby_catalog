@@ -9,6 +9,8 @@ from astrbot_plugin_kirby_catalog.wikirby import (
     WikirbyClient,
     WikirbyError,
     parse_language_names,
+    parse_locations_html,
+    parse_page_details,
 )
 
 
@@ -45,6 +47,9 @@ class FakeWikirby:
             {"language": "简体中文", "name": "噗噜鳗", "romanisation": "pū lū màn"},
             {"language": "英语", "name": "Driblee"},
         ]
+
+    async def get_page_details(self, page):
+        return {"infobox": [], "sections": []}
 
 
 class FakeTranslationContext:
@@ -217,6 +222,80 @@ class WikirbyParserTests(unittest.TestCase):
             WikirbyClient._score_page(query, work_specific),
         )
 
+    def test_extracts_selected_page_details_without_gallery_or_names(self):
+        wikitext = """
+{{Infobox-Enemy
+|game1=''[[Kirby Star Allies]]'' (2018)
+|copy ability=[[Water]]
+|similar=[[Water Galbo]], [[Colossal Driblee]]
+}}
+==Locations==
+Driblee can be found in the following stages:
+{{Appearances-KSA|DoD=y}}
+==Trivia==
+*It appears in a trailer.
+==Gallery==
+{{center|<gallery>file.png</gallery>}}
+==Names in other languages==
+{{Names|en=Driblee}}
+"""
+
+        details = parse_page_details(wikitext)
+
+        self.assertEqual(
+            details["infobox"],
+            [
+                {"label": "出现作品", "value": "Kirby Star Allies (2018)"},
+                {"label": "提供能力", "value": "Water"},
+                {"label": "相似角色", "value": "Water Galbo, Colossal Driblee"},
+            ],
+        )
+        self.assertEqual(details["sections"][0]["title"], "出现地点")
+        self.assertIn("following stages", details["sections"][0]["text"])
+        self.assertEqual(details["sections"][1]["title"], "趣闻")
+        self.assertNotIn("Gallery", " ".join(row["title"] for row in details["sections"]))
+        self.assertNotIn("Names", " ".join(row["title"] for row in details["sections"]))
+
+    def test_extracts_yes_locations_from_rendered_wikitable(self):
+        rendered_html = """
+        <table class="wikitable mw-collapsible">
+          <tr><th>Stage</th><th>Appearance?</th></tr>
+          <tr>
+            <td><a href="/wiki/Falluna_Moon">Falluna Moon</a></td>
+            <td><img alt="Yes" src="yes.png"></td>
+          </tr>
+          <tr>
+            <td><a href="/wiki/Planet_Earthfall">Planet Earthfall</a></td>
+            <td><img alt="No" src="no.png"></td>
+          </tr>
+          <tr>
+            <td><a href="/wiki/Donut_Dome">Donut Dome</a></td>
+            <td><img alt="Yes" src="yes.png"></td>
+          </tr>
+        </table>
+        <table class="navbox"><tr><td>Do not include</td></tr></table>
+        """
+
+        self.assertEqual(
+            parse_locations_html(rendered_html),
+            ["Falluna Moon", "Donut Dome"],
+        )
+
+    def test_merges_rendered_locations_into_page_details(self):
+        details = parse_page_details(
+            """\n==Locations==
+Driblee can be found in the following stages:
+{{Appearances-KSA|DoD=y}}
+""",
+            """
+            <table class="wikitable">
+              <tr><td><a>Donut Dome</a></td><td><img alt="Yes"></td></tr>
+            </table>
+            """,
+        )
+
+        self.assertIn("• Donut Dome", details["sections"][0]["text"])
+
 
 class WikirbyCommandTests(unittest.IsolatedAsyncioTestCase):
     async def test_page_falls_back_to_rest_when_mediawiki_api_is_blocked(self):
@@ -272,6 +351,19 @@ class WikirbyCommandTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(results), 1)
         self.assertIn("WiKirby：Driblee", results[0][0].text)
         self.assertIn("来源：https://wikirby.com/wiki/Driblee", results[0][0].text)
+        self.assertNotIn("剧透", results[0][0].text)
+
+    async def test_official_names_are_available_as_llm_tool(self):
+        plugin = KirbyCatalogPlugin.__new__(KirbyCatalogPlugin)
+        plugin.config = {"wikirby_enabled": True}
+        plugin.wikirby = FakeWikirby()
+
+        result = await plugin.wikirby_lookup_official_names(
+            FakeEvent(""), "Driblee"
+        )
+
+        self.assertIn("简体中文：噗噜鳗（pū lū màn）", result)
+        self.assertIn("来源：https://wikirby.com/wiki/Driblee", result)
 
     async def test_plain_handler_does_not_duplicate_wake_command(self):
         plugin = KirbyCatalogPlugin.__new__(KirbyCatalogPlugin)
