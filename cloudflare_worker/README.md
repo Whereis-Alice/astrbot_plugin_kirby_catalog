@@ -24,7 +24,7 @@
 ```bash
 curl -i \
   -H 'Authorization: Bearer 你的密钥' \
-  'https://你的-worker.workers.dev/?path=%2Fw%2Fapi.php&format=json&formatversion=2&titles=Driblee'
+  'https://你的-worker.workers.dev/?path=%2Fw%2Fapi.php&action=query&format=json&formatversion=2&titles=Driblee'
 ```
 
 看到 `HTTP/2 200` 且响应中有 `"title":"Driblee"`，说明中转可用。若 Worker 自己也收到 403，说明 WiKirby 连 Cloudflare Worker 出口也拦截了，此方案无法解决，需要联系 WiKirby 管理员或换一个经允许的中转出口。
