@@ -11,6 +11,12 @@ from urllib.parse import unquote, urlencode, urlparse
 from urllib.request import Request, urlopen
 
 DEFAULT_API_URL = "https://wikirby.com/w/api.php"
+FALLBACK_API_URL = "https://www.wikirby.com/w/api.php"
+USER_AGENT = (
+    "astrbot-plugin-kirby-catalog/2.2.1 "
+    "(+https://github.com/Whereis-Alice/astrbot_plugin_kirby_catalog)"
+)
+_RETRYABLE_HTTP_CODES = {403, 408, 425, 429, 500, 502, 503, 504}
 
 _NAMES_HEADING = re.compile(
     r"^==+\s*Names in other languages\s*==+\s*$", re.IGNORECASE | re.MULTILINE
@@ -143,6 +149,28 @@ class WikirbyClient:
         self._cache: dict[str, tuple[float, Any]] = {}
         self._request_limit = asyncio.Semaphore(2)
 
+    def _api_urls(self) -> tuple[str, ...]:
+        """Return the configured API and the alternate WiKirby hostname."""
+        if self.api_url == DEFAULT_API_URL:
+            return (DEFAULT_API_URL, FALLBACK_API_URL)
+        urls = [self.api_url]
+        parsed = urlparse(self.api_url)
+        hostname = (parsed.hostname or "").lower()
+        if hostname in {"wikirby.com", "www.wikirby.com"}:
+            alternate_host = "www.wikirby.com" if hostname == "wikirby.com" else "wikirby.com"
+            alternate = parsed._replace(netloc=alternate_host).geturl()
+            if alternate not in urls:
+                urls.append(alternate)
+        return tuple(urls)
+
+    @staticmethod
+    def _retry_delay(error: HTTPError, attempt: int) -> float:
+        retry_after = error.headers.get("Retry-After") if error.headers else None
+        try:
+            return max(0.2, min(float(retry_after), 3.0))
+        except (TypeError, ValueError):
+            return 0.4 * (2**attempt)
+
     async def close(self) -> None:
         self._cache.clear()
 
@@ -163,24 +191,53 @@ class WikirbyClient:
 
     def _request_sync(self, params: dict[str, Any]) -> dict[str, Any]:
         query = {"format": "json", "formatversion": "2", **params}
-        separator = "&" if "?" in self.api_url else "?"
-        url = f"{self.api_url}{separator}{urlencode(query)}"
-        request = Request(
-            url,
-            headers={
-                "Accept": "application/json",
-                "User-Agent": "astrbot-plugin-kirby-catalog/2.2",
-            },
-        )
-        try:
-            with urlopen(request, timeout=self.timeout_seconds) as response:
-                raw = response.read()
-        except HTTPError as exc:
-            raise WikirbyError(f"WiKirby API 返回 HTTP {exc.code}") from exc
-        except URLError as exc:
-            raise WikirbyError("无法连接 WiKirby，请稍后再试") from exc
-        except TimeoutError as exc:
-            raise WikirbyError("WiKirby 请求超时，请稍后再试") from exc
+        raw: bytes | None = None
+        last_http_error: HTTPError | None = None
+        last_url_error: URLError | None = None
+        for api_url in self._api_urls():
+            separator = "&" if "?" in api_url else "?"
+            url = f"{api_url}{separator}{urlencode(query)}"
+            request = Request(
+                url,
+                headers={
+                    "Accept": "application/json",
+                    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+                    "Referer": "https://wikirby.com/",
+                    "User-Agent": USER_AGENT,
+                },
+            )
+            for attempt in range(2):
+                try:
+                    with urlopen(request, timeout=self.timeout_seconds) as response:
+                        raw = response.read()
+                except HTTPError as exc:
+                    last_http_error = exc
+                    if exc.code not in _RETRYABLE_HTTP_CODES or attempt == 1:
+                        break
+                    time.sleep(self._retry_delay(exc, attempt))
+                except URLError as exc:
+                    last_url_error = exc
+                    if attempt == 1:
+                        break
+                    time.sleep(0.4 * (2**attempt))
+                except TimeoutError as exc:
+                    last_url_error = URLError(str(exc))
+                    if attempt == 1:
+                        break
+                    time.sleep(0.4 * (2**attempt))
+                else:
+                    break
+            if raw is not None:
+                break
+
+        if raw is None:
+            if last_http_error is not None:
+                raise WikirbyError(
+                    f"WiKirby API 返回 HTTP {last_http_error.code}，请稍后再试"
+                ) from last_http_error
+            if last_url_error is not None:
+                raise WikirbyError("无法连接 WiKirby，请稍后再试") from last_url_error
+            raise WikirbyError("无法连接 WiKirby，请稍后再试")
 
         try:
             data = json.loads(raw.decode("utf-8"))

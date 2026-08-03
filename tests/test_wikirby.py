@@ -1,5 +1,8 @@
 import unittest
+from io import BytesIO
 from types import SimpleNamespace
+from unittest.mock import patch
+from urllib.error import HTTPError
 
 from astrbot_plugin_kirby_catalog.main import KirbyCatalogPlugin
 from astrbot_plugin_kirby_catalog.wikirby import WikirbyClient, parse_language_names
@@ -38,7 +41,53 @@ class FakeWikirby:
         ]
 
 
+class FakeResponse:
+    def __init__(self, body):
+        self.body = body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        return None
+
+    def read(self):
+        return self.body
+
+
 class WikirbyParserTests(unittest.TestCase):
+    def test_api_urls_include_alternate_wikirby_hostname(self):
+        client = WikirbyClient()
+
+        self.assertEqual(
+            client._api_urls(),
+            (
+                "https://wikirby.com/w/api.php",
+                "https://www.wikirby.com/w/api.php",
+            ),
+        )
+
+    def test_api_request_retries_403_then_uses_alternate_hostname(self):
+        error = HTTPError(
+            "https://wikirby.com/w/api.php",
+            403,
+            "Forbidden",
+            {"Retry-After": "0"},
+            BytesIO(),
+        )
+        response = FakeResponse(b'{"query":{"pages":[]}}')
+        client = WikirbyClient(cache_ttl_seconds=0)
+
+        with patch(
+            "astrbot_plugin_kirby_catalog.wikirby.urlopen",
+            side_effect=[error, error, response],
+        ) as open_url, patch("astrbot_plugin_kirby_catalog.wikirby.time.sleep"):
+            data = client._request_sync({"action": "query"})
+
+        self.assertEqual(data, {"query": {"pages": []}})
+        self.assertEqual(open_url.call_count, 3)
+        self.assertIn("www.wikirby.com", open_url.call_args_list[-1].args[0].full_url)
+
     def test_extracts_language_names_without_meanings(self):
         wikitext = """
 ==Names in other languages==
