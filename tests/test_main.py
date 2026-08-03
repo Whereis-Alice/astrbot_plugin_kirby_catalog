@@ -4,6 +4,8 @@ import unittest
 from types import SimpleNamespace
 
 from astrbot.api import message_components as Comp
+from astrbot.core.star.filter.regex import RegexFilter
+from astrbot.core.star.star_handler import star_handlers_registry
 
 from astrbot_plugin_kirby_catalog.main import KirbyCatalogPlugin
 
@@ -225,6 +227,35 @@ class GuessFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("已解锁：102/409", results[0])
         self.assertIn("24.9%", results[0])
         self.assertIn("还差 307 个盟友", results[0])
+
+
+class DrawHandlerRegistrationTests(unittest.TestCase):
+    def test_draw_commands_share_one_regex_handler(self):
+        handler_name = f"{KirbyCatalogPlugin.draw_ally.__module__}_draw_ally"
+        handler = star_handlers_registry.get_handler_by_full_name(handler_name)
+
+        self.assertIsNotNone(handler)
+        regex_filters = [
+            item for item in handler.event_filters if isinstance(item, RegexFilter)
+        ]
+        self.assertEqual(len(regex_filters), 1)
+
+        command_pattern = regex_filters[0].regex
+        for message in (
+            "今日盟友",
+            "/今日盟友",
+            "抽盟友",
+            "/抽盟友",
+            "抽取盟友",
+            "/抽取盟友",
+        ):
+            with self.subTest(message=message):
+                self.assertIsNotNone(command_pattern.fullmatch(message))
+
+        old_handler_name = f"{KirbyCatalogPlugin.draw_ally.__module__}_draw_ally_plain"
+        self.assertIsNone(
+            star_handlers_registry.get_handler_by_full_name(old_handler_name)
+        )
 
 
 if __name__ == "__main__":

@@ -45,7 +45,7 @@ IMAGE_BASE_URL = "http://save.my996.top/?/img/"
     PLUGIN_ID,
     "Whereis-Alice",
     "星之卡比盟友抽取、收藏图鉴与双百科查询插件",
-    "2.10.2",
+    "2.10.3",
     "https://github.com/Whereis-Alice/astrbot_plugin_kirby_catalog",
 )
 class KirbyCatalogPlugin(Star):
@@ -1647,16 +1647,10 @@ class KirbyCatalogPlugin(Star):
         )
         yield event.chain_result(await self._ally_chain(entry, text))
 
-    @filter.command("今日盟友", alias={"抽盟友", "抽取盟友"})
+    @filter.regex(r"^/?(?:今日盟友|抽盟友|抽取盟友)$")
     @filter.event_message_type(EventMessageType.GROUP_MESSAGE)
     async def draw_ally(self, event: AstrMessageEvent):
-        async for result in self._draw_ally_impl(event):
-            yield result
-
-    @filter.regex(r"^今日盟友$")
-    @filter.event_message_type(EventMessageType.GROUP_MESSAGE)
-    async def draw_ally_plain(self, event: AstrMessageEvent):
-        """让普通文本“今日盟友”也能触发抽取。"""
+        """统一处理带斜杠和纯文本的盟友抽取，避免双 Handler 重复抽取。"""
         async for result in self._draw_ally_impl(event):
             yield result
 
