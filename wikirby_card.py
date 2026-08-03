@@ -321,7 +321,7 @@ WIKIRBY_CARD_TEMPLATE = r"""
 
     .rich-heading {
       display: grid;
-      grid-template-columns: 9px minmax(0, 1fr) auto;
+      grid-template-columns: 9px minmax(0, 1fr);
       gap: 12px;
       align-items: center;
       margin-bottom: 15px;
@@ -349,17 +349,6 @@ WIKIRBY_CARD_TEMPLATE = r"""
       font-weight: 600;
       line-height: 1.45;
       overflow-wrap: anywhere;
-    }
-
-    .rich-count {
-      padding: 7px 10px;
-      color: {{ theme.chip_text }};
-      background: {{ theme.chip }};
-      border: 1px solid {{ theme.border }};
-      border-radius: 3px;
-      font-size: 14px;
-      font-weight: 800;
-      white-space: nowrap;
     }
 
     .quote-list {
@@ -536,12 +525,11 @@ WIKIRBY_CARD_TEMPLATE = r"""
       white-space: pre-line;
     }
 
-    .rich-omitted {
+    .rich-warning {
       margin-top: 10px;
       color: {{ theme.muted }};
       font-size: 14px;
       font-weight: 700;
-      text-align: right;
     }
 
     .details-columns {
@@ -986,9 +974,6 @@ WIKIRBY_CARD_TEMPLATE = r"""
               <div class="rich-context">{{ section.context | e }}</div>
               {% endif %}
             </div>
-            <div class="rich-count">
-              {% if section.omitted_count %}已显示 {{ section.item_count }}/{{ section.total_count }} 项{% else %}{{ section.item_count }} 项{% endif %}
-            </div>
           </div>
           {% if section.kind == 'quotes' %}
           <div class="quote-list">
@@ -1044,8 +1029,8 @@ WIKIRBY_CARD_TEMPLATE = r"""
             </section>
             {% endfor %}
           {% endif %}
-          {% if section.omitted_count %}
-          <div class="rich-omitted">另有 {{ section.omitted_count }} 项未显示</div>
+          {% if section.incomplete %}
+          <div class="rich-warning">该栏目有部分内容未能完整解析，请打开来源页面核对。</div>
           {% endif %}
         </section>
         {% endfor %}
@@ -1162,7 +1147,7 @@ def _prepare_rich_sections(
             continue
         kind = str(section.get("kind", "") or "").strip()
         context = str(section.get("context", "") or "").strip()
-        omitted_count = max(0, int(section.get("omitted_count", 0) or 0))
+        incomplete = bool(int(section.get("omitted_count", 0) or 0))
         if kind == "quotes":
             quotes: list[dict[str, str]] = []
             for quote in section.get("quotes", []) or []:
@@ -1188,16 +1173,13 @@ def _prepare_rich_sections(
                     "display_title": "相关语录",
                     "context": context,
                     "quotes": quotes,
-                    "item_count": len(quotes),
-                    "total_count": len(quotes) + omitted_count,
-                    "omitted_count": omitted_count,
+                    "incomplete": incomplete,
                 }
             )
             continue
         if kind != "techniques":
             continue
         groups: list[dict[str, Any]] = []
-        item_count = 0
         for group in section.get("groups", []) or []:
             if not isinstance(group, dict):
                 continue
@@ -1226,7 +1208,6 @@ def _prepare_rich_sections(
                         "rows": rows,
                     }
                 )
-                item_count += len(rows)
         if groups:
             prepared.append(
                 {
@@ -1235,9 +1216,7 @@ def _prepare_rich_sections(
                     "context": context,
                     "intro": str(section.get("intro", "") or "").strip(),
                     "groups": groups,
-                    "item_count": item_count,
-                    "total_count": item_count + omitted_count,
-                    "omitted_count": omitted_count,
+                    "incomplete": incomplete,
                 }
             )
     return prepared

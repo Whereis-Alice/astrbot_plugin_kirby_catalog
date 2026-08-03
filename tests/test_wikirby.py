@@ -381,6 +381,46 @@ Driblee can be found in the following stages:
         self.assertNotIn("Artwork", " ".join(item["text"] for item in sections))
         self.assertNotIn("Gallery", " ".join(item["title"] for item in sections))
 
+    def test_rendered_details_keep_all_table_rows_and_long_blocks(self):
+        long_cell = "Complete table cell " * 60
+        table_rows = "".join(
+            f"<tr><td>Row {index}</td><td>{long_cell if index == 54 else 'Value'}</td></tr>"
+            for index in range(55)
+        )
+        long_definition = "Definition text " * 50
+        long_flex = "Flexible detail " * 70
+        rendered_html = f"""
+        <div class="mw-parser-output">
+          <h2><span class="mw-headline">Game appearances</span></h2>
+          <table class="wikitable">
+            <tr><th>Entry</th><th>Description</th></tr>
+            {table_rows}
+          </table>
+          <dl><dt>Notes</dt><dd>{long_definition}</dd></dl>
+          <div style="display:flex">{long_flex}</div>
+        </div>
+        """
+
+        sections = parse_rendered_sections(rendered_html)
+        body = sections[0]["text"]
+
+        self.assertIn(f"• Row 54 — {long_cell.strip()}", body)
+        self.assertIn(long_definition.strip(), body)
+        self.assertIn(long_flex.strip(), body)
+        self.assertNotIn("...", body)
+
+    def test_wikitext_fallback_keeps_more_than_forty_table_rows(self):
+        table_rows = "\n".join(
+            f"|-\n| Row {index} || Value {index}" for index in range(55)
+        )
+        details = parse_page_details(
+            "==Game appearances==\n{| class=\"wikitable\"\n"
+            "! Entry !! Description\n"
+            f"{table_rows}\n|}}"
+        )
+
+        self.assertIn("• Row 54 — Value 54", details["sections"][0]["text"])
+
     def test_wikitext_fallback_removes_table_and_media_syntax(self):
         details = parse_page_details(
             dedent(
@@ -438,6 +478,8 @@ class WikirbyCardTests(unittest.TestCase):
         self.assertIn('class="facts-band"', html)
         self.assertNotIn('class="sidebar"', html)
         self.assertIn("提供能力", html)
+        self.assertNotIn("已显示", html)
+        self.assertNotIn("未显示", html)
 
     def test_card_layout_uses_facts_band_and_two_detail_columns(self):
         detail = "游戏登场：\n" + "\n".join(
@@ -475,6 +517,63 @@ class WikirbyCardTests(unittest.TestCase):
 
 
 class WikirbyClientDetailsTests(unittest.IsolatedAsyncioTestCase):
+    async def test_exact_page_request_and_fallback_summary_are_not_truncated(self):
+        client = WikirbyClient(cache_ttl_seconds=0, max_summary_chars=100)
+        summary = "Complete introduction. " * 150
+        client._request = AsyncMock(
+            return_value={
+                "query": {
+                    "pages": [
+                        {
+                            "pageid": 7,
+                            "title": "Waddle Doo",
+                            "extract": summary,
+                            "fullurl": "https://wikirby.com/wiki/Waddle_Doo",
+                            "lastrevid": 11,
+                        }
+                    ]
+                }
+            }
+        )
+
+        page = await client.get_page("Waddle Doo")
+        request_params = client._request.await_args.args[0]
+
+        self.assertNotIn("exchars", request_params)
+        self.assertEqual(page["summary"], summary.strip())
+        self.assertEqual(
+            client._summary_from_wikitext(summary, max_chars=100),
+            summary.strip(),
+        )
+
+    async def test_search_resolution_refetches_selected_page_in_full(self):
+        client = WikirbyClient(cache_ttl_seconds=0)
+        full_page = {
+            "pageid": 12,
+            "title": "Waddle Doo",
+            "summary": "Full selected-page introduction.",
+            "url": "https://wikirby.com/wiki/Waddle_Doo",
+        }
+        client.get_page = AsyncMock(side_effect=[None, full_page])
+        client.search_pages = AsyncMock(
+            return_value=[
+                {
+                    "pageid": 12,
+                    "title": "Waddle Doo",
+                    "snippet": "瓦豆鲁笃",
+                    "wordcount": 1000,
+                }
+            ]
+        )
+
+        result = await client.resolve("瓦豆鲁笃")
+
+        self.assertEqual(result, {"kind": "page", "page": full_page})
+        self.assertEqual(
+            [call.args[0] for call in client.get_page.await_args_list],
+            ["瓦豆鲁笃", "Waddle Doo"],
+        )
+
     async def test_details_always_request_rendered_html(self):
         client = WikirbyClient(cache_ttl_seconds=0)
         page = {

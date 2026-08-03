@@ -20,7 +20,7 @@ FALLBACK_API_URL = "https://www.wikirby.com/w/api.php"
 DEFAULT_REST_URL = "https://wikirby.com/w/rest.php"
 FALLBACK_REST_URL = "https://www.wikirby.com/w/rest.php"
 USER_AGENT = (
-    "astrbot-plugin-kirby-catalog/2.10.1 "
+    "astrbot-plugin-kirby-catalog/2.10.2 "
     "(+https://github.com/Whereis-Alice/astrbot_plugin_kirby_catalog)"
 )
 _RETRYABLE_HTTP_CODES = {403, 408, 425, 429, 500, 502, 503, 504}
@@ -194,7 +194,7 @@ def _clean_wiki_table(table_text: str) -> str:
     flush()
 
     output: list[str] = []
-    for values in rows[:40]:
+    for values in rows:
         if len(values) == 1:
             output.append(values[0])
         else:
@@ -271,7 +271,7 @@ def parse_rendered_sections(rendered_html: str) -> list[dict[str, str]]:
             continue
         if child.name == "dl":
             value = _rendered_text(child)
-            if value and len(value) <= 500:
+            if value:
                 parts.append(value)
             continue
         if child.name == "table":
@@ -287,7 +287,7 @@ def parse_rendered_sections(rendered_html: str) -> list[dict[str, str]]:
             continue
         if child.name == "div" and "display:flex" in str(child.get("style", "")):
             value = _rendered_text(child)
-            if value and len(value) <= 800:
+            if value:
                 parts.append(value)
     flush()
     return sections
@@ -332,11 +332,7 @@ def _rendered_table_lines(table: Tag) -> list[str]:
                 output.append(values[0])
             continue
         line = " — ".join(values)
-        if len(line) > 700:
-            line = line[:697].rsplit(" ", 1)[0].rstrip() + "..."
         output.append(f"• {line}")
-        if len(output) >= 40:
-            break
     return output
 
 
@@ -734,14 +730,13 @@ class WikirbyClient:
         api_url: str = DEFAULT_API_URL,
         timeout_seconds: float = 12.0,
         cache_ttl_seconds: int = 3600,
-        max_summary_chars: int = 1800,
+        max_summary_chars: int | None = None,
         proxy_url: str = "",
         proxy_token: str = "",
     ) -> None:
         self.api_url = api_url.strip() or DEFAULT_API_URL
         self.timeout_seconds = max(2.0, float(timeout_seconds))
         self.cache_ttl_seconds = max(0, int(cache_ttl_seconds))
-        self.max_summary_chars = max(300, int(max_summary_chars))
         self.proxy_url = proxy_url.strip().rstrip("/")
         self.proxy_token = proxy_token.strip()
         self._cache: dict[str, tuple[float, Any]] = {}
@@ -962,8 +957,13 @@ class WikirbyClient:
         )
 
     @staticmethod
-    def _summary_from_wikitext(wikitext: str, max_chars: int) -> str:
-        """Extract a short readable introduction from REST wikitext."""
+    def _summary_from_wikitext(
+        wikitext: str, max_chars: int | None = None
+    ) -> str:
+        """Extract the complete readable introduction from REST wikitext.
+
+        ``max_chars`` remains in the signature for compatibility and is ignored.
+        """
         text = re.split(r"^==+\s*", wikitext or "", maxsplit=1, flags=re.MULTILINE)[0]
         while "{{" in text:
             start = text.find("{{")
@@ -976,10 +976,7 @@ class WikirbyClient:
         text = re.sub(r"<[^>]+>", "", text)
         text = text.replace("'''", "").replace("''", "")
         text = html.unescape(text)
-        text = re.sub(r"\s+", " ", text).strip()
-        if len(text) <= max_chars:
-            return text
-        return text[:max_chars].rsplit(" ", 1)[0].rstrip() + "..."
+        return re.sub(r"\s+", " ", text).strip()
 
     @staticmethod
     def _image_url_from_wikitext(wikitext: str) -> str:
@@ -1008,9 +1005,7 @@ class WikirbyClient:
         return {
             "pageid": int(data.get("id", 0) or 0),
             "title": actual_title,
-            "summary": self._summary_from_wikitext(
-                source, self.max_summary_chars
-            ),
+            "summary": self._summary_from_wikitext(source),
             "url": self._page_url(actual_title),
             "image_url": self._image_url_from_wikitext(source),
             "lastrevid": int(latest.get("id", 0) or 0),
@@ -1064,9 +1059,7 @@ class WikirbyClient:
         return {
             "pageid": 0,
             "title": title,
-            "summary": self._summary_from_wikitext(
-                wikitext, self.max_summary_chars
-            ),
+            "summary": self._summary_from_wikitext(wikitext),
             "url": self._page_url(title),
             "image_url": self._image_url_from_wikitext(wikitext),
             "lastrevid": 0,
@@ -1099,7 +1092,6 @@ class WikirbyClient:
                     "inprop": "url",
                     "exintro": 1,
                     "explaintext": 1,
-                    "exchars": min(self.max_summary_chars, 1200),
                     "piprop": "thumbnail",
                     "pithumbsize": 600,
                 }
@@ -1161,11 +1153,8 @@ class WikirbyClient:
                     "action": "query",
                     "pageids": "|".join(pageids),
                     "redirects": 1,
-                    "prop": "info|extracts|pageimages",
+                    "prop": "info|pageimages",
                     "inprop": "url",
-                    "exintro": 1,
-                    "explaintext": 1,
-                    "exchars": min(self.max_summary_chars, 1200),
                     "piprop": "thumbnail",
                     "pithumbsize": 600,
                 }
@@ -1252,8 +1241,13 @@ class WikirbyClient:
             return {"error": "not_found", "query": query}
         for page in ranked:
             page["score"] = self._score_page(query, page)
-        if len(ranked) == 1 or ranked[0]["score"] >= 80 or ranked[0]["score"] - ranked[1]["score"] >= 12:
-            return {"kind": "page", "page": ranked[0]}
+        if (
+            len(ranked) == 1
+            or ranked[0]["score"] >= 80
+            or ranked[0]["score"] - ranked[1]["score"] >= 12
+        ):
+            page = await self.get_page(str(ranked[0]["title"]))
+            return {"kind": "page", "page": page} if page else {"error": "not_found"}
         return {"kind": "candidates", "candidates": ranked[:5]}
 
     async def get_wikitext(self, title: str) -> str:

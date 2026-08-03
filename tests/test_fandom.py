@@ -5,7 +5,6 @@ from unittest.mock import AsyncMock
 
 from astrbot_plugin_kirby_catalog.kirby_fandom import (
     KirbyFandomClient,
-    _trim_rich_sections,
     parse_fandom_image_url,
     parse_fandom_infobox,
     parse_fandom_intro,
@@ -259,68 +258,90 @@ class FandomParserTests(unittest.TestCase):
         self.assertEqual(len(details["rich_sections"]), 1)
         self.assertEqual(details["rich_sections"][0]["kind"], "techniques")
 
-    def test_rich_section_budget_keeps_each_game_and_control_type(self):
-        long_description = "A detailed move description. " * 16
-        sections = [
-            {
-                "kind": "techniques",
-                "title": "Techniques",
-                "context": "Games · First Game",
-                "ancestors": ["Games", "First Game"],
-                "intro": "",
-                "groups": [
-                    {
-                        "label": label,
-                        "rows": [
-                            {
-                                "move": f"Move {index}",
-                                "controls": "左摇杆↓ + B",
-                                "description": long_description,
-                                "damage": "12",
-                            }
-                            for index in range(3)
-                        ],
-                    }
-                    for label in ("Type A", "Type B")
-                ],
-                "omitted_count": 0,
-            },
-            {
-                "kind": "techniques",
-                "title": "Techniques",
-                "context": "Games · Second Game",
-                "ancestors": ["Games", "Second Game"],
-                "intro": "",
-                "groups": [
-                    {
-                        "label": "",
-                        "rows": [
-                            {
-                                "move": f"Move {index}",
-                                "controls": "下方向键",
-                                "description": long_description,
-                                "damage": "10",
-                            }
-                            for index in range(3)
-                        ],
-                    }
-                ],
-                "omitted_count": 0,
-            },
-        ]
-
-        selected, _ = _trim_rich_sections(sections, 1800)
-
-        self.assertEqual(
-            [section["context"] for section in selected],
-            ["Games · First Game", "Games · Second Game"],
+    def test_rich_sections_keep_every_quote_and_technique_without_truncation(self):
+        quote_tables = "".join(
+            (
+                '<table class="br-5px"><tr><td>“</td>'
+                f'<td><i>Quote {index}</i>”</td></tr></table>'
+            )
+            for index in range(25)
         )
-        self.assertEqual(
-            [group["label"] for group in selected[0]["groups"]],
-            ["Type A", "Type B"],
+        long_description = "Detailed technique description. " * 50
+        technique_rows = "".join(
+            (
+                f"<tr><td>Move {index}</td><td>B</td>"
+                f"<td>{long_description if index == 0 else 'Description'}</td>"
+                "<td>12</td></tr>"
+            )
+            for index in range(40)
         )
-        self.assertGreater(selected[0]["omitted_count"], 0)
-        self.assertGreater(selected[1]["omitted_count"], 0)
+        rendered_html = f"""
+        <div class="mw-parser-output">
+          <h2><span class="mw-headline">Related Quotes</span></h2>
+          {quote_tables}
+          <h2><span class="mw-headline">Games</span></h2>
+          <h3><span class="mw-headline">Kirby Game</span></h3>
+          <h4><span class="mw-headline">Techniques</span></h4>
+          <table class="wikitable">
+            <tr><th>Move</th><th>Controls</th><th>Description</th><th>Damage</th></tr>
+            {technique_rows}
+          </table>
+        </div>
+        """
+
+        rich = parse_fandom_rich_sections(
+            rendered_html,
+            max_quotes=1,
+            max_technique_rows=1,
+        )
+        quotes = next(row for row in rich if row["kind"] == "quotes")
+        techniques = next(row for row in rich if row["kind"] == "techniques")
+        rows = techniques["groups"][0]["rows"]
+
+        self.assertEqual(len(quotes["quotes"]), 25)
+        self.assertEqual(len(rows), 40)
+        self.assertEqual(rows[0]["description"], long_description.strip())
+        self.assertGreater(len(rows[0]["description"]), 1200)
+        self.assertNotIn("omitted_count", quotes)
+        self.assertNotIn("omitted_count", techniques)
+
+    def test_intro_infobox_sections_and_categories_are_complete(self):
+        intro = "Full introduction sentence. " * 100
+        infobox = "".join(
+            (
+                '<div class="pi-data">'
+                f'<span class="pi-data-label">Field {index}</span>'
+                f'<div class="pi-data-value">Value {index}</div></div>'
+            )
+            for index in range(24)
+        )
+        rendered_html = (
+            '<div class="mw-parser-output"><aside class="portable-infobox">'
+            + infobox
+            + f"</aside><p>{intro}</p></div>"
+        )
+        page = {
+            "sections": [
+                {"title": f"Section {index}", "text": f"Body {index}"}
+                for index in range(75)
+            ],
+            "rich_sections": [],
+            "section_index": [],
+            "infobox": parse_fandom_infobox(rendered_html),
+            "categories": [f"Category {index}" for index in range(15)],
+        }
+        client = KirbyFandomClient(
+            cache_ttl_seconds=0,
+            max_summary_chars=100,
+            max_detail_chars=1000,
+        )
+
+        details = client.get_page_details(page)
+
+        self.assertEqual(parse_fandom_intro(rendered_html, max_chars=100), intro.strip())
+        self.assertEqual(len(page["infobox"]), 24)
+        self.assertEqual(len(details["sections"]), 75)
+        self.assertIn("Category 14", details["categories"][0]["value"])
 
     def test_normalised_page_caches_parsed_rich_sections_only(self):
         client = KirbyFandomClient(cache_ttl_seconds=3600)
@@ -408,6 +429,18 @@ class FandomCommandTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("日语：スピン（Spin）", result)
         self.assertIn("不等同于任天堂官方译名", result)
 
+    async def test_section_list_keeps_more_than_sixty_entries(self):
+        plugin = self.make_plugin()
+        plugin.fandom.page["section_index"] = [
+            {"index": str(index), "title": f"Section {index}", "level": "2"}
+            for index in range(1, 76)
+        ]
+
+        result = await plugin._fandom_sections_text("Spinni")
+
+        self.assertIn("75. Section 75", result)
+        self.assertNotIn("未显示", result)
+
     async def test_llm_lookup_does_not_trigger_nested_translation(self):
         plugin = self.make_plugin(fandom_translate_enabled=True)
         plugin.context = FakeTranslationContext()
@@ -436,7 +469,9 @@ class FandomCommandTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             plugin.html_render.await_args.kwargs["options"]["viewport_width"], 1600
         )
-        self.assertIn("已显示", plugin.html_render.await_args.args[0])
+        template = plugin.html_render.await_args.args[0]
+        self.assertNotIn("已显示", template)
+        self.assertNotIn("未显示", template)
 
     async def test_invalid_structured_translation_falls_back_to_original(self):
         plugin = self.make_plugin(fandom_translate_enabled=True)

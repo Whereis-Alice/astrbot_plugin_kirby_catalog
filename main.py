@@ -45,7 +45,7 @@ IMAGE_BASE_URL = "http://save.my996.top/?/img/"
     PLUGIN_ID,
     "Whereis-Alice",
     "星之卡比盟友抽取、收藏图鉴与双百科查询插件",
-    "2.10.1",
+    "2.10.2",
     "https://github.com/Whereis-Alice/astrbot_plugin_kirby_catalog",
 )
 class KirbyCatalogPlugin(Star):
@@ -71,9 +71,6 @@ class KirbyCatalogPlugin(Star):
             cache_ttl_seconds=int(
                 self._config_value("wikirby_cache_ttl_seconds", 3600)
             ),
-            max_summary_chars=int(
-                self._config_value("wikirby_max_summary_chars", 1800)
-            ),
             proxy_url=str(self._config_value("wikirby_proxy_url", "")),
             proxy_token=str(self._config_value("wikirby_proxy_token", "")),
         )
@@ -86,12 +83,6 @@ class KirbyCatalogPlugin(Star):
             ),
             cache_ttl_seconds=int(
                 self._config_value("fandom_cache_ttl_seconds", 3600)
-            ),
-            max_summary_chars=int(
-                self._config_value("fandom_max_summary_chars", 1800)
-            ),
-            max_detail_chars=int(
-                self._config_value("fandom_max_detail_chars", 7000)
             ),
         )
 
@@ -780,7 +771,7 @@ class KirbyCatalogPlugin(Star):
                 "翻译 controls 时，只翻译自然语言和其中引用的招式名称；必须原样保留"
                 "A/B/X/Y/L/R/ZL/ZR/SL/SR 等按键、加号、每行的平台对应关系、"
                 "方向含义、操作先后和换行数量。"
-                "不要翻译或改写 kind、ancestors、damage、omitted_count，"
+                "不要翻译或改写 kind、ancestors、damage，"
                 "不要添加 Markdown 或解释。\n\n"
                 f"JSON：\n{source_json}"
             ),
@@ -844,9 +835,8 @@ class KirbyCatalogPlugin(Star):
                         lines.append(f"• {move}｜操作：{controls}｜伤害：{damage}")
                         if description:
                             lines.append(description)
-            omitted = int(section.get("omitted_count", 0) or 0)
-            if omitted:
-                lines.append(f"另有 {omitted} 项未显示。")
+            if int(section.get("omitted_count", 0) or 0):
+                lines.append("该栏目有部分内容未能完整解析，请打开来源页面核对。")
         return "\n".join(lines).strip()
 
     def _wikirby_query_parts(self, event: AstrMessageEvent) -> Tuple[str, bool]:
@@ -1248,11 +1238,9 @@ class KirbyCatalogPlugin(Star):
         if not sections:
             return f"「{page['title']}」页面没有可查询的正文章节。"
         lines = [f"Kirby Fandom「{page['title']}」的章节："]
-        for row in sections[:60]:
+        for row in sections:
             indent = "  " if row.get("level") not in {"", "2"} else ""
             lines.append(f"{indent}{row.get('index')}. {row.get('title')}")
-        if len(sections) > 60:
-            lines.append(f"另有 {len(sections) - 60} 个章节未显示。")
         lines.extend(
             [
                 f"查询章节：卡比F {page['title']} | {sections[0]['title']}",

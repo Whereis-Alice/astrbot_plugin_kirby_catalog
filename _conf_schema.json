@@ -110,13 +110,6 @@
         "min": 0,
         "max": 604800
       },
-      "wikirby_max_summary_chars": {
-        "description": "百科摘要最大长度",
-        "type": "int",
-        "default": 1800,
-        "min": 300,
-        "max": 6000
-      },
       "wikirby_proxy_url": {
         "description": "可选 Cloudflare Worker 中转地址",
         "type": "string",
@@ -206,21 +199,6 @@
         "default": 3600,
         "min": 0,
         "max": 604800
-      },
-      "fandom_max_summary_chars": {
-        "description": "Fandom 简介最大长度",
-        "type": "int",
-        "default": 1800,
-        "min": 300,
-        "max": 6000
-      },
-      "fandom_max_detail_chars": {
-        "description": "Fandom 默认正文最大长度",
-        "type": "int",
-        "default": 7000,
-        "min": 1000,
-        "max": 20000,
-        "hint": "页面很长时只展示前面的可读栏目；可使用章节查询精确读取后续内容。"
       }
     }
   },

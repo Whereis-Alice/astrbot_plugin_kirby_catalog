@@ -18,7 +18,7 @@ from .wikirby import parse_rendered_sections
 DEFAULT_FANDOM_API_URL = "https://kirby.fandom.com/api.php"
 FANDOM_SITE_URL = "https://kirby.fandom.com"
 USER_AGENT = (
-    "astrbot-plugin-kirby-catalog/2.10.1 "
+    "astrbot-plugin-kirby-catalog/2.10.2 "
     "(+https://github.com/Whereis-Alice/astrbot_plugin_kirby_catalog)"
 )
 _RETRYABLE_HTTP_CODES = {408, 425, 429, 500, 502, 503, 504}
@@ -185,14 +185,6 @@ def _image_labels(element: Tag | None) -> list[str]:
     return values
 
 
-def _trim_text(value: str, limit: int) -> str:
-    text = re.sub(r"[ \t]+", " ", value or "").strip()
-    if len(text) <= limit:
-        return text
-    shortened = text[: max(1, limit - 3)].rstrip()
-    return shortened + "..."
-
-
 def _normalise_heading(value: str) -> str:
     return re.sub(r"[^a-z0-9\u3400-\u9fff]+", " ", value.casefold()).strip()
 
@@ -268,9 +260,7 @@ def _parse_quote_table(table: Tag) -> dict[str, str] | None:
     return {"text": quote, "attribution": attribution, "source": source}
 
 
-def _parse_quotes_section(
-    fragment: BeautifulSoup, max_quotes: int
-) -> tuple[list[dict[str, str]], int]:
+def _parse_quotes_section(fragment: BeautifulSoup) -> list[dict[str, str]]:
     quotes: list[dict[str, str]] = []
     seen: set[tuple[str, str, str]] = set()
     for table in fragment.select("table.br-5px"):
@@ -282,8 +272,7 @@ def _parse_quotes_section(
             continue
         seen.add(key)
         quotes.append(quote)
-    limit = max(1, max_quotes)
-    return quotes[:limit], max(0, len(quotes) - limit)
+    return quotes
 
 
 def _expanded_table(table: Tag) -> tuple[list[list[str]], list[list[str]]]:
@@ -404,28 +393,32 @@ def _parse_technique_table(table: Tag) -> list[dict[str, str]]:
             )
         if not any((move, controls, description, damage)):
             continue
-        if _column_matches(move, "move") and _column_matches(description, "description"):
+        if (
+            _normalise_heading(move) in _TECHNIQUE_COLUMN_NAMES["move"]
+            and _normalise_heading(description)
+            in _TECHNIQUE_COLUMN_NAMES["description"]
+        ):
             continue
         rows.append(
             {
-                "move": _trim_text(move, 160),
-                "controls": _trim_text(_localise_controls(controls), 260),
-                "description": _trim_text(description, 1200),
-                "damage": _trim_text(damage, 260),
+                "move": move.strip(),
+                "controls": _localise_controls(controls).strip(),
+                "description": description.strip(),
+                "damage": damage.strip(),
             }
         )
     return rows
 
 
 def _parse_techniques_section(
-    fragment: BeautifulSoup, max_rows: int
-) -> tuple[str, list[dict[str, Any]], int]:
+    fragment: BeautifulSoup,
+) -> tuple[str, list[dict[str, Any]]]:
     intro_parts = [
         _clean_text(paragraph)
         for paragraph in fragment.find_all("p", recursive=False)
         if _clean_text(paragraph)
     ]
-    intro = _trim_text("\n\n".join(intro_parts), 1000)
+    intro = "\n\n".join(intro_parts).strip()
 
     groups: list[dict[str, Any]] = []
     tab_contents = fragment.select(".wds-tab__content")
@@ -456,29 +449,20 @@ def _parse_techniques_section(
                     }
                 )
 
-    remaining = max(1, max_rows)
-    omitted = 0
-    selected: list[dict[str, Any]] = []
-    for group in groups:
-        rows = list(group["rows"])
-        kept = rows[:remaining]
-        omitted += len(rows) - len(kept)
-        if kept:
-            selected.append({"label": group["label"], "rows": kept})
-            remaining -= len(kept)
-        if remaining <= 0:
-            omitted += sum(len(item["rows"]) for item in groups[len(selected) :])
-            break
-    return intro, selected, omitted
+    return intro, groups
 
 
 def parse_fandom_rich_sections(
     rendered_html: str,
     *,
-    max_quotes: int = 20,
-    max_technique_rows: int = 32,
+    max_quotes: int | None = None,
+    max_technique_rows: int | None = None,
 ) -> list[dict[str, Any]]:
-    """Preserve quote cards and technique tables that plain text would flatten."""
+    """Preserve every quote and technique row that plain text would flatten.
+
+    The optional limits are accepted for compatibility with older callers and are
+    intentionally ignored. Article content is never shortened by the parser.
+    """
     soup = BeautifulSoup(rendered_html or "", "html.parser")
     root = soup.select_one(".mw-parser-output")
     if root is None:
@@ -505,27 +489,29 @@ def parse_fandom_rich_sections(
             "ancestors": ancestors,
         }
         if kind == "quotes":
-            quotes, omitted = _parse_quotes_section(fragment, max_quotes)
+            quotes = _parse_quotes_section(fragment)
             if quotes:
-                output.append({**base, "quotes": quotes, "omitted_count": omitted})
+                output.append({**base, "quotes": quotes})
             continue
-        intro, groups, omitted = _parse_techniques_section(
-            fragment, max_technique_rows
-        )
+        intro, groups = _parse_techniques_section(fragment)
         if groups:
             output.append(
                 {
                     **base,
                     "intro": intro,
                     "groups": groups,
-                    "omitted_count": omitted,
                 }
             )
     return output
 
 
-def parse_fandom_intro(rendered_html: str, max_chars: int = 1800) -> str:
-    """Extract the readable lead paragraphs before the first main heading."""
+def parse_fandom_intro(
+    rendered_html: str, max_chars: int | None = None
+) -> str:
+    """Extract all readable lead paragraphs before the first main heading.
+
+    ``max_chars`` remains in the signature for compatibility and is ignored.
+    """
     soup = BeautifulSoup(rendered_html or "", "html.parser")
     root = soup.select_one(".mw-parser-output")
     if root is None:
@@ -544,9 +530,7 @@ def parse_fandom_intro(rendered_html: str, max_chars: int = 1800) -> str:
         if value.casefold().startswith(("this article is about", "redirects here")):
             continue
         paragraphs.append(value)
-        if sum(len(item) for item in paragraphs) >= max_chars:
-            break
-    return _trim_text("\n\n".join(paragraphs), max_chars)
+    return "\n\n".join(paragraphs).strip()
 
 
 def parse_fandom_infobox(rendered_html: str) -> list[dict[str, str]]:
@@ -575,8 +559,6 @@ def parse_fandom_infobox(rendered_html: str) -> list[dict[str, str]]:
             continue
         seen.add(key)
         rows.append({"label": display_label, "value": value})
-        if len(rows) >= 18:
-            break
     return rows
 
 
@@ -613,143 +595,6 @@ def parse_fandom_sections(rendered_html: str) -> list[dict[str, str]]:
             continue
         output.append({"title": title, "text": text})
     return output
-
-
-def _rich_section_cost(section: dict[str, Any]) -> int:
-    cost = len(str(section.get("title", ""))) + len(str(section.get("context", "")))
-    cost += len(str(section.get("intro", "")))
-    if section.get("kind") == "quotes":
-        for quote in section.get("quotes", []):
-            cost += sum(
-                len(str(quote.get(key, "")))
-                for key in ("text", "attribution", "source")
-            ) + 24
-    elif section.get("kind") == "techniques":
-        for group in section.get("groups", []):
-            cost += len(str(group.get("label", ""))) + 20
-            for row in group.get("rows", []):
-                cost += sum(
-                    len(str(row.get(key, "")))
-                    for key in ("move", "controls", "description", "damage")
-                ) + 32
-    return cost
-
-
-def _trim_rich_sections(
-    sections: list[dict[str, Any]], budget: int
-) -> tuple[list[dict[str, Any]], int]:
-    selected: list[dict[str, Any]] = []
-    remaining = max(0, budget)
-    for section_index, source in enumerate(sections):
-        if remaining <= 0:
-            break
-        kind = str(source.get("kind", "") or "")
-        base: dict[str, Any] = {
-            "kind": kind,
-            "title": str(source.get("title", "") or ""),
-            "context": str(source.get("context", "") or ""),
-            "ancestors": list(source.get("ancestors", []) or []),
-        }
-        base_cost = _rich_section_cost(base) + 40
-        if kind == "quotes":
-            quotes: list[dict[str, str]] = []
-            source_quotes = list(source.get("quotes", []) or [])
-            for quote in source_quotes:
-                row = {
-                    "text": str(quote.get("text", "") or ""),
-                    "attribution": str(quote.get("attribution", "") or ""),
-                    "source": str(quote.get("source", "") or ""),
-                }
-                row_cost = sum(len(value) for value in row.values()) + 24
-                if quotes and base_cost + row_cost > remaining:
-                    break
-                if not quotes and base_cost + row_cost > remaining:
-                    row["text"] = _trim_text(
-                        row["text"], max(180, remaining - base_cost - 80)
-                    )
-                    row_cost = sum(len(value) for value in row.values()) + 24
-                quotes.append(row)
-                base_cost += row_cost
-            if not quotes:
-                continue
-            omitted = int(source.get("omitted_count", 0) or 0)
-            omitted += len(source_quotes) - len(quotes)
-            section = {**base, "quotes": quotes, "omitted_count": omitted}
-        elif kind == "techniques":
-            intro = str(source.get("intro", "") or "")
-            groups: list[dict[str, Any]] = []
-            source_groups = [
-                group
-                for group in (source.get("groups", []) or [])
-                if group.get("rows")
-            ]
-            omitted = int(source.get("omitted_count", 0) or 0)
-            base_cost += len(intro)
-            techniques_left = sum(
-                1
-                for item in sections[section_index:]
-                if item.get("kind") == "techniques"
-            )
-            section_budget = (
-                remaining
-                if techniques_left <= 1
-                else max(700, remaining // techniques_left)
-            )
-            headers_cost = sum(
-                len(str(group.get("label", "") or "")) + 20
-                for group in source_groups
-            )
-            rows_budget = max(0, section_budget - base_cost - headers_cost)
-            group_budget, budget_remainder = divmod(
-                rows_budget, max(1, len(source_groups))
-            )
-            for group_index, group in enumerate(source_groups):
-                label = str(group.get("label", "") or "")
-                rows: list[dict[str, str]] = []
-                source_rows = list(group.get("rows", []) or [])
-                quota = group_budget + (1 if group_index < budget_remainder else 0)
-                used = 0
-                for row in source_rows:
-                    value = {
-                        "move": str(row.get("move", "") or ""),
-                        "controls": str(row.get("controls", "") or ""),
-                        "description": str(row.get("description", "") or ""),
-                        "damage": str(row.get("damage", "") or ""),
-                    }
-                    row_cost = sum(len(item) for item in value.values()) + 32
-                    if rows and used + row_cost > quota:
-                        break
-                    if not rows and row_cost > quota:
-                        fixed_cost = (
-                            len(value["move"])
-                            + len(value["controls"])
-                            + len(value["damage"])
-                            + 32
-                        )
-                        value["description"] = _trim_text(
-                            value["description"],
-                            max(120, quota - fixed_cost),
-                        )
-                        row_cost = sum(len(item) for item in value.values()) + 32
-                    rows.append(value)
-                    used += row_cost
-                omitted += len(source_rows) - len(rows)
-                if rows:
-                    groups.append({"label": label, "rows": rows})
-            if not groups:
-                continue
-            section = {
-                **base,
-                "intro": intro,
-                "groups": groups,
-                "omitted_count": omitted,
-            }
-        else:
-            continue
-        cost = _rich_section_cost(section)
-        selected.append(section)
-        remaining = max(0, remaining - cost)
-    return selected, max(0, budget - remaining)
 
 
 def parse_fandom_language_names(
@@ -808,14 +653,12 @@ class KirbyFandomClient:
         api_url: str = DEFAULT_FANDOM_API_URL,
         timeout_seconds: float = 15.0,
         cache_ttl_seconds: int = 3600,
-        max_summary_chars: int = 1800,
-        max_detail_chars: int = 7000,
+        max_summary_chars: int | None = None,
+        max_detail_chars: int | None = None,
     ) -> None:
         self.api_url = api_url.strip() or DEFAULT_FANDOM_API_URL
         self.timeout_seconds = max(2.0, float(timeout_seconds))
         self.cache_ttl_seconds = max(0, int(cache_ttl_seconds))
-        self.max_summary_chars = max(300, int(max_summary_chars))
-        self.max_detail_chars = max(1000, int(max_detail_chars))
         self._cache: dict[str, tuple[float, Any]] = {}
         self._request_limit = asyncio.Semaphore(2)
 
@@ -953,7 +796,7 @@ class KirbyFandomClient:
         page = {
             "pageid": int(parsed.get("pageid", 0) or 0),
             "title": title,
-            "summary": parse_fandom_intro(rendered_html, self.max_summary_chars),
+            "summary": parse_fandom_intro(rendered_html),
             "url": self._page_url(title),
             "image_url": parse_fandom_image_url(rendered_html),
             "infobox": infobox,
@@ -1170,25 +1013,10 @@ class KirbyFandomClient:
                         if _normalise_heading(row["title"]) in child_titles
                     ]
             if matched or matched_rich:
-                selected_rich, rich_cost = _trim_rich_sections(
-                    matched_rich,
-                    self.max_detail_chars
-                    if matched_rich and not matched
-                    else max(1200, self.max_detail_chars // 2),
-                )
-                selected: list[dict[str, str]] = []
-                remaining = max(0, self.max_detail_chars - rich_cost)
-                for value in matched:
-                    if remaining <= 0:
-                        break
-                    row = dict(value)
-                    row["text"] = _trim_text(row["text"], remaining)
-                    selected.append(row)
-                    remaining -= len(row["title"]) + len(row["text"])
                 return {
                     "infobox": [],
-                    "sections": selected,
-                    "rich_sections": selected_rich,
+                    "sections": matched,
+                    "rich_sections": matched_rich,
                     "categories": [],
                 }
             return {
@@ -1198,33 +1026,15 @@ class KirbyFandomClient:
                 "categories": [],
             }
 
-        rich_budget = min(4200, max(1600, self.max_detail_chars // 2))
-        rich_for_default = sorted(
-            rich_sections,
-            key=lambda row: 0 if row.get("kind") == "quotes" else 1,
-        )
-        selected_rich, rich_cost = _trim_rich_sections(
-            rich_for_default, rich_budget
-        )
-        selected: list[dict[str, str]] = []
-        remaining = max(0, self.max_detail_chars - rich_cost)
-        for row in sections:
-            if remaining <= 0:
-                break
-            body = _trim_text(row["text"], remaining)
-            if not body:
-                continue
-            selected.append({"title": row["title"], "text": body})
-            remaining -= len(row["title"]) + len(body)
         categories = (
-            [{"label": "分类", "value": "、".join(page.get("categories", [])[:10])}]
+            [{"label": "分类", "value": "、".join(page.get("categories", []))}]
             if page.get("categories")
             else []
         )
         return {
             "infobox": [dict(row) for row in page.get("infobox", [])],
-            "sections": selected,
-            "rich_sections": selected_rich,
+            "sections": sections,
+            "rich_sections": rich_sections,
             "categories": categories,
         }
 
