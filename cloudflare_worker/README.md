@@ -29,6 +29,8 @@ curl -i \
 
 看到 `HTTP/2 200` 且响应中有 `"title":"Driblee"`，说明中转可用。若 Worker 自己也收到 403，说明 WiKirby 连 Cloudflare Worker 出口也拦截了，此方案无法解决，需要联系 WiKirby 管理员或换一个经允许的中转出口。
 
+图片也会由插件通过 Worker 下载，不需要额外开放 CDN 代理路径。
+
 ## 插件配置
 
 在 AstrBot 的“星之卡比图鉴”配置中填写：

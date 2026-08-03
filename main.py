@@ -31,7 +31,7 @@ IMAGE_BASE_URL = "http://save.my996.top/?/img/"
     PLUGIN_ID,
     "Whereis-Alice",
     "星之卡比盟友抽取、图鉴、猜名与排行榜插件",
-    "2.4.0",
+    "2.4.1",
     "https://github.com/Whereis-Alice/astrbot_plugin_kirby_catalog",
 )
 class KirbyCatalogPlugin(Star):
@@ -442,7 +442,9 @@ class KirbyCatalogPlugin(Star):
             if isinstance(show_image, str):
                 show_image = show_image.strip().casefold() not in {"0", "false", "no", "off"}
             if show_image and page.get("image_url"):
-                chain.append(Comp.Image.fromURL(page["image_url"]))
+                image_bytes = await self.wikirby.get_image_bytes(page["image_url"])
+                if image_bytes:
+                    chain.append(Comp.Image.fromBytes(image_bytes))
             yield event.chain_result(chain)
         except WikirbyError as exc:
             logger.warning("[%s] WiKirby 查询失败: %s", PLUGIN_ID, exc)

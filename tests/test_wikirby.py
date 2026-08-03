@@ -118,6 +118,27 @@ class WikirbyParserTests(unittest.TestCase):
         self.assertIn("path=%2Fw%2Fapi.php", request.full_url)
         self.assertEqual(request.headers["Authorization"], "Bearer test-token")
 
+    def test_proxy_downloads_cdn_image_with_asset_marker(self):
+        client = WikirbyClient(
+            proxy_url="https://kirby-proxy.example.workers.dev",
+            proxy_token="test-token",
+            cache_ttl_seconds=0,
+        )
+        response = FakeResponse(b"image-bytes")
+
+        with patch(
+            "astrbot_plugin_kirby_catalog.wikirby.urlopen",
+            return_value=response,
+        ) as open_url:
+            result = client._image_bytes_sync(
+                "https://cdn.wikirby.com/3/33/KSA_Driblee_Artwork.png"
+            )
+
+        self.assertEqual(result, b"image-bytes")
+        request = open_url.call_args.args[0]
+        self.assertIn("path=%2F3%2F33%2FKSA_Driblee_Artwork.png", request.full_url)
+        self.assertIn("asset=image", request.full_url)
+
     def test_extracts_language_names_without_meanings(self):
         wikitext = """
 ==Names in other languages==

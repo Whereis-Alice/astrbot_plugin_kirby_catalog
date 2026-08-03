@@ -16,7 +16,7 @@ FALLBACK_API_URL = "https://www.wikirby.com/w/api.php"
 DEFAULT_REST_URL = "https://wikirby.com/w/rest.php"
 FALLBACK_REST_URL = "https://www.wikirby.com/w/rest.php"
 USER_AGENT = (
-    "astrbot-plugin-kirby-catalog/2.4.0 "
+    "astrbot-plugin-kirby-catalog/2.4.1 "
     "(+https://github.com/Whereis-Alice/astrbot_plugin_kirby_catalog)"
 )
 _RETRYABLE_HTTP_CODES = {403, 408, 425, 429, 500, 502, 503, 504}
@@ -231,15 +231,16 @@ class WikirbyClient:
         self,
         urls: tuple[str, ...],
         query: dict[str, Any] | None = None,
+        use_proxy: bool = True,
     ) -> bytes:
         """Read one of several equivalent endpoints with short WAF retries."""
         raw: bytes | None = None
         last_http_error: HTTPError | None = None
         last_url_error: URLError | None = None
         query = query or {}
-        request_bases = urls[:1] if self.proxy_url else urls
+        request_bases = urls[:1] if self.proxy_url and use_proxy else urls
         for base_url in request_bases:
-            if self.proxy_url:
+            if self.proxy_url and use_proxy:
                 target_path = urlparse(base_url).path or "/"
                 proxy_query = {"path": target_path, **query}
                 separator = "&" if "?" in self.proxy_url else "?"
@@ -254,7 +255,7 @@ class WikirbyClient:
                 "Referer": "https://wikirby.com/",
                 "User-Agent": USER_AGENT,
             }
-            if self.proxy_token:
+            if self.proxy_token and self.proxy_url and use_proxy:
                 headers["Authorization"] = f"Bearer {self.proxy_token}"
             request = Request(
                 url,
@@ -312,6 +313,22 @@ class WikirbyClient:
         query = {"format": "json", "formatversion": "2", **params}
         raw = self._read_urls_sync(self._api_urls(), query)
         return self._decode_json(raw)
+
+    def _image_bytes_sync(self, image_url: str) -> bytes:
+        parsed = urlparse(image_url)
+        if parsed.hostname not in {"cdn.wikirby.com", "wikirby.com"}:
+            raise WikirbyError("图片来源不是 WiKirby CDN")
+        query = {"asset": "image"} if self.proxy_url else None
+        return self._read_urls_sync((image_url,), query, use_proxy=bool(self.proxy_url))
+
+    async def get_image_bytes(self, image_url: str) -> bytes | None:
+        """Download a WiKirby image, using the configured relay when present."""
+        if not image_url:
+            return None
+        try:
+            return await asyncio.to_thread(self._image_bytes_sync, image_url)
+        except WikirbyError:
+            return None
 
     def _rest_request_sync(
         self, endpoint: str, query: dict[str, Any] | None = None
