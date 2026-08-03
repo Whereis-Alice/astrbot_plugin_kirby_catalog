@@ -20,6 +20,7 @@ from .catalog_core import (
     get_today,
     plain_text_from_component,
 )
+from .wikirby import DEFAULT_API_URL, WikirbyClient, WikirbyError
 
 PLUGIN_ID = "astrbot_plugin_kirby_catalog"
 LEGACY_PLUGIN_ID = "astrbot_plugin_AnimeWife"
@@ -30,7 +31,7 @@ IMAGE_BASE_URL = "http://save.my996.top/?/img/"
     PLUGIN_ID,
     "Whereis-Alice",
     "星之卡比盟友抽取、图鉴、猜名与排行榜插件",
-    "2.1.3",
+    "2.2.0",
     "https://github.com/Whereis-Alice/astrbot_plugin_kirby_catalog",
 )
 class KirbyCatalogPlugin(Star):
@@ -50,6 +51,12 @@ class KirbyCatalogPlugin(Star):
         self._cooldowns: Dict[str, Dict[str, float]] = {}
         self._guess_sessions: Dict[str, Dict[str, Any]] = {}
         self._guess_timeout_tasks: Dict[str, asyncio.Task[None]] = {}
+        self.wikirby = WikirbyClient(
+            api_url=str(self._config_value("wikirby_api_url", DEFAULT_API_URL)),
+            timeout_seconds=float(self._config_value("wikirby_timeout_seconds", 12)),
+            cache_ttl_seconds=int(self._config_value("wikirby_cache_ttl_seconds", 3600)),
+            max_summary_chars=int(self._config_value("wikirby_max_summary_chars", 1800)),
+        )
 
     def _cancel_guess_timeout(self, group_id: str) -> None:
         task = self._guess_timeout_tasks.pop(group_id, None)
@@ -120,6 +127,9 @@ class KirbyCatalogPlugin(Star):
                 task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
+        client = getattr(self, "wikirby", None)
+        if client is not None:
+            await client.close()
 
     def _legacy_data_dirs(self) -> List[Path]:
         candidates = [Path("data") / "plugins" / LEGACY_PLUGIN_ID]
@@ -149,7 +159,7 @@ class KirbyCatalogPlugin(Star):
             except (KeyError, TypeError):
                 value = default
         if value == default and hasattr(self.config, "get"):
-            for section_name in ("draw_settings", "data_settings"):
+            for section_name in ("draw_settings", "data_settings", "wikirby_settings"):
                 section = self.config.get(section_name, {})
                 if hasattr(section, "get") and key in section:
                     value = section[key]
@@ -319,6 +329,125 @@ class KirbyCatalogPlugin(Star):
     @staticmethod
     def _display_name(entry: Dict[str, Any]) -> str:
         return str(entry.get("name") or "未命名盟友")
+
+    def _wikirby_enabled(self) -> bool:
+        value = self._config_value("wikirby_enabled", True)
+        if isinstance(value, bool):
+            return value
+        return str(value).strip().casefold() not in {"0", "false", "no", "off"}
+
+    def _wikirby_query_parts(self, event: AstrMessageEvent) -> Tuple[str, bool]:
+        raw = (event.message_str or "").strip()
+        command_text = raw[1:].lstrip() if raw.startswith("/") else raw
+        names_only = command_text == "卡比百科名称" or command_text.startswith(
+            ("卡比百科名称 ", "卡比百科名 ", "卡比百科译名 ")
+        )
+        remainder = self._command_remainder(
+            event,
+            {"卡比百科名称", "卡比百科名", "卡比百科译名", "卡比百科"},
+        )
+        for prefix in ("名称", "名字", "译名"):
+            if remainder == prefix:
+                names_only = True
+                remainder = ""
+                break
+            if remainder.startswith(f"{prefix} "):
+                names_only = True
+                remainder = remainder[len(prefix) :].strip()
+                break
+
+        query = remainder.strip()
+        if query.isdigit() or not query:
+            target = query or self._quoted_target(event)
+            if target:
+                entry, _ = self._entry_or_error(target)
+                if entry:
+                    query = self._display_name(entry)
+        return query, names_only
+
+    @staticmethod
+    def _wikirby_candidate_text(
+        candidates: List[Dict[str, Any]], names_only: bool
+    ) -> str:
+        lines = ["找到多个可能的 WiKirby 页面，请改用完整页面名查询："]
+        for index, page in enumerate(candidates, start=1):
+            title = page.get("title") or "未命名页面"
+            lines.append(f"{index}. {title}")
+        command = "卡比百科名称" if names_only else "卡比百科"
+        lines.append(f"例如：{command} {candidates[0].get('title', '')}")
+        return "\n".join(lines)
+
+    async def _wikirby_query_impl(self, event: AstrMessageEvent):
+        if not self._wikirby_enabled():
+            yield event.plain_result("WiKirby 查询功能当前已关闭。")
+            return
+        client = getattr(self, "wikirby", None)
+        if client is None:
+            yield event.plain_result("WiKirby 查询功能尚未初始化。")
+            return
+
+        query, names_only = self._wikirby_query_parts(event)
+        if not query:
+            yield event.plain_result(
+                "用法：卡比百科 <角色名或页面名>；只查官方译名可用：卡比百科名称 <角色名>。"
+            )
+            return
+        try:
+            resolved = await client.resolve(query)
+            if resolved.get("kind") == "candidates":
+                yield event.plain_result(
+                    self._wikirby_candidate_text(resolved.get("candidates", []), names_only)
+                )
+                return
+            if resolved.get("kind") != "page":
+                yield event.plain_result(
+                    f"没有找到 WiKirby 页面：{query}\n"
+                    "可以尝试使用英文页面名，或换一个更具体的中文名称。"
+                )
+                return
+
+            page = resolved["page"]
+            if names_only:
+                names = await client.get_language_names(page)
+                if not names:
+                    yield event.plain_result(
+                        f"没有在「{page['title']}」页面找到“Names in other languages”名称表。\n"
+                        f"来源：{page.get('url') or 'https://wikirby.com'}"
+                    )
+                    return
+                lines = [f"{page['title']} 的官方名称："]
+                for row in names:
+                    value = row["name"]
+                    if row.get("romanisation"):
+                        value += f"（{row['romanisation']}）"
+                    lines.append(f"{row['language']}：{value}")
+                lines.append(f"来源：{page.get('url') or 'https://wikirby.com'}")
+                yield event.plain_result("\n".join(lines))
+                return
+
+            lines = [f"WiKirby：{page['title']}"]
+            summary = str(page.get("summary", "") or "").strip()
+            if summary:
+                lines.extend(["简介：", summary])
+            lines.extend(
+                [
+                    "提示：WiKirby 页面可能包含剧透。",
+                    f"来源：{page.get('url') or 'https://wikirby.com'}",
+                ]
+            )
+            chain: List[Any] = [Comp.Plain("\n".join(lines))]
+            show_image = self._config_value("wikirby_show_image", True)
+            if isinstance(show_image, str):
+                show_image = show_image.strip().casefold() not in {"0", "false", "no", "off"}
+            if show_image and page.get("image_url"):
+                chain.append(Comp.Image.fromURL(page["image_url"]))
+            yield event.chain_result(chain)
+        except WikirbyError as exc:
+            logger.warning("[%s] WiKirby 查询失败: %s", PLUGIN_ID, exc)
+            yield event.plain_result(f"WiKirby 查询失败：{exc}")
+        except Exception as exc:
+            logger.exception("[%s] WiKirby 查询异常: %s", PLUGIN_ID, exc)
+            yield event.plain_result("WiKirby 查询失败，请稍后再试。")
 
     @staticmethod
     def _normalise_guess(value: str) -> str:
@@ -554,6 +683,23 @@ class KirbyCatalogPlugin(Star):
         )
         yield event.chain_result(await self._ally_chain(entry, text))
 
+    @filter.command(
+        "卡比百科",
+        alias={"卡比百科名称", "卡比百科名", "卡比百科译名", "wikirby", "WiKirby"},
+    )
+    @filter.event_message_type(EventMessageType.GROUP_MESSAGE)
+    async def wikirby_query(self, event: AstrMessageEvent):
+        """查询 WiKirby 页面，或只查看页面中的多语言官方名称。"""
+        async for result in self._wikirby_query_impl(event):
+            yield result
+
+    @filter.regex(r"^卡比百科(?:名称|名|译名)?(?:\s+.+)?$")
+    @filter.event_message_type(EventMessageType.GROUP_MESSAGE)
+    async def wikirby_query_plain(self, event: AstrMessageEvent):
+        """让不带斜杠的“卡比百科”及其参数形式也能触发。"""
+        async for result in self._wikirby_query_impl(event):
+            yield result
+
     @filter.command("星之卡比图鉴", alias={"群盟友图鉴"})
     @filter.event_message_type(EventMessageType.GROUP_MESSAGE)
     async def group_gallery(self, event: AstrMessageEvent):
@@ -756,6 +902,8 @@ class KirbyCatalogPlugin(Star):
             "猜盟友：发起猜名，答对只公布答案，不改变图鉴\n"
             "盟友排行榜：查看本群收藏排行\n"
             "盟友名单 [关键词]：检索图鉴编号和名字\n"
+            "卡比百科 [角色名]：查询 WiKirby 页面摘要和首图\n"
+            "卡比百科名称 [角色名]：只查询页面的多语言官方名称\n"
             "管理员命令：星之卡比图鉴添加、换图、改名、迁移、清理旧名、删除重复"
         )
 

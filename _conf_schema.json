@@ -33,6 +33,48 @@
       }
     }
   },
+  "wikirby_settings": {
+    "description": "WiKirby 查询设置",
+    "type": "object",
+    "items": {
+      "wikirby_enabled": {
+        "description": "启用卡比百科查询",
+        "type": "bool",
+        "default": true
+      },
+      "wikirby_show_image": {
+        "description": "普通百科查询显示页面首图",
+        "type": "bool",
+        "default": true
+      },
+      "wikirby_api_url": {
+        "description": "WiKirby API 地址",
+        "type": "string",
+        "default": "https://wikirby.com/w/api.php"
+      },
+      "wikirby_timeout_seconds": {
+        "description": "WiKirby 请求超时时间（秒）",
+        "type": "float",
+        "default": 12,
+        "min": 2,
+        "max": 60
+      },
+      "wikirby_cache_ttl_seconds": {
+        "description": "WiKirby 查询缓存时间（秒）",
+        "type": "int",
+        "default": 3600,
+        "min": 0,
+        "max": 604800
+      },
+      "wikirby_max_summary_chars": {
+        "description": "百科摘要最大长度",
+        "type": "int",
+        "default": 1800,
+        "min": 300,
+        "max": 6000
+      }
+    }
+  },
   "data_settings": {
     "description": "数据兼容设置",
     "type": "object",

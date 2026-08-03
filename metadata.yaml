@@ -1,7 +1,7 @@
 name: astrbot_plugin_kirby_catalog
 display_name: 星之卡比图鉴
-desc: 星之卡比盟友抽取、名字图鉴、猜名和群内收藏排行榜
-version: v2.1.3
+desc: 星之卡比盟友抽取、图鉴、猜名、排行榜和 WiKirby 百科查询
+version: v2.2.0
 author: Whereis-Alice
 repo: https://github.com/Whereis-Alice/astrbot_plugin_kirby_catalog
 astrbot_version: ">=4.16,<5"
@@ -10,4 +10,5 @@ support_platforms:
 tags:
   - 抽卡
   - 图鉴
+  - 百科查询
   - 群聊
