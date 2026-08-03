@@ -16,6 +16,8 @@ class FakeEvent:
     def __init__(self, message_str):
         self.message_str = message_str
         self.message_obj = SimpleNamespace(group_id="group-1", message=[])
+        self.unified_msg_origin = "test:group:group-1"
+        self.is_at_or_wake_command = False
 
     def plain_result(self, text):
         return text
@@ -43,6 +45,19 @@ class FakeWikirby:
             {"language": "简体中文", "name": "噗噜鳗", "romanisation": "pū lū màn"},
             {"language": "英语", "name": "Driblee"},
         ]
+
+
+class FakeTranslationContext:
+    def __init__(self):
+        self.calls = []
+
+    async def get_current_chat_provider_id(self, umo):
+        self.calls.append(("provider", umo))
+        return "native-provider"
+
+    async def llm_generate(self, **kwargs):
+        self.calls.append(("generate", kwargs))
+        return SimpleNamespace(completion_text="这是一段中文简介。")
 
 
 class FakeResponse:
@@ -257,6 +272,38 @@ class WikirbyCommandTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(results), 1)
         self.assertIn("WiKirby：Driblee", results[0][0].text)
         self.assertIn("来源：https://wikirby.com/wiki/Driblee", results[0][0].text)
+
+    async def test_plain_handler_does_not_duplicate_wake_command(self):
+        plugin = KirbyCatalogPlugin.__new__(KirbyCatalogPlugin)
+        plugin.config = {"wikirby_enabled": True, "wikirby_show_image": False}
+        plugin.wikirby = FakeWikirby()
+        event = FakeEvent("卡比百科 Driblee")
+        event.is_at_or_wake_command = True
+
+        results = [result async for result in plugin.wikirby_query_plain(event)]
+
+        self.assertEqual(results, [])
+
+    async def test_summary_can_use_native_provider_for_translation(self):
+        plugin = KirbyCatalogPlugin.__new__(KirbyCatalogPlugin)
+        plugin.config = {
+            "wikirby_enabled": True,
+            "wikirby_show_image": False,
+            "wikirby_translate_enabled": True,
+        }
+        plugin.wikirby = FakeWikirby()
+        plugin.context = FakeTranslationContext()
+
+        results = [
+            result
+            async for result in plugin._wikirby_query_impl(
+                FakeEvent("卡比百科 Driblee")
+            )
+        ]
+
+        self.assertIn("简介：\n这是一段中文简介。", results[0][0].text)
+        self.assertEqual(plugin.context.calls[0], ("provider", "test:group:group-1"))
+        self.assertEqual(plugin.context.calls[1][0], "generate")
 
 
 if __name__ == "__main__":

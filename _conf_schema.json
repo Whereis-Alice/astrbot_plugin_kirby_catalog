@@ -47,6 +47,19 @@
         "type": "bool",
         "default": true
       },
+      "wikirby_translate_enabled": {
+        "description": "使用 LLM 将百科简介翻译成简体中文",
+        "type": "bool",
+        "default": false,
+        "hint": "关闭时保留 WiKirby 原文；开启后使用 AstrBot 原生文本模型翻译简介，翻译失败会自动显示原文。"
+      },
+      "wikirby_translate_provider_id": {
+        "description": "百科翻译使用的模型提供商",
+        "type": "string",
+        "_special": "select_provider",
+        "default": "",
+        "hint": "留空时使用当前聊天会话的 AstrBot 文本模型。"
+      },
       "wikirby_api_url": {
         "description": "WiKirby API 地址",
         "type": "string",
