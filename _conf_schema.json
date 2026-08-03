@@ -131,6 +131,99 @@
       }
     }
   },
+  "fandom_settings": {
+    "description": "Kirby Fandom 查询设置",
+    "type": "object",
+    "items": {
+      "fandom_enabled": {
+        "description": "启用 Kirby Fandom 查询",
+        "type": "bool",
+        "default": true
+      },
+      "fandom_show_image": {
+        "description": "Fandom 回复显示页面首图",
+        "type": "bool",
+        "default": true
+      },
+      "fandom_show_details": {
+        "description": "显示 Fandom 信息框、分类和正文栏目",
+        "type": "bool",
+        "default": true,
+        "hint": "关闭后完整查询只显示简介、跨语言页面名称、首图和来源；指定章节查询仍可使用。"
+      },
+      "fandom_output_mode": {
+        "description": "Fandom 百科回复形式",
+        "type": "string",
+        "options": [
+          "普通消息",
+          "合并转发",
+          "仅百科卡片",
+          "百科文字+卡片",
+          "文字+卡片合并转发"
+        ],
+        "default": "普通消息",
+        "hint": "卡片使用和 WiKirby 相同的高分辨率 HTML 渲染器；失败时自动回退为文字。"
+      },
+      "fandom_card_template": {
+        "description": "Fandom 百科卡片模板",
+        "type": "string",
+        "options": [
+          "梦之泉",
+          "卡比粉彩",
+          "瓦豆鲁迪",
+          "星际档案"
+        ],
+        "default": "卡比粉彩"
+      },
+      "fandom_translate_enabled": {
+        "description": "使用 LLM 将 Fandom 百科内容翻译成简体中文",
+        "type": "bool",
+        "default": false,
+        "hint": "使用 AstrBot 原生文本模型；翻译失败时保留英文原文。"
+      },
+      "fandom_translate_provider_id": {
+        "description": "Fandom 翻译使用的模型提供商",
+        "type": "string",
+        "_special": "select_provider",
+        "default": "",
+        "hint": "留空时使用当前聊天会话的 AstrBot 文本模型。"
+      },
+      "fandom_api_url": {
+        "description": "Kirby Fandom API 地址",
+        "type": "string",
+        "default": "https://kirby.fandom.com/api.php"
+      },
+      "fandom_timeout_seconds": {
+        "description": "Kirby Fandom 请求超时时间（秒）",
+        "type": "float",
+        "default": 15,
+        "min": 2,
+        "max": 60
+      },
+      "fandom_cache_ttl_seconds": {
+        "description": "Kirby Fandom 查询缓存时间（秒）",
+        "type": "int",
+        "default": 3600,
+        "min": 0,
+        "max": 604800
+      },
+      "fandom_max_summary_chars": {
+        "description": "Fandom 简介最大长度",
+        "type": "int",
+        "default": 1800,
+        "min": 300,
+        "max": 6000
+      },
+      "fandom_max_detail_chars": {
+        "description": "Fandom 默认正文最大长度",
+        "type": "int",
+        "default": 7000,
+        "min": 1000,
+        "max": 20000,
+        "hint": "页面很长时只展示前面的可读栏目；可使用章节查询精确读取后续内容。"
+      }
+    }
+  },
   "data_settings": {
     "description": "数据兼容设置",
     "type": "object",

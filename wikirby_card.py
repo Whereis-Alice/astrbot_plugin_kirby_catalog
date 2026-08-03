@@ -13,81 +13,97 @@ CARD_TEMPLATES: dict[str, dict[str, str]] = {
         "slug": "fountain",
         "label": "梦之泉",
         "eyebrow": "梦之泉档案",
-        "canvas": "#0e2933",
-        "surface": "#153e49",
-        "header": "#123845",
-        "image_bg": "#17656a",
-        "title": "#f5fffc",
-        "text": "#e8f7f3",
-        "muted": "#b7d8d1",
-        "accent": "#68ded1",
-        "accent_alt": "#ff8aae",
-        "accent_warm": "#ffd166",
-        "border": "#35717a",
-        "band": "#1d4e58",
-        "footer": "#0b222b",
-        "chip": "#225361",
-        "chip_text": "#f5fffc",
+        "canvas": "#d8efee",
+        "surface": "#eef8f5",
+        "header": "#cce9e7",
+        "image_bg": "#d8f2ee",
+        "title": "#174b57",
+        "text": "#244f58",
+        "muted": "#58777d",
+        "accent": "#269f99",
+        "accent_alt": "#6678cf",
+        "accent_warm": "#dfa43f",
+        "border": "#9bcac6",
+        "band": "#d7ece4",
+        "footer": "#c7e2df",
+        "chip": "#b7dcd9",
+        "chip_text": "#194a53",
+        "panel_a": "#e2f4ef",
+        "panel_b": "#e7ebfa",
+        "panel_c": "#fff0c9",
+        "panel_d": "#dceff4",
     },
     "卡比粉彩": {
         "slug": "popstar",
         "label": "卡比粉彩",
         "eyebrow": "波普之星角色档案",
-        "canvas": "#4a1e40",
-        "surface": "#70284f",
-        "header": "#8d305c",
-        "image_bg": "#b64778",
-        "title": "#fff4f8",
-        "text": "#fff0f6",
-        "muted": "#ffd1e0",
-        "accent": "#ffd166",
-        "accent_alt": "#83d9f5",
-        "accent_warm": "#ff9ab7",
-        "border": "#c75883",
-        "band": "#5a2348",
-        "footer": "#36162f",
-        "chip": "#5a2348",
-        "chip_text": "#fff4f8",
+        "canvas": "#f4dce7",
+        "surface": "#fceaf1",
+        "header": "#f4cada",
+        "image_bg": "#f8dce8",
+        "title": "#783052",
+        "text": "#5b3a4d",
+        "muted": "#856176",
+        "accent": "#c95787",
+        "accent_alt": "#3f9fbd",
+        "accent_warm": "#dda33d",
+        "border": "#dda9c0",
+        "band": "#e8e5f5",
+        "footer": "#edcedc",
+        "chip": "#e6b6ca",
+        "chip_text": "#70304f",
+        "panel_a": "#f9e1eb",
+        "panel_b": "#ddeef5",
+        "panel_c": "#f3e6bd",
+        "panel_d": "#e7e1f4",
     },
     "瓦豆鲁迪": {
         "slug": "waddle",
         "label": "瓦豆鲁迪",
         "eyebrow": "瓦豆鲁迪观察笔记",
-        "canvas": "#244c49",
-        "surface": "#35645d",
-        "header": "#d65d42",
-        "image_bg": "#e57e4f",
-        "title": "#fff7ea",
-        "text": "#fff7ea",
-        "muted": "#ffe1ba",
-        "accent": "#9ce7d7",
-        "accent_alt": "#ffdd75",
-        "accent_warm": "#f4a261",
-        "border": "#6fa59b",
-        "band": "#2a5753",
-        "footer": "#1b3d3b",
-        "chip": "#a74337",
-        "chip_text": "#fff7ea",
+        "canvas": "#f7eddc",
+        "surface": "#fff8ee",
+        "header": "#f6d49f",
+        "image_bg": "#f8dfb4",
+        "title": "#694237",
+        "text": "#5d4d45",
+        "muted": "#826f65",
+        "accent": "#c8674f",
+        "accent_alt": "#399486",
+        "accent_warm": "#d9a338",
+        "border": "#e5c69b",
+        "band": "#e8f0e4",
+        "footer": "#f3dfbd",
+        "chip": "#f0c98f",
+        "chip_text": "#694237",
+        "panel_a": "#fdf0dc",
+        "panel_b": "#e3f1eb",
+        "panel_c": "#fae7b5",
+        "panel_d": "#e7eff2",
     },
     "星际档案": {
         "slug": "archive",
         "label": "星际档案",
         "eyebrow": "星际参考档案",
-        "canvas": "#121c2b",
-        "surface": "#1b2b3d",
-        "header": "#101827",
-        "image_bg": "#24485a",
-        "title": "#f4f8ff",
-        "text": "#e5eff8",
-        "muted": "#b5c7d6",
-        "accent": "#7ee8d7",
-        "accent_alt": "#ff7f96",
-        "accent_warm": "#ffd166",
-        "border": "#3d5f74",
-        "band": "#20384e",
-        "footer": "#0d1420",
-        "chip": "#263b50",
-        "chip_text": "#f4f8ff",
+        "canvas": "#dce3f2",
+        "surface": "#eef1f9",
+        "header": "#d1daed",
+        "image_bg": "#d9e3f5",
+        "title": "#293b61",
+        "text": "#354665",
+        "muted": "#66728e",
+        "accent": "#566bb1",
+        "accent_alt": "#318fa6",
+        "accent_warm": "#c79a34",
+        "border": "#b2bdd7",
+        "band": "#e1e7f4",
+        "footer": "#d2daeb",
+        "chip": "#c2cce3",
+        "chip_text": "#293a5d",
+        "panel_a": "#e2e7f5",
+        "panel_b": "#dceef2",
+        "panel_c": "#f2e7c6",
+        "panel_d": "#eadfee",
     },
 }
 
@@ -96,7 +112,7 @@ WIKIRBY_CARD_TEMPLATE = r"""
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=1280, height=600, initial-scale=1" />
+  <meta name="viewport" content="width=1600, height=600, initial-scale=1" />
   <style>
     * {
       box-sizing: border-box;
@@ -105,7 +121,7 @@ WIKIRBY_CARD_TEMPLATE = r"""
 
     html,
     body {
-      width: 100%;
+      width: 1600px;
       margin: 0;
       padding: 0;
       background: {{ theme.canvas }};
@@ -115,15 +131,19 @@ WIKIRBY_CARD_TEMPLATE = r"""
       font-family: "Noto Sans CJK SC", "Microsoft YaHei", "PingFang SC",
         Arial, sans-serif;
       color: {{ theme.text }};
+      font-weight: 500;
+      text-rendering: geometricPrecision;
+      -webkit-font-smoothing: antialiased;
     }
 
     #kirby-card {
-      width: 100%;
+      width: 1280px;
+      zoom: 1.25;
       overflow: hidden;
       background: {{ theme.surface }};
       border: 1px solid {{ theme.border }};
-      border-radius: 6px;
-      box-shadow: 0 14px 38px rgba(24, 39, 48, 0.12);
+      border-radius: 4px;
+      box-shadow: 0 12px 30px rgba(48, 66, 78, 0.10);
     }
 
     .color-rail {
@@ -157,7 +177,7 @@ WIKIRBY_CARD_TEMPLATE = r"""
     .title {
       margin: 0;
       color: {{ theme.title }};
-      font-size: 42px;
+      font-size: 44px;
       font-weight: 800;
       line-height: 1.18;
       overflow-wrap: anywhere;
@@ -207,6 +227,7 @@ WIKIRBY_CARD_TEMPLATE = r"""
       flex-direction: column;
       justify-content: center;
       padding: 42px 30px 42px 44px;
+      background: {{ theme.panel_a }};
     }
 
     .hero-copy .index {
@@ -226,7 +247,8 @@ WIKIRBY_CARD_TEMPLATE = r"""
     .hero-copy .hero-note {
       margin-top: 14px;
       color: {{ theme.muted }};
-      font-size: 18px;
+      font-size: 19px;
+      font-weight: 500;
       line-height: 1.65;
       white-space: pre-wrap;
       overflow-wrap: anywhere;
@@ -237,6 +259,7 @@ WIKIRBY_CARD_TEMPLATE = r"""
       align-items: center;
       justify-content: center;
       padding: 24px 40px 24px 12px;
+      background: {{ theme.image_bg }};
     }
 
     .hero-art img {
@@ -263,24 +286,31 @@ WIKIRBY_CARD_TEMPLATE = r"""
     .facts-band {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
-      gap: 34px;
-      padding: 30px 44px 28px;
+      gap: 18px;
+      padding: 24px 44px;
       background: {{ theme.band }};
       border-bottom: 1px solid {{ theme.border }};
     }
 
     .facts-band .content-block {
       margin: 0;
-      padding: 0;
+      padding: 20px 24px 22px;
       border-bottom: 0;
+      border-left: 5px solid {{ theme.accent }};
+      background: {{ theme.panel_b }};
+    }
+
+    .facts-band .content-block:nth-child(2n) {
+      border-left-color: {{ theme.accent_warm }};
+      background: {{ theme.panel_c }};
     }
 
     .details-columns {
       display: grid;
       grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 36px;
+      gap: 18px;
       min-width: 0;
-      padding: 32px 44px 10px;
+      padding: 24px 44px 8px;
       background: {{ theme.surface }};
       align-items: start;
     }
@@ -296,9 +326,29 @@ WIKIRBY_CARD_TEMPLATE = r"""
     .content-block {
       display: block;
       min-width: 0;
-      margin-bottom: 28px;
-      padding: 0 0 24px;
-      border-bottom: 1px solid {{ theme.border }};
+      margin-bottom: 18px;
+      padding: 21px 24px 24px;
+      border-bottom: 0;
+      border-left: 5px solid {{ theme.accent_alt }};
+      background: {{ theme.panel_a }};
+    }
+
+    .details-column:nth-child(1) .content-block:nth-child(2n),
+    .details-column:nth-child(2) .content-block:nth-child(2n + 1) {
+      border-left-color: {{ theme.accent }};
+      background: {{ theme.panel_b }};
+    }
+
+    .details-column:nth-child(1) .content-block:nth-child(3n),
+    .details-column:nth-child(2) .content-block:nth-child(3n) {
+      border-left-color: {{ theme.accent_warm }};
+      background: {{ theme.panel_c }};
+    }
+
+    .details-column:nth-child(1) .content-block:nth-child(4n),
+    .details-column:nth-child(2) .content-block:nth-child(4n) {
+      border-left-color: {{ theme.accent_alt }};
+      background: {{ theme.panel_d }};
     }
 
     .content-block:last-child {
@@ -330,8 +380,9 @@ WIKIRBY_CARD_TEMPLATE = r"""
     .block-body {
       min-width: 0;
       color: {{ theme.text }};
-      font-size: 17px;
-      line-height: 1.62;
+      font-size: 18px;
+      font-weight: 500;
+      line-height: 1.66;
       white-space: pre-wrap;
       overflow-wrap: anywhere;
       word-break: break-word;
@@ -357,7 +408,7 @@ WIKIRBY_CARD_TEMPLATE = r"""
     .fact-label {
       margin: 0;
       color: {{ theme.muted }};
-      font-size: 14px;
+      font-size: 15px;
       font-weight: 800;
       line-height: 1.45;
       overflow-wrap: anywhere;
@@ -367,7 +418,8 @@ WIKIRBY_CARD_TEMPLATE = r"""
       min-width: 0;
       margin: 0;
       color: {{ theme.text }};
-      font-size: 15px;
+      font-size: 16px;
+      font-weight: 500;
       line-height: 1.55;
       overflow-wrap: anywhere;
       word-break: break-word;
@@ -390,7 +442,7 @@ WIKIRBY_CARD_TEMPLATE = r"""
       color: {{ theme.muted }};
       background: {{ theme.footer }};
       border-top: 1px solid {{ theme.border }};
-      font-size: 15px;
+      font-size: 16px;
       line-height: 1.55;
     }
 
@@ -637,11 +689,11 @@ WIKIRBY_CARD_TEMPLATE = r"""
       <div>
         <div class="eyebrow">{{ theme.eyebrow | e }}</div>
         <h1 class="title">{{ title | e }}</h1>
-        <div class="subtitle">WiKirby 百科阅读卡片 · {{ theme.label | e }}</div>
+        <div class="subtitle">{{ wiki_name | default('WiKirby', true) | e }} 百科阅读卡片 · {{ theme.label | e }}</div>
       </div>
       <div class="page-chip">
-        <strong>角色档案</strong>
-        <span>WIKIRBY REFERENCE</span>
+        <strong>百科档案</strong>
+        <span>{{ reference_label | default('WIKIRBY REFERENCE', true) | e }}</span>
       </div>
     </header>
 
@@ -804,9 +856,7 @@ def _key_value_items(text: str) -> list[dict[str, str]]:
         match = re.fullmatch(r"([^：:]{1,24})[：:]\s*(.+)", line)
         if not match:
             return []
-        items.append(
-            {"label": match.group(1).strip(), "value": match.group(2).strip()}
-        )
+        items.append({"label": match.group(1).strip(), "value": match.group(2).strip()})
     return items if len(items) >= 2 else []
 
 

@@ -1026,6 +1026,34 @@ class CatalogStore:
             item["ally_filename"] for item in _normalise_unlocked(user.get("unlocked"))
         ]
 
+    def user_progress(self, user: Dict[str, Any]) -> Dict[str, Any]:
+        """Return progress against current canonical catalogue entries."""
+        entries = self.entries()
+        recorded = {Path(value).name for value in self.unlocked_filenames(user)}
+        unlocked: Set[str] = set()
+        for entry in entries:
+            candidates = {
+                Path(_as_text(entry.get("filename"))).name,
+                *[
+                    Path(_as_text(alias)).name
+                    for alias in entry.get("aliases", [])
+                    if _as_text(alias)
+                ],
+            }
+            if candidates & recorded:
+                unlocked.add(Path(_as_text(entry.get("filename"))).name)
+        missing = [
+            dict(entry)
+            for entry in entries
+            if Path(_as_text(entry.get("filename"))).name not in unlocked
+        ]
+        return {
+            "unlocked": len(unlocked),
+            "total": len(entries),
+            "missing": missing,
+            "unlocked_filenames": sorted(unlocked),
+        }
+
     def unlock(
         self, user: Dict[str, Any], filename: str, unlock_date: Optional[str] = None
     ) -> bool:

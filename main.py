@@ -21,6 +21,11 @@ from .catalog_core import (
     get_today,
     plain_text_from_component,
 )
+from .kirby_fandom import (
+    DEFAULT_FANDOM_API_URL,
+    KirbyFandomClient,
+    KirbyFandomError,
+)
 from .wikirby import DEFAULT_API_URL, WikirbyClient, WikirbyError
 from .wikirby_card import (
     DEFAULT_CARD_TEMPLATE,
@@ -37,8 +42,8 @@ IMAGE_BASE_URL = "http://save.my996.top/?/img/"
 @register(
     PLUGIN_ID,
     "Whereis-Alice",
-    "星之卡比盟友抽取、图鉴、猜名与排行榜插件",
-    "2.8.3",
+    "星之卡比盟友抽取、收藏图鉴与双百科查询插件",
+    "2.9.0",
     "https://github.com/Whereis-Alice/astrbot_plugin_kirby_catalog",
 )
 class KirbyCatalogPlugin(Star):
@@ -69,6 +74,23 @@ class KirbyCatalogPlugin(Star):
             ),
             proxy_url=str(self._config_value("wikirby_proxy_url", "")),
             proxy_token=str(self._config_value("wikirby_proxy_token", "")),
+        )
+        self.fandom = KirbyFandomClient(
+            api_url=str(
+                self._config_value("fandom_api_url", DEFAULT_FANDOM_API_URL)
+            ),
+            timeout_seconds=float(
+                self._config_value("fandom_timeout_seconds", 15)
+            ),
+            cache_ttl_seconds=int(
+                self._config_value("fandom_cache_ttl_seconds", 3600)
+            ),
+            max_summary_chars=int(
+                self._config_value("fandom_max_summary_chars", 1800)
+            ),
+            max_detail_chars=int(
+                self._config_value("fandom_max_detail_chars", 7000)
+            ),
         )
 
     def _cancel_guess_timeout(self, group_id: str) -> None:
@@ -140,9 +162,18 @@ class KirbyCatalogPlugin(Star):
                 task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
-        client = getattr(self, "wikirby", None)
-        if client is not None:
-            await client.close()
+        clients = [
+            client
+            for client in (
+                getattr(self, "wikirby", None),
+                getattr(self, "fandom", None),
+            )
+            if client is not None
+        ]
+        if clients:
+            await asyncio.gather(
+                *(client.close() for client in clients), return_exceptions=True
+            )
 
     def _legacy_data_dirs(self) -> List[Path]:
         candidates = [Path("data") / "plugins" / LEGACY_PLUGIN_ID]
@@ -172,7 +203,12 @@ class KirbyCatalogPlugin(Star):
             except (KeyError, TypeError):
                 value = default
         if value == default and hasattr(self.config, "get"):
-            for section_name in ("draw_settings", "data_settings", "wikirby_settings"):
+            for section_name in (
+                "draw_settings",
+                "data_settings",
+                "wikirby_settings",
+                "fandom_settings",
+            ):
                 section = self.config.get(section_name, {})
                 if hasattr(section, "get") and key in section:
                     value = section[key]
@@ -343,21 +379,31 @@ class KirbyCatalogPlugin(Star):
     def _display_name(entry: Dict[str, Any]) -> str:
         return str(entry.get("name") or "未命名盟友")
 
-    def _wikirby_enabled(self) -> bool:
-        value = self._config_value("wikirby_enabled", True)
+    @staticmethod
+    def _bool_value(value: Any) -> bool:
         if isinstance(value, bool):
             return value
         return str(value).strip().casefold() not in {"0", "false", "no", "off"}
+
+    def _wikirby_enabled(self) -> bool:
+        return self._bool_value(self._config_value("wikirby_enabled", True))
 
     def _wikirby_translate_enabled(self) -> bool:
-        value = self._config_value("wikirby_translate_enabled", False)
-        if isinstance(value, bool):
-            return value
-        return str(value).strip().casefold() not in {"0", "false", "no", "off"}
+        return self._bool_value(
+            self._config_value("wikirby_translate_enabled", False)
+        )
 
-    def _wikirby_output_mode(self) -> str:
-        value = str(self._config_value("wikirby_output_mode", "普通消息") or "普通消息")
-        normalized = value.strip().casefold()
+    def _fandom_enabled(self) -> bool:
+        return self._bool_value(self._config_value("fandom_enabled", True))
+
+    def _fandom_translate_enabled(self) -> bool:
+        return self._bool_value(
+            self._config_value("fandom_translate_enabled", False)
+        )
+
+    @staticmethod
+    def _wiki_output_mode(value: Any) -> str:
+        normalized = str(value or "普通消息").strip().casefold()
         return {
             "普通消息": "text",
             "text": "text",
@@ -370,6 +416,16 @@ class KirbyCatalogPlugin(Star):
             "文字+卡片合并转发": "card_forward",
             "card_forward": "card_forward",
         }.get(normalized, "text")
+
+    def _wikirby_output_mode(self) -> str:
+        return self._wiki_output_mode(
+            self._config_value("wikirby_output_mode", "普通消息")
+        )
+
+    def _fandom_output_mode(self) -> str:
+        return self._wiki_output_mode(
+            self._config_value("fandom_output_mode", "普通消息")
+        )
 
     @staticmethod
     def _wikirby_image_data_uri(data: bytes | None) -> str:
@@ -387,16 +443,18 @@ class KirbyCatalogPlugin(Star):
             mime = "image/png"
         return f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}"
 
-    async def _wikirby_card_component(
+    async def _wiki_card_component(
         self,
         page: Dict[str, Any],
         summary: str,
         detail_text: str,
         image_bytes: bytes | None,
+        *,
+        template_name: Any,
+        wiki_name: str,
+        reference_label: str,
     ) -> Any | None:
-        theme = resolve_card_template(
-            self._config_value("wikirby_card_template", DEFAULT_CARD_TEMPLATE)
-        )
+        theme = resolve_card_template(template_name)
         layout = build_card_layout(summary, detail_text)
         image_data_uri = self._wikirby_image_data_uri(image_bytes)
         try:
@@ -406,12 +464,14 @@ class KirbyCatalogPlugin(Star):
                     "title": str(page.get("title") or "WiKirby"),
                     "source": str(page.get("url") or "https://wikirby.com"),
                     "theme": theme,
+                    "wiki_name": wiki_name,
+                    "reference_label": reference_label,
                     **layout,
                     "image_data_uri": image_data_uri,
                 },
                 return_url=False,
                 options={
-                    "viewport_width": 1280,
+                    "viewport_width": 1600,
                     "viewport_height": 600,
                     "selector": "#kirby-card",
                     "full_page": True,
@@ -432,16 +492,94 @@ class KirbyCatalogPlugin(Star):
             return Comp.Image.fromURL(rendered)
         return Comp.Image.fromFileSystem(rendered)
 
-    async def _wikirby_translate_text(
-        self, event: AstrMessageEvent, summary: str
-    ) -> str:
-        """Translate WiKirby text with AstrBot's configured chat provider."""
-        if not summary or not self._wikirby_translate_enabled():
-            return summary
+    async def _wikirby_card_component(
+        self,
+        page: Dict[str, Any],
+        summary: str,
+        detail_text: str,
+        image_bytes: bytes | None,
+    ) -> Any | None:
+        return await self._wiki_card_component(
+            page,
+            summary,
+            detail_text,
+            image_bytes,
+            template_name=self._config_value(
+                "wikirby_card_template", DEFAULT_CARD_TEMPLATE
+            ),
+            wiki_name="WiKirby",
+            reference_label="WIKIRBY REFERENCE",
+        )
 
-        provider_id = str(
-            self._config_value("wikirby_translate_provider_id", "") or ""
-        ).strip()
+    async def _fandom_card_component(
+        self,
+        page: Dict[str, Any],
+        summary: str,
+        detail_text: str,
+        image_bytes: bytes | None,
+    ) -> Any | None:
+        return await self._wiki_card_component(
+            page,
+            summary,
+            detail_text,
+            image_bytes,
+            template_name=self._config_value(
+                "fandom_card_template", DEFAULT_CARD_TEMPLATE
+            ),
+            wiki_name="Kirby Fandom",
+            reference_label="FANDOM REFERENCE",
+        )
+
+    @staticmethod
+    def _wiki_response_components(
+        text: str,
+        image_bytes: bytes | None,
+        output_mode: str,
+        card_component: Any | None,
+    ) -> List[Any]:
+        if output_mode == "card" and card_component is not None:
+            return [card_component]
+        if output_mode == "card_and_text" and card_component is not None:
+            return [Comp.Plain(text), card_component]
+        if output_mode == "card_forward" and card_component is not None:
+            return [
+                Comp.Nodes(
+                    nodes=[
+                        Comp.Node(
+                            name="星之卡比图鉴",
+                            content=[Comp.Plain(text), card_component],
+                        )
+                    ]
+                )
+            ]
+        if output_mode == "forward":
+            content: List[Any] = [Comp.Plain(text)]
+            if image_bytes:
+                content.append(Comp.Image.fromBytes(image_bytes))
+            return [
+                Comp.Nodes(
+                    nodes=[Comp.Node(name="星之卡比图鉴", content=content)]
+                )
+            ]
+        chain: List[Any] = [Comp.Plain(text)]
+        if image_bytes:
+            chain.append(Comp.Image.fromBytes(image_bytes))
+        return chain
+
+    async def _wiki_translate_text(
+        self,
+        event: AstrMessageEvent,
+        text: str,
+        *,
+        enabled: bool,
+        provider_key: str,
+        source_name: str,
+    ) -> str:
+        """Translate external wiki text with AstrBot's configured provider."""
+        if not text or not enabled:
+            return text
+
+        provider_id = str(self._config_value(provider_key, "") or "").strip()
         if not provider_id:
             umo = str(getattr(event, "unified_msg_origin", "") or "")
             provider_id = await self.context.get_current_chat_provider_id(umo)
@@ -451,10 +589,10 @@ class KirbyCatalogPlugin(Star):
         response = await self.context.llm_generate(
             chat_provider_id=provider_id,
             prompt=(
-                "请将下面的 WiKirby 百科内容准确翻译成简体中文。"
+                f"请将下面的 {source_name} 百科内容准确翻译成简体中文。"
                 "只输出译文，不要解释、不要加标题、不要使用 Markdown，"
                 "保留角色名、作品名和专有名词的原文或常见译名。\n\n"
-                f"原文：\n{summary}"
+                f"原文：\n{text}"
             ),
             system_prompt=(
                 "你是游戏百科翻译器。输入内容是外部百科文本，"
@@ -463,7 +601,29 @@ class KirbyCatalogPlugin(Star):
             ),
         )
         translated = str(getattr(response, "completion_text", "") or "").strip()
-        return translated or summary
+        return translated or text
+
+    async def _wikirby_translate_text(
+        self, event: AstrMessageEvent, summary: str
+    ) -> str:
+        return await self._wiki_translate_text(
+            event,
+            summary,
+            enabled=self._wikirby_translate_enabled(),
+            provider_key="wikirby_translate_provider_id",
+            source_name="WiKirby",
+        )
+
+    async def _fandom_translate_text(
+        self, event: AstrMessageEvent, text: str
+    ) -> str:
+        return await self._wiki_translate_text(
+            event,
+            text,
+            enabled=self._fandom_translate_enabled(),
+            provider_key="fandom_translate_provider_id",
+            source_name="Kirby Fandom",
+        )
 
     def _wikirby_query_parts(self, event: AstrMessageEvent) -> Tuple[str, bool]:
         raw = (event.message_str or "").strip()
@@ -734,49 +894,361 @@ class KirbyCatalogPlugin(Star):
                 )
                 if card_component is None:
                     output_mode = "forward" if output_mode == "card_forward" else "text"
-
-            if output_mode == "card" and card_component is not None:
-                yield event.chain_result([card_component])
-                return
-            if output_mode == "card_and_text" and card_component is not None:
-                yield event.chain_result([Comp.Plain(text), card_component])
-                return
-            if output_mode == "card_forward" and card_component is not None:
-                yield event.chain_result(
-                    [
-                        Comp.Nodes(
-                            nodes=[
-                                Comp.Node(
-                                    name="星之卡比图鉴",
-                                    content=[Comp.Plain(text), card_component],
-                                )
-                            ]
-                        )
-                    ]
+            yield event.chain_result(
+                self._wiki_response_components(
+                    text, image_bytes, output_mode, card_component
                 )
-                return
-            if output_mode == "forward":
-                content: List[Any] = [Comp.Plain(text)]
-                if image_bytes:
-                    content.append(Comp.Image.fromBytes(image_bytes))
-                yield event.chain_result(
-                    [
-                        Comp.Nodes(
-                            nodes=[Comp.Node(name="星之卡比图鉴", content=content)]
-                        )
-                    ]
-                )
-                return
-            chain: List[Any] = [Comp.Plain(text)]
-            if image_bytes:
-                chain.append(Comp.Image.fromBytes(image_bytes))
-            yield event.chain_result(chain)
+            )
         except WikirbyError as exc:
             logger.warning("[%s] WiKirby 查询失败: %s", PLUGIN_ID, exc)
             yield event.plain_result(f"WiKirby 查询失败：{exc}")
         except Exception as exc:
             logger.exception("[%s] WiKirby 查询异常: %s", PLUGIN_ID, exc)
             yield event.plain_result("WiKirby 查询失败，请稍后再试。")
+
+    def _fandom_query_parts(
+        self, event: AstrMessageEvent
+    ) -> Tuple[str, str, str]:
+        raw = (event.message_str or "").strip()
+        command_text = raw[1:].lstrip() if raw.startswith("/") else raw
+        folded = command_text.casefold()
+        mode = "page"
+        if folded.startswith(("卡比fandom名称", "卡比社区百科名称")):
+            mode = "names"
+        elif folded.startswith(("卡比fandom章节", "卡比社区百科章节")):
+            mode = "sections"
+        remainder = self._command_remainder(
+            event,
+            {
+                "卡比Fandom名称",
+                "卡比fandom名称",
+                "卡比社区百科名称",
+                "卡比Fandom章节",
+                "卡比fandom章节",
+                "卡比社区百科章节",
+                "卡比Fandom",
+                "卡比fandom",
+                "卡比社区百科",
+                "kirbyfandom",
+                "KirbyFandom",
+            },
+        )
+        section = ""
+        if mode == "page" and "|" in remainder:
+            remainder, section = (part.strip() for part in remainder.split("|", 1))
+        query = remainder.strip()
+        if query.isdigit() or not query:
+            target = query or self._quoted_target(event)
+            if target:
+                entry, _ = self._entry_or_error(target)
+                if entry:
+                    query = self._display_name(entry)
+        return query, mode, section
+
+    @staticmethod
+    def _fandom_candidate_text(
+        candidates: List[Dict[str, Any]], mode: str = "page"
+    ) -> str:
+        lines = ["找到多个可能的 Kirby Fandom 页面，请改用完整页面名查询："]
+        for index, page in enumerate(candidates, start=1):
+            lines.append(f"{index}. {page.get('title') or '未命名页面'}")
+        command = {
+            "names": "卡比Fandom名称",
+            "sections": "卡比Fandom章节",
+        }.get(mode, "卡比Fandom")
+        lines.append(f"例如：{command} {candidates[0].get('title', '')}")
+        return "\n".join(lines)
+
+    async def _fandom_names_text(
+        self, query: str, resolved: Optional[Dict[str, Any]] = None
+    ) -> str:
+        client = getattr(self, "fandom", None)
+        if client is None:
+            return "Kirby Fandom 查询功能尚未初始化。"
+        resolved = resolved or await client.resolve(query)
+        if resolved.get("kind") == "candidates":
+            return self._fandom_candidate_text(
+                resolved.get("candidates", []), "names"
+            )
+        if resolved.get("kind") != "page":
+            return (
+                f"没有找到 Kirby Fandom 页面：{query}\n"
+                "可以尝试使用英文页面名，或换一个更具体的名称。"
+            )
+        page = resolved["page"]
+        names = client.get_language_names(page)
+        if not names:
+            return (
+                f"没有在「{page['title']}」页面找到多语言页面名称。\n"
+                f"来源：{page.get('url') or 'https://kirby.fandom.com'}"
+            )
+        lines = [f"Kirby Fandom「{page['title']}」的多语言页面名称："]
+        for row in names:
+            value = row.get("name", "")
+            if row.get("romanisation"):
+                value += f"（{row['romanisation']}）"
+            lines.append(f"{row.get('language', '未知语言')}：{value}")
+        lines.extend(
+            [
+                "说明：这些名称来自 Fandom 各语言社区页面，不等同于任天堂官方译名。",
+                f"来源：{page.get('url') or 'https://kirby.fandom.com'}",
+            ]
+        )
+        return "\n".join(lines)
+
+    async def _fandom_sections_text(
+        self, query: str, resolved: Optional[Dict[str, Any]] = None
+    ) -> str:
+        client = getattr(self, "fandom", None)
+        if client is None:
+            return "Kirby Fandom 查询功能尚未初始化。"
+        resolved = resolved or await client.resolve(query)
+        if resolved.get("kind") == "candidates":
+            return self._fandom_candidate_text(
+                resolved.get("candidates", []), "sections"
+            )
+        if resolved.get("kind") != "page":
+            return f"没有找到 Kirby Fandom 页面：{query}"
+        page = resolved["page"]
+        sections = client.get_section_titles(page)
+        if not sections:
+            return f"「{page['title']}」页面没有可查询的正文章节。"
+        lines = [f"Kirby Fandom「{page['title']}」的章节："]
+        for row in sections[:60]:
+            indent = "  " if row.get("level") not in {"", "2"} else ""
+            lines.append(f"{indent}{row.get('index')}. {row.get('title')}")
+        if len(sections) > 60:
+            lines.append(f"另有 {len(sections) - 60} 个章节未显示。")
+        lines.extend(
+            [
+                f"查询章节：卡比Fandom {page['title']} | {sections[0]['title']}",
+                f"来源：{page.get('url') or 'https://kirby.fandom.com'}",
+            ]
+        )
+        return "\n".join(lines)
+
+    async def _fandom_page_content(
+        self,
+        event: AstrMessageEvent,
+        page: Dict[str, Any],
+        *,
+        section: str = "",
+        translate: bool = True,
+    ) -> Tuple[str, str, str]:
+        client = getattr(self, "fandom", None)
+        if client is None:
+            return "Kirby Fandom 查询功能尚未初始化。", "", ""
+
+        lines = [f"Kirby Fandom：{page['title']}"]
+        summary = str(page.get("summary", "") or "").strip()
+        if summary and not section:
+            if translate:
+                try:
+                    summary = await self._fandom_translate_text(event, summary)
+                except Exception as exc:
+                    logger.warning(
+                        "[%s] Kirby Fandom AI 翻译失败，保留原文: %s",
+                        PLUGIN_ID,
+                        exc,
+                    )
+            lines.extend(["简介：", summary])
+
+        details = client.get_page_details(page, section)
+        detail_lines: list[str] = []
+        if section:
+            matched_sections = details.get("sections", [])
+            if not matched_sections:
+                return (
+                    f"Kirby Fandom「{page['title']}」没有找到章节「{section}」。",
+                    "",
+                    "",
+                )
+            for row in matched_sections:
+                detail_lines.extend([f"{row['title']}：", row["text"]])
+        elif self._bool_value(self._config_value("fandom_show_details", True)):
+            for row in details.get("infobox", []):
+                detail_lines.append(f"{row['label']}：{row['value']}")
+            for row in details.get("categories", []):
+                detail_lines.append(f"{row['label']}：{row['value']}")
+            for row in details.get("sections", []):
+                detail_lines.extend([f"{row['title']}：", row["text"]])
+
+        detail_text = "\n".join(detail_lines).strip()
+        if detail_text and translate and self._fandom_translate_enabled():
+            try:
+                detail_text = await self._fandom_translate_text(event, detail_text)
+            except Exception as exc:
+                logger.warning(
+                    "[%s] Kirby Fandom 详细栏目翻译失败，保留原文: %s",
+                    PLUGIN_ID,
+                    exc,
+                )
+
+        if not section:
+            names = client.get_language_names(page)
+            if names:
+                name_lines = ["多语言页面名称："]
+                for row in names:
+                    value = row.get("name", "")
+                    if row.get("romanisation"):
+                        value += f"（{row['romanisation']}）"
+                    name_lines.append(f"• {row.get('language', '未知语言')}：{value}")
+                detail_text = "\n".join(
+                    part for part in (detail_text, "\n".join(name_lines)) if part
+                )
+        if detail_text:
+            lines.extend(["资料：", detail_text])
+        lines.append(f"来源：{page.get('url') or 'https://kirby.fandom.com'}")
+        return "\n".join(lines), summary, detail_text
+
+    @filter.llm_tool(name="kirby_catalog_lookup_fandom_names")
+    async def fandom_lookup_names(
+        self, event: AstrMessageEvent, query: str
+    ) -> str:
+        """查询 Kirby Fandom 的多语言社区页面名称。
+
+        返回英文、日文、中文及其它语言社区的页面标题；这些名称不保证是
+        任天堂官方译名。工具只读，不会修改图鉴数据。
+
+        Args:
+            query(string): 要查询的角色名、英文页面名或 Kirby Fandom 页面标题。
+        """
+        if not self._fandom_enabled():
+            return "Kirby Fandom 查询功能当前已关闭。"
+        try:
+            return await self._fandom_names_text(query.strip())
+        except KirbyFandomError as exc:
+            logger.warning(
+                "[%s] LLM 调用 Kirby Fandom 名称查询失败: %s",
+                PLUGIN_ID,
+                exc,
+            )
+            return f"Kirby Fandom 查询失败：{exc}"
+        except Exception as exc:
+            logger.exception(
+                "[%s] LLM 调用 Kirby Fandom 名称查询异常: %s",
+                PLUGIN_ID,
+                exc,
+            )
+            return "Kirby Fandom 查询失败，请稍后再试。"
+
+    @filter.llm_tool(name="kirby_catalog_lookup_fandom")
+    async def fandom_lookup_page(
+        self, event: AstrMessageEvent, query: str, section: str = ""
+    ) -> str:
+        """查询 Kirby Fandom 的角色、敌人、作品、关卡或道具资料。
+
+        可返回页面简介、信息框、正文、分类、多语言页面名称和来源；填写
+        section 时只查询对应章节。工具只读，不会修改图鉴或发送群消息。
+
+        Args:
+            query(string): 角色名、作品名、英文页面名或 Kirby Fandom 页面标题。
+            section(string): 可选的章节标题，例如 Games、Personality 或 Trivia。
+        """
+        if not self._fandom_enabled():
+            return "Kirby Fandom 查询功能当前已关闭。"
+        client = getattr(self, "fandom", None)
+        if client is None:
+            return "Kirby Fandom 查询功能尚未初始化。"
+        try:
+            resolved = await client.resolve(query.strip())
+            if resolved.get("kind") == "candidates":
+                return self._fandom_candidate_text(
+                    resolved.get("candidates", []), "page"
+                )
+            if resolved.get("kind") != "page":
+                return f"没有找到 Kirby Fandom 页面：{query}"
+            text, _, _ = await self._fandom_page_content(
+                event,
+                resolved["page"],
+                section=section.strip(),
+                translate=False,
+            )
+            return text
+        except KirbyFandomError as exc:
+            logger.warning("[%s] LLM 调用 Kirby Fandom 查询失败: %s", PLUGIN_ID, exc)
+            return f"Kirby Fandom 查询失败：{exc}"
+        except Exception as exc:
+            logger.exception("[%s] LLM 调用 Kirby Fandom 查询异常: %s", PLUGIN_ID, exc)
+            return "Kirby Fandom 查询失败，请稍后再试。"
+
+    async def _fandom_query_impl(self, event: AstrMessageEvent):
+        if not self._fandom_enabled():
+            yield event.plain_result("Kirby Fandom 查询功能当前已关闭。")
+            return
+        client = getattr(self, "fandom", None)
+        if client is None:
+            yield event.plain_result("Kirby Fandom 查询功能尚未初始化。")
+            return
+
+        query, mode, section = self._fandom_query_parts(event)
+        if not query:
+            yield event.plain_result(
+                "用法：卡比Fandom <页面名>；卡比Fandom名称 <页面名>；"
+                "卡比Fandom章节 <页面名>；"
+                "指定章节：卡比Fandom <页面名> | <章节名>。"
+            )
+            return
+        try:
+            resolved = await client.resolve(query)
+            if resolved.get("kind") == "candidates":
+                yield event.plain_result(
+                    self._fandom_candidate_text(
+                        resolved.get("candidates", []), mode
+                    )
+                )
+                return
+            if resolved.get("kind") != "page":
+                yield event.plain_result(
+                    f"没有找到 Kirby Fandom 页面：{query}\n"
+                    "可以尝试使用英文页面名，或换一个更具体的名称。"
+                )
+                return
+            if mode == "names":
+                yield event.plain_result(await self._fandom_names_text(query, resolved))
+                return
+            if mode == "sections":
+                yield event.plain_result(
+                    await self._fandom_sections_text(query, resolved)
+                )
+                return
+
+            page = resolved["page"]
+            text, summary, detail_text = await self._fandom_page_content(
+                event, page, section=section
+            )
+            if section and not detail_text:
+                sections_text = await self._fandom_sections_text(query, resolved)
+                yield event.plain_result(f"{text}\n\n{sections_text}")
+                return
+
+            show_image = self._bool_value(
+                self._config_value("fandom_show_image", True)
+            )
+            image_bytes = None
+            if show_image and page.get("image_url"):
+                image_bytes = await client.get_image_bytes(page["image_url"])
+            output_mode = self._fandom_output_mode()
+            card_component: Any | None = None
+            if output_mode in {"card", "card_and_text", "card_forward"}:
+                card_component = await self._fandom_card_component(
+                    page, summary, detail_text, image_bytes
+                )
+                if card_component is None:
+                    output_mode = (
+                        "forward" if output_mode == "card_forward" else "text"
+                    )
+            yield event.chain_result(
+                self._wiki_response_components(
+                    text, image_bytes, output_mode, card_component
+                )
+            )
+        except KirbyFandomError as exc:
+            logger.warning("[%s] Kirby Fandom 查询失败: %s", PLUGIN_ID, exc)
+            yield event.plain_result(f"Kirby Fandom 查询失败：{exc}")
+        except Exception as exc:
+            logger.exception("[%s] Kirby Fandom 查询异常: %s", PLUGIN_ID, exc)
+            yield event.plain_result("Kirby Fandom 查询失败，请稍后再试。")
 
     @staticmethod
     def _normalise_guess(value: str) -> str:
@@ -1021,6 +1493,15 @@ class KirbyCatalogPlugin(Star):
         async for result in self._wikirby_query_impl(event):
             yield result
 
+    @filter.regex(
+        r"(?i)^/?(?:卡比fandom(?:名称|章节)?|卡比社区百科(?:名称|章节)?|kirbyfandom)(?:\s+.+)?$"
+    )
+    @filter.event_message_type(EventMessageType.GROUP_MESSAGE)
+    async def fandom_query_plain(self, event: AstrMessageEvent):
+        """统一处理 Kirby Fandom 的页面、名称和章节查询。"""
+        async for result in self._fandom_query_impl(event):
+            yield result
+
     @filter.command("星之卡比图鉴", alias={"群盟友图鉴"})
     @filter.event_message_type(EventMessageType.GROUP_MESSAGE)
     async def group_gallery(self, event: AstrMessageEvent):
@@ -1065,7 +1546,8 @@ class KirbyCatalogPlugin(Star):
         user_id = self._sender_id(event)
         config = self.store.load_group(group_id)
         user = config.get(user_id)
-        unlocked = set(self.store.unlocked_filenames(user or {}))
+        progress = self.store.user_progress(user or {})
+        unlocked = set(progress["unlocked_filenames"])
         if not unlocked:
             yield event.plain_result("你还没有解锁任何盟友。")
             return
@@ -1073,7 +1555,10 @@ class KirbyCatalogPlugin(Star):
             self.store.gallery_dir
             / f"personal_{Path(group_id).name}_{Path(user_id).name}.png"
         )
-        title = f"{self._sender_name(event)} 的盟友图鉴  已解锁 {len(unlocked)}"
+        title = (
+            f"{self._sender_name(event)} 的盟友图鉴  "
+            f"已解锁 {progress['unlocked']}/{progress['total']}"
+        )
         try:
             await asyncio.to_thread(
                 self.store.render_gallery,
@@ -1089,6 +1574,34 @@ class KirbyCatalogPlugin(Star):
         except Exception as exc:
             logger.exception("[%s] 生成个人图鉴失败: %s", PLUGIN_ID, exc)
             yield event.plain_result("个人图鉴生成失败，请稍后再试。")
+
+    @filter.command(
+        "我的图鉴进度", alias={"图鉴进度", "我的盟友图鉴进度"}
+    )
+    @filter.event_message_type(EventMessageType.GROUP_MESSAGE)
+    async def personal_progress(self, event: AstrMessageEvent):
+        """查看自己的有效图鉴数量、完成率和剩余数量。"""
+        group_id = self._group_id(event)
+        user_id = self._sender_id(event)
+        self.store.refresh()
+        user = self.store.load_group(group_id).get(user_id, {})
+        progress = self.store.user_progress(user)
+        total = int(progress["total"])
+        if total <= 0:
+            yield event.plain_result("图鉴中还没有盟友素材。")
+            return
+        unlocked = int(progress["unlocked"])
+        remaining = max(0, total - unlocked)
+        percent = unlocked / total * 100
+        filled = min(20, round(unlocked / total * 20))
+        bar = "█" * filled + "░" * (20 - filled)
+        status = "已经完成全图鉴！" if remaining == 0 else f"还差 {remaining} 个盟友"
+        yield event.plain_result(
+            f"{self._sender_name(event)} 的图鉴进度\n"
+            f"{bar} {percent:.1f}%\n"
+            f"已解锁：{unlocked}/{total}\n"
+            f"{status}"
+        )
 
     @filter.command("猜盟友")
     @filter.event_message_type(EventMessageType.GROUP_MESSAGE)
@@ -1218,6 +1731,7 @@ class KirbyCatalogPlugin(Star):
             "今日盟友：每天抽取盟友\n"
             "查盟友：查看自己今天的盟友，可 @ 成员\n"
             "我的盟友图鉴：查看个人收藏\n"
+            "我的图鉴进度：查看有效解锁数、完成率和剩余数量\n"
             "星之卡比图鉴：查看本群图鉴（编号和名字）\n"
             "随机盟友：随机查看一位盟友，不计入抽取记录\n"
             "猜盟友：发起猜名，答对只公布答案，不改变图鉴\n"
@@ -1225,6 +1739,9 @@ class KirbyCatalogPlugin(Star):
             "盟友名单 [关键词]：检索图鉴编号和名字\n"
             "卡比百科 [角色名]：查询 WiKirby 页面简介、资料、语言名称和首图\n"
             "卡比百科名称 [角色名]：只查询页面的多语言官方名称\n"
+            "卡比Fandom [页面名]：查询 Kirby Fandom 简介、资料、正文栏目和首图\n"
+            "卡比Fandom章节 [页面名]：查看可查询栏目；用“页面名 | 栏目名”读取指定栏目\n"
+            "卡比Fandom名称 [页面名]：查看各语言社区页面名（不等同于官方译名）\n"
             "管理员命令：星之卡比图鉴添加、换图、改名、迁移、清理旧名、删除重复"
         )
 

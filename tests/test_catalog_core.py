@@ -344,6 +344,27 @@ class CatalogStoreTests(unittest.TestCase):
             self.assertEqual(user["current"]["ally_filename"], target["filename"])
             self.assertEqual(user["unlocked"][0]["ally_filename"], target["filename"])
 
+    def test_user_progress_counts_canonical_aliases_once(self):
+        with tempfile.TemporaryDirectory() as temp:
+            store = CatalogStore(Path(temp) / "new", image_base_url="")
+            first = store.add_asset("斯品", self.make_image(), "星之卡比")
+            store.add_asset("多洛奇", self.make_image((0, 255, 0)), "星之卡比")
+            store._catalog[first["filename"]]["aliases"] = ["旧名斯品.png"]
+
+            progress = store.user_progress(
+                {
+                    "unlocked": [
+                        {"ally_filename": first["filename"]},
+                        {"ally_filename": "旧名斯品.png"},
+                    ]
+                }
+            )
+
+            self.assertEqual(progress["unlocked"], 1)
+            self.assertEqual(progress["total"], 2)
+            self.assertEqual(len(progress["missing"]), 1)
+            self.assertEqual(progress["missing"][0]["name"], "多洛奇")
+
 
 if __name__ == "__main__":
     unittest.main()

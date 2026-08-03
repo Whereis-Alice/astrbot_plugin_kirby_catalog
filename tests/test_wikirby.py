@@ -469,6 +469,8 @@ class WikirbyCardTests(unittest.TestCase):
         self.assertEqual(len({theme["slug"] for theme in themes}), 4)
         self.assertEqual(len({theme["surface"] for theme in themes}), 4)
         self.assertTrue(all(theme["surface"].casefold() != "#ffffff" for theme in themes))
+        self.assertTrue(all(int(theme["surface"][1:3], 16) >= 238 for theme in themes))
+        self.assertTrue(all(theme.get("panel_a") for theme in themes))
         self.assertEqual(resolve_card_template("unknown")["slug"], "fountain")
 
 
@@ -680,7 +682,7 @@ class WikirbyCommandTests(unittest.IsolatedAsyncioTestCase):
         render_call = plugin.html_render.await_args
         self.assertEqual(render_call.kwargs["options"]["selector"], "#kirby-card")
         self.assertTrue(render_call.kwargs["options"]["full_page"])
-        self.assertEqual(render_call.kwargs["options"]["viewport_width"], 1280)
+        self.assertEqual(render_call.kwargs["options"]["viewport_width"], 1600)
         self.assertEqual(render_call.kwargs["options"]["viewport_height"], 600)
         self.assertEqual(render_call.kwargs["options"]["scale"], "device")
         self.assertEqual(

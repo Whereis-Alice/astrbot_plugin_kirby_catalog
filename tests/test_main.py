@@ -52,6 +52,14 @@ class FakeStore:
     def asset_bytes(self, entry, download=False):
         return None
 
+    def user_progress(self, _user):
+        return {
+            "unlocked": 102,
+            "total": 409,
+            "missing": [],
+            "unlocked_filenames": [],
+        }
+
 
 class FakeContext:
     def __init__(self):
@@ -205,6 +213,18 @@ class GuessFlowTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(results[0][0].text.startswith("随机盟友：#12 星之卡比"))
         self.assertFalse(plugin.store.group)
+
+    async def test_personal_progress_reports_percentage_and_remaining_count(self):
+        plugin = make_plugin(self.entry)
+
+        results = [
+            result
+            async for result in plugin.personal_progress(FakeEvent("我的图鉴进度"))
+        ]
+
+        self.assertIn("已解锁：102/409", results[0])
+        self.assertIn("24.9%", results[0])
+        self.assertIn("还差 307 个盟友", results[0])
 
 
 if __name__ == "__main__":
