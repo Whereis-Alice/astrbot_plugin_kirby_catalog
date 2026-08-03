@@ -38,7 +38,7 @@ IMAGE_BASE_URL = "http://save.my996.top/?/img/"
     PLUGIN_ID,
     "Whereis-Alice",
     "星之卡比盟友抽取、图鉴、猜名与排行榜插件",
-    "2.8.1",
+    "2.8.2",
     "https://github.com/Whereis-Alice/astrbot_plugin_kirby_catalog",
 )
 class KirbyCatalogPlugin(Star):
@@ -529,17 +529,83 @@ class KirbyCatalogPlugin(Star):
         names = await client.get_language_names(page)
         if not names:
             return (
-                f"没有在「{page['title']}」页面找到“Names in other languages”名称表。\n"
+                f"没有在「{page['title']}」页面找到可识别的多语言名称表。\n"
                 f"来源：{page.get('url') or 'https://wikirby.com'}"
             )
         lines = [f"{page['title']} 的官方名称："]
+        previous_section = ""
         for row in names:
+            section = str(row.get("section", "") or "").strip()
+            if section and section != previous_section:
+                lines.append(f"【{section}】")
+                previous_section = section
             value = row["name"]
             if row.get("romanisation"):
                 value += f"（{row['romanisation']}）"
             lines.append(f"{row['language']}：{value}")
         lines.append(f"来源：{page.get('url') or 'https://wikirby.com'}")
         return "\n".join(lines)
+
+    async def _wikirby_page_content(
+        self,
+        event: AstrMessageEvent,
+        page: Dict[str, Any],
+        *,
+        translate: bool = True,
+    ) -> Tuple[str, str, str]:
+        """Build the text shared by the user command and the LLM lookup tool."""
+        client = getattr(self, "wikirby", None)
+        if client is None:
+            return "WiKirby 查询功能尚未初始化。", "", ""
+
+        lines = [f"WiKirby：{page['title']}"]
+        summary = str(page.get("summary", "") or "").strip()
+        if summary:
+            if translate:
+                try:
+                    summary = await self._wikirby_translate_text(event, summary)
+                except Exception as exc:
+                    logger.warning(
+                        "[%s] WiKirby AI 翻译失败，保留原文: %s", PLUGIN_ID, exc
+                    )
+            lines.extend(["简介：", summary])
+
+        show_details = self._config_value("wikirby_show_details", True)
+        if isinstance(show_details, str):
+            show_details = show_details.strip().casefold() not in {
+                "0",
+                "false",
+                "no",
+                "off",
+            }
+        detail_text = ""
+        if show_details:
+            try:
+                details = await client.get_page_details(page)
+            except Exception as exc:
+                logger.warning("[%s] WiKirby 详细栏目读取失败: %s", PLUGIN_ID, exc)
+                details = {"infobox": [], "sections": []}
+            detail_lines: list[str] = []
+            for row in details.get("infobox", []):
+                detail_lines.append(f"{row['label']}：{row['value']}")
+            for section in details.get("sections", []):
+                detail_lines.extend([f"{section['title']}：", section["text"]])
+            if detail_lines:
+                detail_text = "\n".join(detail_lines)
+                if translate and self._wikirby_translate_enabled():
+                    try:
+                        detail_text = await self._wikirby_translate_text(
+                            event, detail_text
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "[%s] WiKirby 详细栏目翻译失败，保留原文: %s",
+                            PLUGIN_ID,
+                            exc,
+                        )
+                lines.extend(["资料：", detail_text])
+        lines.append(f"来源：{page.get('url') or 'https://wikirby.com'}")
+        return "\n".join(lines), summary, detail_text
 
     @filter.llm_tool(name="kirby_catalog_lookup_official_names")
     async def wikirby_lookup_official_names(
@@ -561,6 +627,45 @@ class KirbyCatalogPlugin(Star):
             return f"WiKirby 查询失败：{exc}"
         except Exception as exc:
             logger.exception("[%s] LLM 调用 WiKirby 名称查询异常: %s", PLUGIN_ID, exc)
+            return "WiKirby 查询失败，请稍后再试。"
+
+    @filter.llm_tool(name="kirby_catalog_lookup_wikirby")
+    async def wikirby_lookup_page(
+        self, event: AstrMessageEvent, query: str
+    ) -> str:
+        """查询 WiKirby 的角色、敌人、关卡或道具百科资料。
+
+        返回页面简介、可读资料栏目、其他语言名称和来源链接；只读取公开资料，
+        不会抽取盟友、修改图鉴或发送消息。
+
+        Args:
+            query(string): 角色名、敌人名、关卡名、英文页面名或 WiKirby 页面标题。
+        """
+        if not self._wikirby_enabled():
+            return "WiKirby 查询功能当前已关闭。"
+        client = getattr(self, "wikirby", None)
+        if client is None:
+            return "WiKirby 查询功能尚未初始化。"
+        try:
+            resolved = await client.resolve(query.strip())
+            if resolved.get("kind") == "candidates":
+                return self._wikirby_candidate_text(
+                    resolved.get("candidates", []), False
+                )
+            if resolved.get("kind") != "page":
+                return (
+                    f"没有找到 WiKirby 页面：{query}\n"
+                    "可以尝试使用英文页面名，或换一个更具体的中文名称。"
+                )
+            text, _, _ = await self._wikirby_page_content(
+                event, resolved["page"], translate=False
+            )
+            return text
+        except WikirbyError as exc:
+            logger.warning("[%s] LLM 调用 WiKirby 百科查询失败: %s", PLUGIN_ID, exc)
+            return f"WiKirby 查询失败：{exc}"
+        except Exception as exc:
+            logger.exception("[%s] LLM 调用 WiKirby 百科查询异常: %s", PLUGIN_ID, exc)
             return "WiKirby 查询失败，请稍后再试。"
 
     async def _wikirby_query_impl(self, event: AstrMessageEvent):
@@ -599,54 +704,7 @@ class KirbyCatalogPlugin(Star):
                 )
                 return
 
-            lines = [f"WiKirby：{page['title']}"]
-            summary = str(page.get("summary", "") or "").strip()
-            if summary:
-                try:
-                    summary = await self._wikirby_translate_text(event, summary)
-                except Exception as exc:
-                    logger.warning("[%s] WiKirby AI 翻译失败，保留原文: %s", PLUGIN_ID, exc)
-                lines.extend(["简介：", summary])
-            show_details = self._config_value("wikirby_show_details", True)
-            if isinstance(show_details, str):
-                show_details = show_details.strip().casefold() not in {
-                    "0",
-                    "false",
-                    "no",
-                    "off",
-                }
-            detail_text = ""
-            if show_details:
-                try:
-                    details = await client.get_page_details(page)
-                except Exception as exc:
-                    logger.warning("[%s] WiKirby 详细栏目读取失败: %s", PLUGIN_ID, exc)
-                    details = {"infobox": [], "sections": []}
-                detail_lines: list[str] = []
-                for row in details.get("infobox", []):
-                    detail_lines.append(f"{row['label']}：{row['value']}")
-                for section in details.get("sections", []):
-                    detail_lines.extend([f"{section['title']}：", section["text"]])
-                if detail_lines:
-                    detail_text = "\n".join(detail_lines)
-                    if self._wikirby_translate_enabled():
-                        try:
-                            detail_text = await self._wikirby_translate_text(
-                                event, detail_text
-                            )
-                        except Exception as exc:
-                            logger.warning(
-                                "[%s] WiKirby 详细栏目翻译失败，保留原文: %s",
-                                PLUGIN_ID,
-                                exc,
-                            )
-                    lines.extend(["资料：", detail_text])
-            lines.extend(
-                [
-                    f"来源：{page.get('url') or 'https://wikirby.com'}",
-                ]
-            )
-            text = "\n".join(lines)
+            text, summary, detail_text = await self._wikirby_page_content(event, page)
             show_image = self._config_value("wikirby_show_image", True)
             if isinstance(show_image, str):
                 show_image = show_image.strip().casefold() not in {"0", "false", "no", "off"}

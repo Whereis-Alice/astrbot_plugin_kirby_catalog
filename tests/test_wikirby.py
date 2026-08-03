@@ -15,6 +15,7 @@ from astrbot_plugin_kirby_catalog.wikirby import (
     parse_language_names,
     parse_locations_html,
     parse_page_details,
+    parse_rendered_language_names,
     parse_rendered_sections,
 )
 from astrbot_plugin_kirby_catalog.wikirby_card import (
@@ -194,6 +195,46 @@ class WikirbyParserTests(unittest.TestCase):
         self.assertEqual(rows[2]["language"], "繁体中文")
         self.assertEqual(rows[3]["name"], "噗噜鳗")
         self.assertNotIn("Plu Eel", " ".join(row["name"] for row in rows))
+
+    def test_extracts_hand_authored_language_tables_with_subheadings(self):
+        rendered_html = """
+        <div class="mw-parser-output">
+          <h2><span class="mw-headline">Names in other languages</span></h2>
+          <h3><span class="mw-headline">Meta Knight</span></h3>
+          <table class="roundtable">
+            <tr><th>Language</th><th>Name</th><th>Meaning</th></tr>
+            <tr><td><b>Simplified Chinese</b></td><td>魅塔骑士<br><i>Mèitǎ Qíshì</i></td><td>Meta Knight</td></tr>
+            <tr><td><b>Japanese</b></td><td><ruby>メタ<rt>めた</rt></ruby>ナイト<br><i>Meta Naito</i></td><td>Meta Knight</td></tr>
+          </table>
+          <h3><span class="mw-headline">The Lone Swordsman, Meta Knight</span></h3>
+          <table class="roundtable">
+            <tr><th>Language</th><th>Name</th><th>Meaning</th></tr>
+            <tr><td><b>Simplified Chinese</b></td><td>孤高的骑士 魅塔骑士<br><i>Gūgāo de Qíshì Mèitǎ Qíshì</i></td><td>The Lone Knight, Meta Knight</td></tr>
+          </table>
+        </div>
+        """
+
+        rows = parse_rendered_language_names(rendered_html)
+
+        self.assertEqual(
+            rows[0],
+            {
+                "language": "简体中文",
+                "name": "魅塔骑士",
+                "romanisation": "Mèitǎ Qíshì",
+                "section": "Meta Knight",
+            },
+        )
+        self.assertEqual(rows[1]["language"], "日语")
+        self.assertEqual(rows[1]["name"], "メタナイト")
+        self.assertNotIn("めた", rows[1]["name"])
+        self.assertEqual(rows[2]["section"], "The Lone Swordsman, Meta Knight")
+
+        details = parse_page_details("", rendered_html)
+        language_section = details["sections"][-1]
+        self.assertEqual(language_section["title"], "其他语言名称")
+        self.assertIn("【Meta Knight】", language_section["text"])
+        self.assertIn("简体中文：魅塔骑士", language_section["text"])
 
     def test_page_url_is_converted_to_title(self):
         self.assertEqual(
@@ -455,6 +496,36 @@ class WikirbyClientDetailsTests(unittest.IsolatedAsyncioTestCase):
         get_rendered.assert_awaited_once_with("Waddle Doo")
         self.assertEqual(details["sections"][0]["title"], "Game appearances")
 
+    async def test_names_fall_back_to_rendered_language_table(self):
+        client = WikirbyClient(cache_ttl_seconds=0)
+        page = {
+            "pageid": 24,
+            "lastrevid": 25,
+            "title": "Meta Knight",
+            "wikitext": "No Names template here.",
+        }
+        rendered_html = """
+        <div class="mw-parser-output">
+          <h2><span class="mw-headline">Names in other languages</span></h2>
+          <h3><span class="mw-headline">Meta Knight</span></h3>
+          <table class="roundtable">
+            <tr><th>Language</th><th>Name</th></tr>
+            <tr><td>Simplified Chinese</td><td>魅塔骑士<br><i>Mèitǎ Qíshì</i></td></tr>
+          </table>
+        </div>
+        """
+
+        with patch.object(
+            client,
+            "_get_rendered_page_html",
+            new=AsyncMock(return_value=rendered_html),
+        ) as get_rendered:
+            names = await client.get_language_names(page)
+
+        get_rendered.assert_awaited_once_with("Meta Knight")
+        self.assertEqual(names[0]["name"], "魅塔骑士")
+        self.assertEqual(names[0]["romanisation"], "Mèitǎ Qíshì")
+
 
 class WikirbyCommandTests(unittest.IsolatedAsyncioTestCase):
     async def test_page_falls_back_to_rest_when_mediawiki_api_is_blocked(self):
@@ -523,6 +594,31 @@ class WikirbyCommandTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn("简体中文：噗噜鳗（pū lū màn）", result)
         self.assertIn("来源：https://wikirby.com/wiki/Driblee", result)
+
+    async def test_full_wikirby_page_is_available_as_llm_tool(self):
+        plugin = KirbyCatalogPlugin.__new__(KirbyCatalogPlugin)
+        plugin.config = {"wikirby_enabled": True}
+        plugin.wikirby = FakeWikirby()
+
+        result = await plugin.wikirby_lookup_page(FakeEvent(""), "Driblee")
+
+        self.assertIn("WiKirby：Driblee", result)
+        self.assertIn("简介：", result)
+        self.assertIn("来源：https://wikirby.com/wiki/Driblee", result)
+
+    async def test_full_wikirby_llm_tool_does_not_run_nested_translation(self):
+        plugin = KirbyCatalogPlugin.__new__(KirbyCatalogPlugin)
+        plugin.config = {
+            "wikirby_enabled": True,
+            "wikirby_translate_enabled": True,
+        }
+        plugin.wikirby = FakeWikirby()
+        plugin.context = FakeTranslationContext()
+
+        result = await plugin.wikirby_lookup_page(FakeEvent(""), "Driblee")
+
+        self.assertIn("A short Kirby character summary.", result)
+        self.assertEqual(plugin.context.calls, [])
 
     async def test_unified_handler_handles_slash_command_once(self):
         plugin = KirbyCatalogPlugin.__new__(KirbyCatalogPlugin)

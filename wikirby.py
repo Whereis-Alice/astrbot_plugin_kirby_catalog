@@ -20,7 +20,7 @@ FALLBACK_API_URL = "https://www.wikirby.com/w/api.php"
 DEFAULT_REST_URL = "https://wikirby.com/w/rest.php"
 FALLBACK_REST_URL = "https://www.wikirby.com/w/rest.php"
 USER_AGENT = (
-    "astrbot-plugin-kirby-catalog/2.8.1 "
+    "astrbot-plugin-kirby-catalog/2.8.2 "
     "(+https://github.com/Whereis-Alice/astrbot_plugin_kirby_catalog)"
 )
 _RETRYABLE_HTTP_CODES = {403, 408, 425, 429, 500, 502, 503, 504}
@@ -64,6 +64,26 @@ _LANGUAGE_FIELDS = (
     ("ru", "俄语", "ruR"),
     ("th", "泰语", "thR"),
 )
+_RENDERED_LANGUAGE_LABELS = {
+    "japanese": "日语",
+    "english": "英语",
+    "traditional chinese": "繁体中文",
+    "simplified chinese": "简体中文",
+    "chinese": "中文",
+    "korean": "韩语",
+    "dutch": "荷兰语",
+    "french": "法语",
+    "german": "德语",
+    "italian": "意大利语",
+    "spanish": "西班牙语",
+    "latin american spanish": "拉丁美洲西班牙语",
+    "european spanish": "欧洲西班牙语",
+    "portuguese": "葡萄牙语",
+    "brazilian portuguese": "巴西葡萄牙语",
+    "polish": "波兰语",
+    "russian": "俄语",
+    "thai": "泰语",
+}
 
 
 class WikirbyError(RuntimeError):
@@ -320,6 +340,140 @@ def _rendered_table_lines(table: Tag) -> list[str]:
     return output
 
 
+def parse_rendered_language_names(rendered_html: str) -> list[dict[str, str]]:
+    """Read hand-authored Language/Name tables below WiKirby's names heading."""
+    if not rendered_html.strip():
+        return []
+    soup = BeautifulSoup(rendered_html, "html.parser")
+    root = soup.select_one(".mw-parser-output")
+    if root is None:
+        return []
+
+    rows: list[dict[str, str]] = []
+    active = False
+    section = ""
+    seen: set[tuple[str, str, str, str]] = set()
+    for child in root.children:
+        if not isinstance(child, Tag):
+            continue
+        if child.name == "h2":
+            heading = _rendered_heading_text(child).casefold()
+            active = "names in other languages" in heading
+            section = ""
+            continue
+        if not active:
+            continue
+        if child.name in {"h3", "h4"}:
+            section = _rendered_heading_text(child)
+            continue
+        if child.name != "table":
+            continue
+        for row in _rendered_language_table_rows(child, section):
+            key = (
+                row.get("section", ""),
+                row["language"],
+                row["name"],
+                row.get("romanisation", ""),
+            )
+            if key not in seen:
+                seen.add(key)
+                rows.append(row)
+    return rows
+
+
+def _rendered_language_table_rows(
+    table: Tag, section: str
+) -> list[dict[str, str]]:
+    table_rows = table.find_all("tr")
+    header_index = -1
+    language_index = -1
+    name_index = -1
+    for index, table_row in enumerate(table_rows):
+        cells = table_row.find_all(["th", "td"], recursive=False)
+        headers = [_rendered_text(cell).casefold().rstrip(":") for cell in cells]
+        language_index = next(
+            (position for position, value in enumerate(headers) if "language" in value),
+            -1,
+        )
+        name_index = next(
+            (position for position, value in enumerate(headers) if value == "name"),
+            -1,
+        )
+        if language_index >= 0 and name_index >= 0:
+            header_index = index
+            break
+    if header_index < 0:
+        return []
+
+    rows: list[dict[str, str]] = []
+    for table_row in table_rows[header_index + 1 :]:
+        cells = table_row.find_all(["th", "td"], recursive=False)
+        if len(cells) <= max(language_index, name_index):
+            continue
+        language = _rendered_language_label(_rendered_text(cells[language_index]))
+        name, romanisation = _rendered_language_name_value(cells[name_index])
+        if not language or not name:
+            continue
+        row = {"language": language, "name": name}
+        if section:
+            row["section"] = section
+        if romanisation:
+            row["romanisation"] = romanisation
+        rows.append(row)
+    return rows
+
+
+def _rendered_language_label(value: str) -> str:
+    normalized = re.sub(r"\s+", " ", value).strip().casefold()
+    return _RENDERED_LANGUAGE_LABELS.get(normalized, value.strip())
+
+
+def _rendered_language_name_value(cell: Tag) -> tuple[str, str]:
+    """Separate visible names from italic romanisation in one table cell."""
+    fragment = BeautifulSoup(str(cell), "html.parser")
+    for element in fragment.select("sup, .reference, small, rt"):
+        element.decompose()
+    for line_break in fragment.find_all("br"):
+        line_break.replace_with("\n")
+
+    romanisation_lines = _unique_rendered_lines(
+        _rendered_text(element) for element in fragment.find_all(["i", "em"])
+    )
+    # Keep inline markup inside one official name; only <br> separates variants.
+    lines = _unique_rendered_lines(fragment.get_text().splitlines())
+    names: list[str] = []
+    romanisation: list[str] = []
+    for line in lines:
+        if line in romanisation_lines or (
+            names and _contains_non_latin_letter(names[-1]) and _is_latin_name(line)
+        ):
+            romanisation.append(line)
+        else:
+            names.append(line)
+    return " / ".join(names), " / ".join(dict.fromkeys(romanisation))
+
+
+def _unique_rendered_lines(values: Any) -> list[str]:
+    lines: list[str] = []
+    for value in values:
+        text = html.unescape(str(value or ""))
+        text = re.sub(r"\[\s*\d+(?:\.\d+)?\s*\]", "", text)
+        text = re.sub(r"\s+", " ", text).strip()
+        if text and text not in lines:
+            lines.append(text)
+    return lines
+
+
+def _contains_non_latin_letter(value: str) -> bool:
+    return any(char.isalpha() and not char.isascii() for char in value)
+
+
+def _is_latin_name(value: str) -> bool:
+    return bool(
+        re.fullmatch(r"[A-Za-z\u00c0-\u024f'’ .-]+", value.strip())
+    )
+
+
 def parse_page_details(
     wikitext: str, rendered_html: str = ""
 ) -> dict[str, list[dict[str, str]]]:
@@ -374,10 +528,17 @@ def parse_page_details(
                     + "\n".join(f"• {location}" for location in locations)
                 )
                 break
-    language_names = parse_language_names(source)
+    language_names = parse_language_names(source) or parse_rendered_language_names(
+        rendered_html
+    )
     if language_names:
         name_lines: list[str] = []
+        previous_section = ""
         for row in language_names:
+            section = str(row.get("section", "") or "").strip()
+            if section and section != previous_section:
+                name_lines.append(f"【{section}】")
+                previous_section = section
             value = row["name"]
             if row.get("romanisation"):
                 value += f'（{row["romanisation"]}）'
@@ -1142,6 +1303,15 @@ class WikirbyClient:
         if not wikitext:
             wikitext = await self.get_wikitext(str(page.get("title", "")))
         result = parse_language_names(wikitext)
+        if not result:
+            try:
+                rendered_html = await self._get_rendered_page_html(
+                    str(page.get("title", ""))
+                )
+                result = parse_rendered_language_names(rendered_html)
+            except WikirbyError:
+                # The template parser remains useful when rendering is blocked.
+                pass
         self._cache_set(key, result)
         return result
 
