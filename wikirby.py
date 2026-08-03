@@ -185,6 +185,18 @@ class WikirbyClient:
                 urls.append(rest_url)
         return tuple(urls)
 
+    def _site_urls(self) -> tuple[str, ...]:
+        """Return the public site roots used by raw page requests."""
+        urls: list[str] = []
+        for api_url in self._api_urls():
+            parsed = urlparse(api_url)
+            site_url = parsed._replace(
+                path="", params="", query="", fragment=""
+            ).geturl().rstrip("/")
+            if site_url not in urls:
+                urls.append(site_url)
+        return tuple(urls)
+
     @staticmethod
     def _retry_delay(error: HTTPError, attempt: int) -> float:
         retry_after = error.headers.get("Retry-After") if error.headers else None
@@ -414,6 +426,31 @@ class WikirbyClient:
             )
         return result
 
+    def _raw_page_sync(self, title: str) -> dict[str, Any]:
+        """Read a page through MediaWiki's static raw endpoint."""
+        raw_urls = tuple(
+            f"{site}/w/index.php" for site in self._site_urls()
+        )
+        raw = self._read_urls_sync(
+            raw_urls, {"title": title, "action": "raw"}
+        )
+        wikitext = raw.decode("utf-8", errors="replace").strip()
+        if not wikitext or re.search(
+            r"<title>\s*Just a moment", wikitext[:2000], re.IGNORECASE
+        ):
+            raise WikirbyError("WiKirby raw 页面也被 Cloudflare 拦截")
+        return {
+            "pageid": 0,
+            "title": title,
+            "summary": self._summary_from_wikitext(
+                wikitext, self.max_summary_chars
+            ),
+            "url": self._page_url(title),
+            "image_url": self._image_url_from_wikitext(wikitext),
+            "lastrevid": 0,
+            "wikitext": wikitext,
+        }
+
     @staticmethod
     def _title_from_url(value: str) -> str:
         parsed = urlparse(value)
@@ -453,7 +490,10 @@ class WikirbyClient:
             try:
                 result = await asyncio.to_thread(self._rest_page_sync, title)
             except WikirbyError:
-                result = None
+                try:
+                    result = await asyncio.to_thread(self._raw_page_sync, title)
+                except WikirbyError:
+                    result = None
         self._cache_set(key, result)
         return result
 
@@ -610,7 +650,10 @@ class WikirbyClient:
                 }
             )
         except WikirbyError:
-            page = await asyncio.to_thread(self._rest_page_sync, title)
+            try:
+                page = await asyncio.to_thread(self._rest_page_sync, title)
+            except WikirbyError:
+                page = await asyncio.to_thread(self._raw_page_sync, title)
             content = str(page.get("wikitext", "") or "")
             self._cache_set(key, content)
             return content

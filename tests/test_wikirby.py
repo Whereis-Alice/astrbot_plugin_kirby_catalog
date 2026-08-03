@@ -137,6 +137,17 @@ class WikirbyParserTests(unittest.TestCase):
             "https://cdn.wikirby.com/3/33/KSA_Driblee_Artwork.png",
         )
 
+    def test_raw_page_builds_page_data_from_wikitext(self):
+        client = WikirbyClient(cache_ttl_seconds=0)
+        raw = b"{{Infobox|image=[[File:KSA Driblee Artwork.png]]}}\nDriblee summary."
+
+        with patch.object(client, "_read_urls_sync", return_value=raw):
+            page = client._raw_page_sync("Driblee")
+
+        self.assertEqual(page["title"], "Driblee")
+        self.assertIn("Driblee summary", page["summary"])
+        self.assertIn("cdn.wikirby.com/3/33", page["image_url"])
+
     def test_general_page_beats_work_specific_page_for_localised_name(self):
         query = "瓦豆鲁迪"
         base = {"title": "Waddle Dee", "snippet": query, "wordcount": 12809}
