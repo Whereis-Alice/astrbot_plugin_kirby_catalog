@@ -31,7 +31,7 @@
 | 素材管理 | 管理员可引用 Bot 消息改名、换图或手动添加素材；历史记录同步更新 |
 | 互动玩法 | 猜盟友、引用图片直接作答、超时或猜错公布答案、随机盟友 |
 | WiKirby | 页面简介、资料栏目、多语言名称、首图、LLM 翻译和百科卡片 |
-| Kirby Fandom | 简介、信息框、分类、正文栏目、章节读取、社区页面名称和首图 |
+| Kirby Fandom | 简介、信息框、分类、正文栏目、社区页面名称、相关语录、网页式招式表和首图 |
 | 数据兼容 | 自动复制旧插件数据和素材到独立目录，保留用户解锁、次数和图鉴编号 |
 
 > [!NOTE]
@@ -144,7 +144,7 @@ data/plugin_data/astrbot_plugin_kirby_catalog/img/allies
 | 命令 | 来源 | 适合查询 |
 | --- | --- | --- |
 | `卡比百科` | [WiKirby](https://wikirby.com/wiki/Kirby_Wiki) | 结构化资料、简介、出现信息、趣闻和页面记录的多语言名称 |
-| `卡比F` | [Kirby Wiki \| Fandom](https://kirby.fandom.com/wiki/Kirby_Wiki) | 作品经历、外观、性格、信息框、分类和按章节读取的长篇正文 |
+| `卡比F` | [Kirby Wiki \| Fandom](https://kirby.fandom.com/wiki/Kirby_Wiki) | 作品经历、外观、性格、信息框、相关语录、招式与按章节读取的长篇正文 |
 
 > [!CAUTION]
 > `卡比F名称` 返回的是不同语言 Fandom 社区的页面标题，只能作为检索线索，不等同于任天堂官方译名。需要核对官方译名时，请优先使用 `卡比百科名称`，并以任天堂正式发布内容为最终依据。
@@ -162,7 +162,7 @@ data/plugin_data/astrbot_plugin_kirby_catalog/img/allies
 
 | 命令 | 作用 |
 | --- | --- |
-| `卡比F [页面名]` | 查询简介、信息框、分类、正文栏目、首图和来源 |
+| `卡比F [页面名]` | 查询简介、信息框、分类、正文栏目、相关语录、招式表、首图和来源 |
 | `卡比F章节 [页面名]` | 列出当前页面可查询的栏目 |
 | `卡比F [页面名] \| [栏目名]` | 只读取指定栏目；父栏目会自动汇总其子栏目 |
 | `卡比F名称 [页面名]` | 查询日文名和各语言 Fandom 社区页面标题 |
@@ -178,6 +178,8 @@ data/plugin_data/astrbot_plugin_kirby_catalog/img/allies
 卡比F Spinni
 卡比F章节 Spinni
 卡比F Spinni | Games
+卡比F Artist | Techniques
+卡比F Blade Knight | Related Quotes
 卡比F名称 Spinni
 ```
 
@@ -194,6 +196,8 @@ WiKirby 与 Kirby Fandom 都支持以下回复形式：
 - 文字 + 卡片合并转发。
 
 百科卡片由 AstrBot T2I 服务渲染为一张完整 PNG。卡片使用 `1600px` 逻辑视口、设备像素截图和 `ultra` 清晰度，实测输出宽度约为 `2880px`。简介和首图位于顶部，资料与名称表横向排列，长正文使用双栏布局。
+
+Kirby Fandom 的特殊栏目会保留网页结构：`Related Quotes` 中每条语录独立显示正文、出处和作品；`Techniques` 按作品及 Type A / Type B 分组，以“招式、操作、说明、伤害”四列表格显示。网页里的手柄按钮图片会转换为可读操作文字，避免图片资源失效后出现空白。
 
 内置模板：
 
@@ -333,6 +337,7 @@ WiKirby 与 Kirby Fandom 都支持以下回复形式：
 - 可以指定 Provider；
 - Provider 留空时使用当前聊天会话的模型；
 - 翻译失败会自动保留原文；
+- Fandom 语录和招式使用结构化 JSON 翻译，LLM 只翻译文字，不决定布局，也不会改写操作或伤害数字；
 - LLM 工具调用本身不会再次触发嵌套翻译。
 
 ### WiKirby Cloudflare Worker

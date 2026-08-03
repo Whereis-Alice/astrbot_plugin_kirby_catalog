@@ -1,3 +1,4 @@
+import json
 import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -8,6 +9,7 @@ from astrbot_plugin_kirby_catalog.kirby_fandom import (
     parse_fandom_infobox,
     parse_fandom_intro,
     parse_fandom_language_names,
+    parse_fandom_rich_sections,
     parse_fandom_sections,
 )
 from astrbot_plugin_kirby_catalog.main import KirbyCatalogPlugin
@@ -35,6 +37,42 @@ FANDOM_HTML = """
 </div>
 """
 
+FANDOM_RICH_HTML = """
+<div class="mw-parser-output">
+  <h2><span class="mw-headline">Related Quotes</span></h2>
+  <table class="br-5px"><tr><td>“</td><td><span style="font-style: italic;">First quote.</span>”</td></tr>
+    <tr><td>— <span style="font-weight: bold;">Trophy description</span> • <i>Kirby Game</i></td></tr></table>
+  <table class="br-5px"><tr><td>“</td><td><span style="font-style: italic;">Second quote.</span>”</td></tr>
+    <tr><td>— Official website</td></tr></table>
+  <h2><span class="mw-headline">Games</span></h2>
+  <h3><span class="mw-headline">Kirby Star Allies</span></h3>
+  <h4><span class="mw-headline">Techniques</span></h4>
+  <p>Invincibility only applies during boss battles.</p>
+  <div class="tabber wds-tabber">
+    <ul class="wds-tabs">
+      <li class="wds-tabs__tab wds-is-current"><div class="wds-tabs__tab-label">Type A</div></li>
+      <li class="wds-tabs__tab"><div class="wds-tabs__tab-label">Type B</div></li>
+    </ul>
+    <div class="wds-tab__content wds-is-current">
+      <table class="wikitable">
+        <tr><th rowspan="2">Move</th><th colspan="2">Controls</th><th rowspan="2">Description</th><th rowspan="2">Damage</th></tr>
+        <tr><th>Pro Controller</th><th>Joy-Con</th></tr>
+        <tr><td>Brush Slash</td><td><span title="B"><img alt="B" /></span></td><td><span title="Down Button"><img alt="Down Button" /></span></td><td>Kirby swings the paintbrush.</td><td>14</td></tr>
+        <tr><td>Painter</td><td colspan="2"><span title="Left Stick Down"><img alt="Left Stick Down" /></span> + <span title="B"><img alt="B" /></span></td><td>Kirby paints a helper.</td><td>16</td></tr>
+      </table>
+    </div>
+    <div class="wds-tab__content">
+      <table class="wikitable">
+        <tr><th>Move</th><th>Controls</th><th>Description</th><th>Damage</th></tr>
+        <tr><td>Brush Splash</td><td>Dash + B</td><td>Kirby rushes forward.</td><td>13</td></tr>
+      </table>
+    </div>
+  </div>
+  <h4><span class="mw-headline">Cameos</span></h4>
+  <p>Unrelated text.</p>
+</div>
+"""
+
 
 def sample_page():
     infobox = parse_fandom_infobox(FANDOM_HTML)
@@ -46,6 +84,7 @@ def sample_page():
         "image_url": parse_fandom_image_url(FANDOM_HTML),
         "infobox": infobox,
         "sections": parse_fandom_sections(FANDOM_HTML),
+        "rich_sections": [],
         "section_index": [
             {"index": "1", "title": "Physical Appearance", "level": "2"},
             {"index": "2", "title": "Games", "level": "2"},
@@ -103,8 +142,9 @@ class FakeEvent:
 
 
 class FakeTranslationContext:
-    def __init__(self):
+    def __init__(self, completion_text="翻译结果"):
         self.calls = []
+        self.completion_text = completion_text
 
     async def get_current_chat_provider_id(self, umo):
         self.calls.append(("provider", umo))
@@ -112,7 +152,7 @@ class FakeTranslationContext:
 
     async def llm_generate(self, **kwargs):
         self.calls.append(("generate", kwargs))
-        return SimpleNamespace(completion_text="翻译结果")
+        return SimpleNamespace(completion_text=self.completion_text)
 
 
 class FandomParserTests(unittest.TestCase):
@@ -164,6 +204,75 @@ class FandomParserTests(unittest.TestCase):
         self.assertIsNotNone(page)
         self.assertNotIn("rendered_html", page)
         self.assertNotIn("wikitext", page)
+
+    def test_related_quotes_keep_text_attribution_and_source(self):
+        rich = parse_fandom_rich_sections(FANDOM_RICH_HTML)
+
+        quotes = next(row for row in rich if row["kind"] == "quotes")
+        self.assertEqual(len(quotes["quotes"]), 2)
+        self.assertEqual(quotes["quotes"][0]["text"], "First quote.")
+        self.assertEqual(
+            quotes["quotes"][0]["attribution"], "Trophy description"
+        )
+        self.assertEqual(quotes["quotes"][0]["source"], "Kirby Game")
+
+    def test_techniques_keep_groups_columns_and_button_labels(self):
+        rich = parse_fandom_rich_sections(FANDOM_RICH_HTML)
+
+        techniques = next(row for row in rich if row["kind"] == "techniques")
+        self.assertEqual(techniques["context"], "Games · Kirby Star Allies")
+        self.assertEqual([group["label"] for group in techniques["groups"]], ["Type A", "Type B"])
+        first = techniques["groups"][0]["rows"][0]
+        self.assertEqual(first["move"], "Brush Slash")
+        self.assertIn("Pro Controller：B", first["controls"])
+        self.assertIn("Joy-Con：Down Button", first["controls"])
+        self.assertEqual(
+            techniques["groups"][0]["rows"][1]["controls"],
+            "Left Stick Down + B",
+        )
+        self.assertEqual(first["damage"], "14")
+
+    def test_plain_sections_do_not_duplicate_rich_sections(self):
+        titles = [row["title"] for row in parse_fandom_sections(FANDOM_RICH_HTML)]
+
+        self.assertNotIn("Related Quotes", titles)
+        self.assertNotIn("Techniques", titles)
+
+    def test_section_query_returns_rich_techniques(self):
+        client = KirbyFandomClient(cache_ttl_seconds=0, max_detail_chars=3000)
+        page = {
+            "sections": parse_fandom_sections(FANDOM_RICH_HTML),
+            "rich_sections": parse_fandom_rich_sections(FANDOM_RICH_HTML),
+            "section_index": [],
+            "infobox": [],
+            "categories": [],
+        }
+
+        details = client.get_page_details(page, "Techniques")
+
+        self.assertEqual(details["sections"], [])
+        self.assertEqual(len(details["rich_sections"]), 1)
+        self.assertEqual(details["rich_sections"][0]["kind"], "techniques")
+
+    def test_normalised_page_caches_parsed_rich_sections_only(self):
+        client = KirbyFandomClient(cache_ttl_seconds=3600)
+        page = client._normalise_page(
+            {
+                "parse": {
+                    "pageid": 88,
+                    "title": "Artist",
+                    "text": FANDOM_RICH_HTML,
+                    "sections": [],
+                    "categories": [],
+                    "langlinks": [],
+                }
+            },
+            "Artist",
+        )
+
+        self.assertIsNotNone(page)
+        self.assertTrue(page["rich_sections"])
+        self.assertNotIn("rendered_html", page)
 
 
 class FandomCommandTests(unittest.IsolatedAsyncioTestCase):
@@ -243,18 +352,66 @@ class FandomCommandTests(unittest.IsolatedAsyncioTestCase):
     async def test_fandom_card_payload_identifies_the_source(self):
         plugin = self.make_plugin(fandom_card_template="卡比粉彩")
         plugin.html_render = AsyncMock(return_value="fandom-card.png")
+        rich_sections = parse_fandom_rich_sections(FANDOM_RICH_HTML)
 
         component = await plugin._fandom_card_component(
-            sample_page(), "Summary", "Gender: Male", None
+            sample_page(), "Summary", "Gender: Male", None, rich_sections
         )
 
         self.assertIsNotNone(component)
         payload = plugin.html_render.await_args.args[1]
         self.assertEqual(payload["wiki_name"], "Kirby Fandom")
         self.assertEqual(payload["reference_label"], "FANDOM REFERENCE")
+        self.assertEqual(payload["rich_sections"][0]["kind"], "quotes")
+        self.assertEqual(payload["rich_sections"][1]["kind"], "techniques")
+        self.assertIn("technique-table", plugin.html_render.await_args.args[0])
         self.assertEqual(
             plugin.html_render.await_args.kwargs["options"]["viewport_width"], 1600
         )
+
+    async def test_invalid_structured_translation_falls_back_to_original(self):
+        plugin = self.make_plugin(fandom_translate_enabled=True)
+        plugin.context = FakeTranslationContext("not json")
+        rich_sections = parse_fandom_rich_sections(FANDOM_RICH_HTML)
+
+        translated = await plugin._fandom_translate_rich_sections(
+            FakeEvent(""), rich_sections
+        )
+
+        self.assertEqual(translated, rich_sections)
+
+    async def test_structured_translation_preserves_controls_and_damage(self):
+        plugin = self.make_plugin(fandom_translate_enabled=True)
+        rich_sections = parse_fandom_rich_sections(FANDOM_RICH_HTML)
+        translated_payload = json.loads(json.dumps(rich_sections))
+        quotes = next(row for row in translated_payload if row["kind"] == "quotes")
+        quotes["quotes"][0]["text"] = "第一条语录。"
+        techniques = next(
+            row for row in translated_payload if row["kind"] == "techniques"
+        )
+        techniques["groups"][0]["rows"][0]["move"] = "画笔斩"
+        techniques["groups"][0]["rows"][0]["description"] = "卡比挥动画笔。"
+        techniques["groups"][0]["rows"][0]["controls"] = "错误操作"
+        techniques["groups"][0]["rows"][0]["damage"] = "999"
+        plugin.context = FakeTranslationContext(
+            json.dumps(translated_payload, ensure_ascii=False)
+        )
+
+        translated = await plugin._fandom_translate_rich_sections(
+            FakeEvent(""), rich_sections
+        )
+
+        translated_techniques = next(
+            row for row in translated if row["kind"] == "techniques"
+        )
+        first = translated_techniques["groups"][0]["rows"][0]
+        original_first = next(
+            row for row in rich_sections if row["kind"] == "techniques"
+        )["groups"][0]["rows"][0]
+        self.assertEqual(first["move"], "画笔斩")
+        self.assertEqual(first["description"], "卡比挥动画笔。")
+        self.assertEqual(first["controls"], original_first["controls"])
+        self.assertEqual(first["damage"], original_first["damage"])
 
 
 if __name__ == "__main__":

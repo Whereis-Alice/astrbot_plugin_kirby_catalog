@@ -18,7 +18,7 @@ from .wikirby import parse_rendered_sections
 DEFAULT_FANDOM_API_URL = "https://kirby.fandom.com/api.php"
 FANDOM_SITE_URL = "https://kirby.fandom.com"
 USER_AGENT = (
-    "astrbot-plugin-kirby-catalog/2.9.1 "
+    "astrbot-plugin-kirby-catalog/2.10.0 "
     "(+https://github.com/Whereis-Alice/astrbot_plugin_kirby_catalog)"
 )
 _RETRYABLE_HTTP_CODES = {408, 425, 429, 500, 502, 503, 504}
@@ -73,6 +73,22 @@ _SKIPPED_SECTIONS = {
     "external links",
     "navigation",
 }
+_RICH_SECTION_KINDS = {
+    "related quote": "quotes",
+    "related quotes": "quotes",
+    "quote": "quotes",
+    "quotes": "quotes",
+    "moves": "techniques",
+    "moveset": "techniques",
+    "technique": "techniques",
+    "techniques": "techniques",
+}
+_TECHNIQUE_COLUMN_NAMES = {
+    "move": {"move", "moves", "technique", "techniques", "attack"},
+    "controls": {"control", "controls", "input", "inputs", "command"},
+    "description": {"description", "effect", "effects", "notes"},
+    "damage": {"damage", "power"},
+}
 
 
 class KirbyFandomError(RuntimeError):
@@ -125,6 +141,324 @@ def _trim_text(value: str, limit: int) -> str:
 
 def _normalise_heading(value: str) -> str:
     return re.sub(r"[^a-z0-9\u3400-\u9fff]+", " ", value.casefold()).strip()
+
+
+def _rich_section_kind(title: str) -> str:
+    return _RICH_SECTION_KINDS.get(_normalise_heading(title), "")
+
+
+def _heading_text(heading: Tag) -> str:
+    return _clean_text(heading.select_one(".mw-headline") or heading)
+
+
+def _section_fragment(heading: Tag) -> BeautifulSoup:
+    level = int(heading.name[1]) if heading.name and heading.name[1:].isdigit() else 6
+    nodes: list[str] = []
+    for sibling in heading.next_siblings:
+        if isinstance(sibling, Tag) and re.fullmatch(r"h[1-6]", sibling.name or ""):
+            sibling_level = int(sibling.name[1])
+            if sibling_level <= level:
+                break
+        if isinstance(sibling, Tag):
+            nodes.append(str(sibling))
+    return BeautifulSoup("".join(nodes), "html.parser")
+
+
+def _rich_cell_text(element: Tag | None) -> str:
+    if element is None:
+        return ""
+    fragment = BeautifulSoup(str(element), "html.parser")
+    for unwanted in fragment.select(
+        "script, style, sup.reference, .reference, .mw-editsection, .noprint"
+    ):
+        unwanted.decompose()
+    for image in fragment.find_all("img"):
+        label = str(image.get("alt", "") or image.get("title", "") or "").strip()
+        if not label:
+            titled_parent = image.find_parent(attrs={"title": True})
+            if titled_parent is not None:
+                label = str(titled_parent.get("title", "") or "").strip()
+        image.replace_with(f" {label} " if label else " ")
+    for line_break in fragment.find_all("br"):
+        line_break.replace_with("\n")
+    text = html.unescape(fragment.get_text(" ", strip=True))
+    text = re.sub(r"\[\s*\d+(?:\.\d+)?\s*\]", "", text)
+    text = re.sub(r"[ \t]*\n[ \t]*", "\n", text)
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"\s*\+\s*", " + ", text)
+    return text.strip()
+
+
+def _parse_quote_table(table: Tag) -> dict[str, str] | None:
+    rows = table.find_all("tr")
+    if not rows:
+        return None
+    first_cells = rows[0].find_all(["th", "td"], recursive=False)
+    if not first_cells:
+        return None
+    quote_cell = first_cells[-1]
+    italic = quote_cell.select_one("span[style*='font-style: italic'], i, em")
+    quote = _rich_cell_text(italic or quote_cell)
+    quote = re.sub(r"^[\s\"'‘’“”«»]+|[\s\"'‘’“”«»]+$", "", quote).strip()
+    if not quote:
+        return None
+
+    attribution = ""
+    source = ""
+    if len(rows) > 1:
+        meta_cell = rows[1].find(["th", "td"])
+        meta_text = _rich_cell_text(meta_cell).lstrip("—–- ").strip()
+        parts = re.split(r"\s*[•·]\s*", meta_text, maxsplit=1)
+        attribution = parts[0].strip() if parts else ""
+        source = parts[1].strip() if len(parts) > 1 else ""
+    return {"text": quote, "attribution": attribution, "source": source}
+
+
+def _parse_quotes_section(
+    fragment: BeautifulSoup, max_quotes: int
+) -> tuple[list[dict[str, str]], int]:
+    quotes: list[dict[str, str]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for table in fragment.select("table.br-5px"):
+        quote = _parse_quote_table(table)
+        if quote is None:
+            continue
+        key = (quote["text"], quote["attribution"], quote["source"])
+        if key in seen:
+            continue
+        seen.add(key)
+        quotes.append(quote)
+    limit = max(1, max_quotes)
+    return quotes[:limit], max(0, len(quotes) - limit)
+
+
+def _expanded_table(table: Tag) -> tuple[list[list[str]], list[list[str]]]:
+    values: dict[tuple[int, int], str] = {}
+    tags: dict[tuple[int, int], str] = {}
+    max_column = 0
+    rows = table.find_all("tr")
+    for row_index, row in enumerate(rows):
+        column = 0
+        for cell in row.find_all(["th", "td"], recursive=False):
+            while (row_index, column) in values:
+                column += 1
+            try:
+                rowspan = max(1, int(cell.get("rowspan", 1) or 1))
+            except (TypeError, ValueError):
+                rowspan = 1
+            try:
+                colspan = max(1, int(cell.get("colspan", 1) or 1))
+            except (TypeError, ValueError):
+                colspan = 1
+            value = _rich_cell_text(cell)
+            for row_offset in range(rowspan):
+                for column_offset in range(colspan):
+                    position = (row_index + row_offset, column + column_offset)
+                    values[position] = value
+                    tags[position] = cell.name or "td"
+            column += colspan
+            max_column = max(max_column, column)
+
+    matrix: list[list[str]] = []
+    tag_matrix: list[list[str]] = []
+    for row_index in range(len(rows)):
+        matrix.append([values.get((row_index, column), "") for column in range(max_column)])
+        tag_matrix.append([tags.get((row_index, column), "") for column in range(max_column)])
+    return matrix, tag_matrix
+
+
+def _column_matches(label: str, kind: str) -> bool:
+    folded = _normalise_heading(label)
+    return any(token in folded.split() for token in _TECHNIQUE_COLUMN_NAMES[kind])
+
+
+def _parse_technique_table(table: Tag) -> list[dict[str, str]]:
+    matrix, tag_matrix = _expanded_table(table)
+    if not matrix:
+        return []
+    header_rows = 0
+    for tags in tag_matrix:
+        if "td" in tags:
+            break
+        header_rows += 1
+    header_rows = max(1, header_rows)
+    column_count = max((len(row) for row in matrix), default=0)
+    header_labels: list[str] = []
+    for column in range(column_count):
+        labels: list[str] = []
+        for row in matrix[:header_rows]:
+            if column >= len(row):
+                continue
+            value = row[column].strip()
+            if value and value not in labels:
+                labels.append(value)
+        header_labels.append(" / ".join(labels))
+
+    indices: dict[str, list[int]] = {kind: [] for kind in _TECHNIQUE_COLUMN_NAMES}
+    for column, label in enumerate(header_labels):
+        for kind in indices:
+            if _column_matches(label, kind):
+                indices[kind].append(column)
+    if not indices["move"] and column_count:
+        indices["move"] = [0]
+    if not indices["description"] and column_count >= 3:
+        indices["description"] = [column_count - 2]
+    if not indices["damage"] and column_count >= 2:
+        indices["damage"] = [column_count - 1]
+    if not indices["controls"] and column_count >= 4:
+        reserved = {
+            *(indices["move"] or []),
+            *(indices["description"] or []),
+            *(indices["damage"] or []),
+        }
+        indices["controls"] = [
+            column for column in range(column_count) if column not in reserved
+        ]
+
+    def value_at(row: list[str], columns: list[int]) -> str:
+        values = [row[index].strip() for index in columns if index < len(row)]
+        return next((value for value in values if value), "")
+
+    rows: list[dict[str, str]] = []
+    for row in matrix[header_rows:]:
+        move = value_at(row, indices["move"])
+        description = value_at(row, indices["description"])
+        damage = value_at(row, indices["damage"])
+        control_values: list[tuple[str, str]] = []
+        for column in indices["controls"]:
+            if column >= len(row) or not row[column].strip():
+                continue
+            platform = header_labels[column]
+            platform = re.sub(r"^Controls?\s*/\s*", "", platform, flags=re.I)
+            control_values.append((platform.strip(), row[column].strip()))
+        unique_controls = list(dict.fromkeys(value for _, value in control_values))
+        if len(unique_controls) <= 1:
+            controls = unique_controls[0] if unique_controls else ""
+        else:
+            controls = "\n".join(
+                f"{platform}：{value}" if platform else value
+                for platform, value in control_values
+            )
+        if not any((move, controls, description, damage)):
+            continue
+        if _column_matches(move, "move") and _column_matches(description, "description"):
+            continue
+        rows.append(
+            {
+                "move": _trim_text(move, 160),
+                "controls": _trim_text(controls, 260),
+                "description": _trim_text(description, 1200),
+                "damage": _trim_text(damage, 260),
+            }
+        )
+    return rows
+
+
+def _parse_techniques_section(
+    fragment: BeautifulSoup, max_rows: int
+) -> tuple[str, list[dict[str, Any]], int]:
+    intro_parts = [
+        _clean_text(paragraph)
+        for paragraph in fragment.find_all("p", recursive=False)
+        if _clean_text(paragraph)
+    ]
+    intro = _trim_text("\n\n".join(intro_parts), 1000)
+
+    groups: list[dict[str, Any]] = []
+    tab_contents = fragment.select(".wds-tab__content")
+    tab_labels = [
+        _clean_text(label)
+        for label in fragment.select(".wds-tabs__tab .wds-tabs__tab-label")
+    ]
+    if tab_contents:
+        for index, content in enumerate(tab_contents):
+            rows: list[dict[str, str]] = []
+            for table in content.select("table.wikitable"):
+                rows.extend(_parse_technique_table(table))
+            if rows:
+                groups.append(
+                    {
+                        "label": tab_labels[index] if index < len(tab_labels) else "",
+                        "rows": rows,
+                    }
+                )
+    else:
+        for table_index, table in enumerate(fragment.select("table.wikitable")):
+            rows = _parse_technique_table(table)
+            if rows:
+                groups.append(
+                    {
+                        "label": "" if table_index == 0 else f"表 {table_index + 1}",
+                        "rows": rows,
+                    }
+                )
+
+    remaining = max(1, max_rows)
+    omitted = 0
+    selected: list[dict[str, Any]] = []
+    for group in groups:
+        rows = list(group["rows"])
+        kept = rows[:remaining]
+        omitted += len(rows) - len(kept)
+        if kept:
+            selected.append({"label": group["label"], "rows": kept})
+            remaining -= len(kept)
+        if remaining <= 0:
+            omitted += sum(len(item["rows"]) for item in groups[len(selected) :])
+            break
+    return intro, selected, omitted
+
+
+def parse_fandom_rich_sections(
+    rendered_html: str,
+    *,
+    max_quotes: int = 20,
+    max_technique_rows: int = 32,
+) -> list[dict[str, Any]]:
+    """Preserve quote cards and technique tables that plain text would flatten."""
+    soup = BeautifulSoup(rendered_html or "", "html.parser")
+    root = soup.select_one(".mw-parser-output")
+    if root is None:
+        return []
+
+    output: list[dict[str, Any]] = []
+    heading_stack: dict[int, str] = {}
+    for heading in root.find_all(re.compile(r"^h[2-4]$"), recursive=False):
+        level = int(heading.name[1])
+        title = _heading_text(heading)
+        heading_stack = {
+            key: value for key, value in heading_stack.items() if key < level
+        }
+        ancestors = [heading_stack[key] for key in sorted(heading_stack)]
+        heading_stack[level] = title
+        kind = _rich_section_kind(title)
+        if not kind:
+            continue
+        fragment = _section_fragment(heading)
+        base: dict[str, Any] = {
+            "kind": kind,
+            "title": title,
+            "context": " · ".join(ancestors),
+            "ancestors": ancestors,
+        }
+        if kind == "quotes":
+            quotes, omitted = _parse_quotes_section(fragment, max_quotes)
+            if quotes:
+                output.append({**base, "quotes": quotes, "omitted_count": omitted})
+            continue
+        intro, groups, omitted = _parse_techniques_section(
+            fragment, max_technique_rows
+        )
+        if groups:
+            output.append(
+                {
+                    **base,
+                    "intro": intro,
+                    "groups": groups,
+                    "omitted_count": omitted,
+                }
+            )
+    return output
 
 
 def parse_fandom_intro(rendered_html: str, max_chars: int = 1800) -> str:
@@ -212,8 +546,125 @@ def parse_fandom_sections(rendered_html: str) -> list[dict[str, str]]:
         folded = _normalise_heading(title)
         if folded in _SKIPPED_SECTIONS:
             continue
+        if _rich_section_kind(title):
+            continue
         output.append({"title": title, "text": text})
     return output
+
+
+def _rich_section_cost(section: dict[str, Any]) -> int:
+    cost = len(str(section.get("title", ""))) + len(str(section.get("context", "")))
+    cost += len(str(section.get("intro", "")))
+    if section.get("kind") == "quotes":
+        for quote in section.get("quotes", []):
+            cost += sum(
+                len(str(quote.get(key, "")))
+                for key in ("text", "attribution", "source")
+            ) + 24
+    elif section.get("kind") == "techniques":
+        for group in section.get("groups", []):
+            cost += len(str(group.get("label", ""))) + 20
+            for row in group.get("rows", []):
+                cost += sum(
+                    len(str(row.get(key, "")))
+                    for key in ("move", "controls", "description", "damage")
+                ) + 32
+    return cost
+
+
+def _trim_rich_sections(
+    sections: list[dict[str, Any]], budget: int
+) -> tuple[list[dict[str, Any]], int]:
+    selected: list[dict[str, Any]] = []
+    remaining = max(0, budget)
+    for source in sections:
+        if remaining <= 0:
+            break
+        kind = str(source.get("kind", "") or "")
+        base: dict[str, Any] = {
+            "kind": kind,
+            "title": str(source.get("title", "") or ""),
+            "context": str(source.get("context", "") or ""),
+            "ancestors": list(source.get("ancestors", []) or []),
+        }
+        base_cost = _rich_section_cost(base) + 40
+        if kind == "quotes":
+            quotes: list[dict[str, str]] = []
+            source_quotes = list(source.get("quotes", []) or [])
+            for quote in source_quotes:
+                row = {
+                    "text": str(quote.get("text", "") or ""),
+                    "attribution": str(quote.get("attribution", "") or ""),
+                    "source": str(quote.get("source", "") or ""),
+                }
+                row_cost = sum(len(value) for value in row.values()) + 24
+                if quotes and base_cost + row_cost > remaining:
+                    break
+                if not quotes and base_cost + row_cost > remaining:
+                    row["text"] = _trim_text(
+                        row["text"], max(180, remaining - base_cost - 80)
+                    )
+                    row_cost = sum(len(value) for value in row.values()) + 24
+                quotes.append(row)
+                base_cost += row_cost
+            if not quotes:
+                continue
+            omitted = int(source.get("omitted_count", 0) or 0)
+            omitted += len(source_quotes) - len(quotes)
+            section = {**base, "quotes": quotes, "omitted_count": omitted}
+        elif kind == "techniques":
+            intro = str(source.get("intro", "") or "")
+            groups: list[dict[str, Any]] = []
+            source_groups = list(source.get("groups", []) or [])
+            omitted = int(source.get("omitted_count", 0) or 0)
+            base_cost += len(intro)
+            for group_index, group in enumerate(source_groups):
+                label = str(group.get("label", "") or "")
+                rows: list[dict[str, str]] = []
+                source_rows = list(group.get("rows", []) or [])
+                group_cost = len(label) + 20
+                for row in source_rows:
+                    value = {
+                        "move": str(row.get("move", "") or ""),
+                        "controls": str(row.get("controls", "") or ""),
+                        "description": str(row.get("description", "") or ""),
+                        "damage": str(row.get("damage", "") or ""),
+                    }
+                    row_cost = sum(len(item) for item in value.values()) + 32
+                    if rows and base_cost + group_cost + row_cost > remaining:
+                        break
+                    if not rows and base_cost + group_cost + row_cost > remaining:
+                        value["description"] = _trim_text(
+                            value["description"],
+                            max(220, remaining - base_cost - group_cost - 120),
+                        )
+                        row_cost = sum(len(item) for item in value.values()) + 32
+                    rows.append(value)
+                    group_cost += row_cost
+                omitted += len(source_rows) - len(rows)
+                if rows:
+                    groups.append({"label": label, "rows": rows})
+                    base_cost += group_cost
+                if len(rows) < len(source_rows):
+                    omitted += sum(
+                        len(item.get("rows", []) or [])
+                        for item in source_groups[group_index + 1 :]
+                    )
+                    break
+            if not groups:
+                continue
+            section = {
+                **base,
+                "intro": intro,
+                "groups": groups,
+                "omitted_count": omitted,
+            }
+        else:
+            continue
+        cost = _rich_section_cost(section)
+        selected.append(section)
+        remaining = max(0, remaining - cost)
+    return selected, max(0, budget - remaining)
 
 
 def parse_fandom_language_names(
@@ -422,6 +873,7 @@ class KirbyFandomClient:
             "image_url": parse_fandom_image_url(rendered_html),
             "infobox": infobox,
             "sections": parse_fandom_sections(rendered_html),
+            "rich_sections": parse_fandom_rich_sections(rendered_html),
             "section_index": section_index,
             "categories": category_names,
         }
@@ -564,8 +1016,9 @@ class KirbyFandomClient:
 
     def get_page_details(
         self, page: dict[str, Any], section: str = ""
-    ) -> dict[str, list[dict[str, str]]]:
+    ) -> dict[str, Any]:
         sections = [dict(row) for row in page.get("sections", [])]
+        rich_sections = [dict(row) for row in page.get("rich_sections", [])]
         if section.strip():
             target = _normalise_heading(section)
             exact = [
@@ -577,6 +1030,29 @@ class KirbyFandomClient:
                 if target and target in _normalise_heading(row["title"])
             ]
             matched = exact or partial
+            rich_exact = [
+                row
+                for row in rich_sections
+                if _normalise_heading(str(row.get("title", ""))) == target
+                or target
+                in {
+                    _normalise_heading(str(ancestor))
+                    for ancestor in row.get("ancestors", [])
+                }
+            ]
+            rich_partial = [
+                row
+                for row in rich_sections
+                if target
+                and (
+                    target in _normalise_heading(str(row.get("title", "")))
+                    or any(
+                        target in _normalise_heading(str(ancestor))
+                        for ancestor in row.get("ancestors", [])
+                    )
+                )
+            ]
+            matched_rich = rich_exact or rich_partial
             if not matched:
                 index_rows = page.get("section_index", [])
                 parent_position = next(
@@ -608,9 +1084,15 @@ class KirbyFandomClient:
                         for row in sections
                         if _normalise_heading(row["title"]) in child_titles
                     ]
-            if matched:
+            if matched or matched_rich:
+                selected_rich, rich_cost = _trim_rich_sections(
+                    matched_rich,
+                    self.max_detail_chars
+                    if matched_rich and not matched
+                    else max(1200, self.max_detail_chars // 2),
+                )
                 selected: list[dict[str, str]] = []
-                remaining = self.max_detail_chars
+                remaining = max(0, self.max_detail_chars - rich_cost)
                 for value in matched:
                     if remaining <= 0:
                         break
@@ -618,11 +1100,29 @@ class KirbyFandomClient:
                     row["text"] = _trim_text(row["text"], remaining)
                     selected.append(row)
                     remaining -= len(row["title"]) + len(row["text"])
-                return {"infobox": [], "sections": selected, "categories": []}
-            return {"infobox": [], "sections": [], "categories": []}
+                return {
+                    "infobox": [],
+                    "sections": selected,
+                    "rich_sections": selected_rich,
+                    "categories": [],
+                }
+            return {
+                "infobox": [],
+                "sections": [],
+                "rich_sections": [],
+                "categories": [],
+            }
 
+        rich_budget = min(4200, max(1600, self.max_detail_chars // 2))
+        rich_for_default = sorted(
+            rich_sections,
+            key=lambda row: 0 if row.get("kind") == "quotes" else 1,
+        )
+        selected_rich, rich_cost = _trim_rich_sections(
+            rich_for_default, rich_budget
+        )
         selected: list[dict[str, str]] = []
-        remaining = self.max_detail_chars
+        remaining = max(0, self.max_detail_chars - rich_cost)
         for row in sections:
             if remaining <= 0:
                 break
@@ -639,6 +1139,7 @@ class KirbyFandomClient:
         return {
             "infobox": [dict(row) for row in page.get("infobox", [])],
             "sections": selected,
+            "rich_sections": selected_rich,
             "categories": categories,
         }
 

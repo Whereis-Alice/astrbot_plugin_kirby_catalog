@@ -305,6 +305,245 @@ WIKIRBY_CARD_TEMPLATE = r"""
       background: {{ theme.panel_c }};
     }
 
+    .rich-area {
+      padding: 30px 44px 10px;
+      background: {{ theme.surface }};
+      border-bottom: 1px solid {{ theme.border }};
+    }
+
+    .rich-section {
+      margin-bottom: 26px;
+    }
+
+    .rich-section:last-child {
+      margin-bottom: 10px;
+    }
+
+    .rich-heading {
+      display: grid;
+      grid-template-columns: 9px minmax(0, 1fr) auto;
+      gap: 12px;
+      align-items: center;
+      margin-bottom: 15px;
+    }
+
+    .rich-heading-mark {
+      width: 9px;
+      height: 34px;
+      background: {{ theme.accent }};
+      border-radius: 2px;
+    }
+
+    .rich-title {
+      color: {{ theme.title }};
+      font-size: 23px;
+      font-weight: 800;
+      line-height: 1.35;
+      overflow-wrap: anywhere;
+    }
+
+    .rich-context {
+      margin-top: 3px;
+      color: {{ theme.muted }};
+      font-size: 15px;
+      font-weight: 600;
+      line-height: 1.45;
+      overflow-wrap: anywhere;
+    }
+
+    .rich-count {
+      padding: 7px 10px;
+      color: {{ theme.chip_text }};
+      background: {{ theme.chip }};
+      border: 1px solid {{ theme.border }};
+      border-radius: 3px;
+      font-size: 14px;
+      font-weight: 800;
+      white-space: nowrap;
+    }
+
+    .quote-list {
+      border: 1px solid {{ theme.border }};
+      border-left: 6px solid {{ theme.accent_alt }};
+      background: {{ theme.panel_a }};
+    }
+
+    .quote-item {
+      position: relative;
+      min-width: 0;
+      padding: 23px 28px 20px 66px;
+      border-bottom: 1px solid {{ theme.border }};
+      background: {{ theme.panel_a }};
+    }
+
+    .quote-item:nth-child(2n) {
+      background: {{ theme.panel_b }};
+    }
+
+    .quote-item:nth-child(3n) {
+      background: {{ theme.panel_c }};
+    }
+
+    .quote-item:last-child {
+      border-bottom: 0;
+    }
+
+    .quote-mark {
+      position: absolute;
+      top: 12px;
+      left: 22px;
+      color: {{ theme.accent }};
+      font-family: Georgia, "Times New Roman", serif;
+      font-size: 54px;
+      font-weight: 800;
+      line-height: 1;
+    }
+
+    .quote-text {
+      color: {{ theme.text }};
+      font-family: Georgia, "Noto Serif CJK SC", "Songti SC", serif;
+      font-size: 20px;
+      font-style: italic;
+      font-weight: 600;
+      line-height: 1.65;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+
+    .quote-credit {
+      margin-top: 11px;
+      color: {{ theme.muted }};
+      font-size: 15px;
+      font-weight: 700;
+      line-height: 1.5;
+      overflow-wrap: anywhere;
+    }
+
+    .technique-intro {
+      margin: -2px 0 16px;
+      padding: 14px 18px;
+      color: {{ theme.text }};
+      background: {{ theme.panel_d }};
+      border-left: 5px solid {{ theme.accent_warm }};
+      font-size: 16px;
+      line-height: 1.6;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+
+    .technique-group + .technique-group {
+      margin-top: 22px;
+    }
+
+    .technique-group-heading {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 9px;
+      color: {{ theme.accent_alt }};
+      font-size: 16px;
+      font-weight: 800;
+      line-height: 1.4;
+    }
+
+    .technique-group-heading::before {
+      content: "";
+      width: 24px;
+      height: 4px;
+      background: {{ theme.accent_warm }};
+    }
+
+    .technique-table-wrap {
+      overflow: hidden;
+      border: 1px solid {{ theme.border }};
+      background: {{ theme.panel_a }};
+    }
+
+    .technique-table {
+      width: 100%;
+      border-collapse: collapse;
+      table-layout: fixed;
+    }
+
+    .technique-table col.move { width: 17%; }
+    .technique-table col.controls { width: 19%; }
+    .technique-table col.description { width: 48%; }
+    .technique-table col.damage { width: 16%; }
+
+    .technique-table th {
+      padding: 13px 14px;
+      color: {{ theme.title }};
+      background: {{ theme.header }};
+      border-right: 1px solid {{ theme.border }};
+      border-bottom: 2px solid {{ theme.accent }};
+      font-size: 16px;
+      font-weight: 800;
+      line-height: 1.35;
+      text-align: center;
+    }
+
+    .technique-table th:last-child,
+    .technique-table td:last-child {
+      border-right: 0;
+    }
+
+    .technique-table td {
+      padding: 15px 15px;
+      color: {{ theme.text }};
+      background: {{ theme.panel_a }};
+      border-right: 1px solid {{ theme.border }};
+      border-bottom: 1px solid {{ theme.border }};
+      font-size: 15px;
+      font-weight: 500;
+      line-height: 1.55;
+      vertical-align: top;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+
+    .technique-table tr:nth-child(2n) td {
+      background: {{ theme.panel_b }};
+    }
+
+    .technique-table tr:nth-child(3n) td {
+      background: {{ theme.panel_d }};
+    }
+
+    .technique-table tbody tr:last-child td {
+      border-bottom: 0;
+    }
+
+    .technique-move {
+      color: {{ theme.title }} !important;
+      font-weight: 800 !important;
+      text-align: center;
+      vertical-align: middle !important;
+    }
+
+    .technique-controls {
+      color: {{ theme.accent_alt }} !important;
+      font-weight: 800 !important;
+      text-align: center;
+      vertical-align: middle !important;
+      white-space: pre-line;
+    }
+
+    .technique-damage {
+      color: {{ theme.text }} !important;
+      font-weight: 700 !important;
+      text-align: center;
+      vertical-align: middle !important;
+      white-space: pre-line;
+    }
+
+    .rich-omitted {
+      margin-top: 10px;
+      color: {{ theme.muted }};
+      font-size: 14px;
+      font-weight: 700;
+      text-align: right;
+    }
+
     .details-columns {
       display: grid;
       grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -735,6 +974,81 @@ WIKIRBY_CARD_TEMPLATE = r"""
         {% endfor %}
       </section>
       {% endif %}
+      {% if rich_sections %}
+      <section class="rich-area">
+        {% for section in rich_sections %}
+        <section class="rich-section rich-section--{{ section.kind }}">
+          <div class="rich-heading">
+            <span class="rich-heading-mark"></span>
+            <div>
+              <div class="rich-title">{{ section.display_title | e }}</div>
+              {% if section.context %}
+              <div class="rich-context">{{ section.context | e }}</div>
+              {% endif %}
+            </div>
+            <div class="rich-count">{{ section.item_count }} 项</div>
+          </div>
+          {% if section.kind == 'quotes' %}
+          <div class="quote-list">
+            {% for quote in section.quotes %}
+            <article class="quote-item">
+              <div class="quote-mark">“</div>
+              <div class="quote-text">{{ quote.text | e }}</div>
+              {% if quote.attribution or quote.source %}
+              <div class="quote-credit">
+                — {% if quote.attribution %}{{ quote.attribution | e }}{% endif %}{% if quote.attribution and quote.source %} · {% endif %}{% if quote.source %}{{ quote.source | e }}{% endif %}
+              </div>
+              {% endif %}
+            </article>
+            {% endfor %}
+          </div>
+          {% elif section.kind == 'techniques' %}
+            {% if section.intro %}
+            <div class="technique-intro">{{ section.intro | e }}</div>
+            {% endif %}
+            {% for group in section.groups %}
+            <section class="technique-group">
+              {% if group.label %}
+              <div class="technique-group-heading">{{ group.label | e }}</div>
+              {% endif %}
+              <div class="technique-table-wrap">
+                <table class="technique-table">
+                  <colgroup>
+                    <col class="move" />
+                    <col class="controls" />
+                    <col class="description" />
+                    <col class="damage" />
+                  </colgroup>
+                  <thead>
+                    <tr>
+                      <th>招式</th>
+                      <th>操作</th>
+                      <th>说明</th>
+                      <th>伤害</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {% for row in group.rows %}
+                    <tr>
+                      <td class="technique-move">{{ row.move | e }}</td>
+                      <td class="technique-controls">{{ row.controls | e }}</td>
+                      <td>{{ row.description | e }}</td>
+                      <td class="technique-damage">{{ row.damage | e }}</td>
+                    </tr>
+                    {% endfor %}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+            {% endfor %}
+          {% endif %}
+          {% if section.omitted_count %}
+          <div class="rich-omitted">另有 {{ section.omitted_count }} 项未显示</div>
+          {% endif %}
+        </section>
+        {% endfor %}
+      </section>
+      {% endif %}
       {% if right_block_count %}
       <section class="details-columns{% if not left_blocks %} details-columns--flush{% endif %}">
         {% for column in right_columns %}
@@ -793,9 +1107,11 @@ def estimate_text_lines(text: str) -> int:
 def build_card_layout(
     summary: str,
     detail_text: str,
+    rich_sections: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     summary = summary.strip() or "该页面暂时没有可显示的正文摘要。"
     detail_blocks = _detail_blocks(detail_text)
+    prepared_rich_sections = _prepare_rich_sections(rich_sections or [])
     left_blocks: list[dict[str, Any]] = []
     right_blocks: list[dict[str, Any]] = []
 
@@ -807,7 +1123,7 @@ def build_card_layout(
         else:
             right_blocks.extend(_split_for_column(block, max_lines=92))
 
-    if not left_blocks and not right_blocks:
+    if not left_blocks and not right_blocks and not prepared_rich_sections:
         left_blocks.append(
             _with_fact_items(
                 {
@@ -830,7 +1146,97 @@ def build_card_layout(
         "left_blocks": left_blocks,
         "right_columns": columns,
         "right_block_count": sum(len(column) for column in columns),
+        "rich_sections": prepared_rich_sections,
+        "rich_section_count": len(prepared_rich_sections),
     }
+
+
+def _prepare_rich_sections(
+    rich_sections: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    prepared: list[dict[str, Any]] = []
+    for section in rich_sections:
+        if not isinstance(section, dict):
+            continue
+        kind = str(section.get("kind", "") or "").strip()
+        context = str(section.get("context", "") or "").strip()
+        omitted_count = max(0, int(section.get("omitted_count", 0) or 0))
+        if kind == "quotes":
+            quotes: list[dict[str, str]] = []
+            for quote in section.get("quotes", []) or []:
+                if not isinstance(quote, dict):
+                    continue
+                text = str(quote.get("text", "") or "").strip()
+                if not text:
+                    continue
+                quotes.append(
+                    {
+                        "text": text,
+                        "attribution": str(
+                            quote.get("attribution", "") or ""
+                        ).strip(),
+                        "source": str(quote.get("source", "") or "").strip(),
+                    }
+                )
+            if not quotes:
+                continue
+            prepared.append(
+                {
+                    "kind": "quotes",
+                    "display_title": "相关语录",
+                    "context": context,
+                    "quotes": quotes,
+                    "item_count": len(quotes),
+                    "omitted_count": omitted_count,
+                }
+            )
+            continue
+        if kind != "techniques":
+            continue
+        groups: list[dict[str, Any]] = []
+        item_count = 0
+        for group in section.get("groups", []) or []:
+            if not isinstance(group, dict):
+                continue
+            rows: list[dict[str, str]] = []
+            for row in group.get("rows", []) or []:
+                if not isinstance(row, dict):
+                    continue
+                move = str(row.get("move", "") or "").strip()
+                description = str(row.get("description", "") or "").strip()
+                if not move and not description:
+                    continue
+                rows.append(
+                    {
+                        "move": move or "未命名招式",
+                        "controls": str(row.get("controls", "") or "").strip()
+                        or "—",
+                        "description": description or "暂无说明。",
+                        "damage": str(row.get("damage", "") or "").strip()
+                        or "—",
+                    }
+                )
+            if rows:
+                groups.append(
+                    {
+                        "label": str(group.get("label", "") or "").strip(),
+                        "rows": rows,
+                    }
+                )
+                item_count += len(rows)
+        if groups:
+            prepared.append(
+                {
+                    "kind": "techniques",
+                    "display_title": "招式与操作",
+                    "context": context,
+                    "intro": str(section.get("intro", "") or "").strip(),
+                    "groups": groups,
+                    "item_count": item_count,
+                    "omitted_count": omitted_count,
+                }
+            )
+    return prepared
 
 
 def _split_for_column(
