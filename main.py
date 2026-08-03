@@ -22,39 +22,23 @@ from .catalog_core import (
     plain_text_from_component,
 )
 from .wikirby import DEFAULT_API_URL, WikirbyClient, WikirbyError
+from .wikirby_card import (
+    DEFAULT_CARD_TEMPLATE,
+    WIKIRBY_CARD_TEMPLATE,
+    build_card_layout,
+    resolve_card_template,
+)
 
 PLUGIN_ID = "astrbot_plugin_kirby_catalog"
 LEGACY_PLUGIN_ID = "astrbot_plugin_AnimeWife"
 IMAGE_BASE_URL = "http://save.my996.top/?/img/"
-WIKIRBY_CARD_TEMPLATE = """
-<div style="width: 900px; box-sizing: border-box; padding: 34px 42px; background: #f4f7fb; color: #1f2937; font-family: Arial, 'Microsoft YaHei', sans-serif;">
-  <div style="border-left: 8px solid #2563eb; padding-left: 22px; margin-bottom: 24px;">
-    <div style="font-size: 18px; color: #64748b;">WiKirby</div>
-    <div style="font-size: 38px; font-weight: 700; color: #111827; margin-top: 5px;">{{ title }}</div>
-  </div>
-  {% if image_data_uri %}
-  <img src="{{ image_data_uri }}" style="display: block; width: 100%; max-height: 330px; object-fit: contain; background: #ffffff; border: 1px solid #dbe4f0; margin-bottom: 24px;" />
-  {% endif %}
-  <div style="background: #ffffff; border: 1px solid #dbe4f0; padding: 22px 26px; margin-bottom: 18px;">
-    <div style="font-size: 23px; font-weight: 700; color: #2563eb; margin-bottom: 10px;">简介</div>
-    <div style="font-size: 20px; line-height: 1.75; white-space: pre-wrap;">{{ summary }}</div>
-  </div>
-  {% if detail_text %}
-  <div style="background: #ffffff; border: 1px solid #dbe4f0; padding: 22px 26px; margin-bottom: 18px;">
-    <div style="font-size: 23px; font-weight: 700; color: #e11d48; margin-bottom: 10px;">资料</div>
-    <div style="font-size: 18px; line-height: 1.7; white-space: pre-wrap;">{{ detail_text }}</div>
-  </div>
-  {% endif %}
-  <div style="font-size: 15px; color: #64748b; word-break: break-all;">来源：{{ source }}</div>
-</div>
-"""
 
 
 @register(
     PLUGIN_ID,
     "Whereis-Alice",
     "星之卡比盟友抽取、图鉴、猜名与排行榜插件",
-    "2.7.0",
+    "2.8.1",
     "https://github.com/Whereis-Alice/astrbot_plugin_kirby_catalog",
 )
 class KirbyCatalogPlugin(Star):
@@ -406,18 +390,31 @@ class KirbyCatalogPlugin(Star):
         detail_text: str,
         image_bytes: bytes | None,
     ) -> Any | None:
+        theme = resolve_card_template(
+            self._config_value("wikirby_card_template", DEFAULT_CARD_TEMPLATE)
+        )
+        layout = build_card_layout(summary, detail_text)
+        image_data_uri = self._wikirby_image_data_uri(image_bytes)
         try:
             rendered = await self.html_render(
                 WIKIRBY_CARD_TEMPLATE,
                 {
                     "title": str(page.get("title") or "WiKirby"),
-                    "summary": summary,
-                    "detail_text": detail_text,
                     "source": str(page.get("url") or "https://wikirby.com"),
-                    "image_data_uri": self._wikirby_image_data_uri(image_bytes),
+                    "theme": theme,
+                    **layout,
+                    "image_data_uri": image_data_uri,
                 },
                 return_url=False,
-                options={"full_page": True, "type": "png", "scale": "css"},
+                options={
+                    "viewport": {"width": 1280, "height": 2600},
+                    "selector": "#kirby-card",
+                    "full_page": True,
+                    "type": "png",
+                    "scale": "css",
+                    "animations": "disabled",
+                    "wait_until": "load",
+                },
             )
         except Exception as exc:
             logger.warning("[%s] WiKirby 卡片渲染失败: %s", PLUGIN_ID, exc)
@@ -658,7 +655,7 @@ class KirbyCatalogPlugin(Star):
                 image_bytes = await self.wikirby.get_image_bytes(page["image_url"])
 
             output_mode = self._wikirby_output_mode()
-            card_component = None
+            card_component: Any | None = None
             if output_mode in {"card", "card_and_text", "card_forward"}:
                 card_component = await self._wikirby_card_component(
                     page, summary, detail_text, image_bytes

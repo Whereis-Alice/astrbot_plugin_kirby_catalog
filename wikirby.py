@@ -12,12 +12,15 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import quote, unquote, urlencode, urlparse
 from urllib.request import Request, urlopen
 
+from bs4 import BeautifulSoup
+from bs4.element import Tag
+
 DEFAULT_API_URL = "https://wikirby.com/w/api.php"
 FALLBACK_API_URL = "https://www.wikirby.com/w/api.php"
 DEFAULT_REST_URL = "https://wikirby.com/w/rest.php"
 FALLBACK_REST_URL = "https://www.wikirby.com/w/rest.php"
 USER_AGENT = (
-    "astrbot-plugin-kirby-catalog/2.7.0 "
+    "astrbot-plugin-kirby-catalog/2.8.1 "
     "(+https://github.com/Whereis-Alice/astrbot_plugin_kirby_catalog)"
 )
 _RETRYABLE_HTTP_CODES = {403, 408, 425, 429, 500, 502, 503, 504}
@@ -102,9 +105,26 @@ def _clean_wiki_block(value: str) -> str:
         start = text.find("{{")
         end = _find_template_end(text, start)
         text = text[:start] + " " + text[end:]
+    text = re.sub(
+        r"\{\|[\s\S]*?\|\}",
+        lambda match: "\n" + _clean_wiki_table(match.group(0)) + "\n",
+        text,
+    )
     text = re.sub(r"<!--[\s\S]*?-->", "", text)
     text = re.sub(r"<gallery[\s\S]*?</gallery>", "", text, flags=re.IGNORECASE)
     text = re.sub(r"<ref[^>]*>[\s\S]*?</ref>|<ref[^>]*/>", "", text, flags=re.IGNORECASE)
+    text = re.sub(
+        r"^={3,6}\s*(.*?)\s*={3,6}\s*$",
+        r"\1：",
+        text,
+        flags=re.MULTILINE,
+    )
+    text = re.sub(
+        r"^\s*(?:(?:File|Image):|thumb(?:\||$)|left\s*$|right\s*$).*$",
+        "",
+        text,
+        flags=re.IGNORECASE | re.MULTILINE,
+    )
     text = re.sub(r"\[https?://[^\s\]]+\s+([^]]+)\]", r"\1", text)
     text = re.sub(r"\[\[([^]|]+)\|([^]]+)\]\]", r"\2", text)
     text = re.sub(r"\[\[([^]]+)\]\]", r"\1", text)
@@ -121,6 +141,183 @@ def _clean_wiki_block(value: str) -> str:
             line = "• " + line.lstrip("*#").strip()
         lines.append(line)
     return "\n".join(lines)
+
+
+def _clean_wiki_table(table_text: str) -> str:
+    """Convert a basic MediaWiki table into compact readable rows."""
+    rows: list[list[str]] = []
+    current: list[str] = []
+
+    def flush() -> None:
+        nonlocal current
+        values = [_clean_wiki_table_cell(value) for value in current]
+        values = [value for value in values if value]
+        if values:
+            rows.append(values)
+        current = []
+
+    for raw_line in table_text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("{| ") or line == "{|" or line == "|}":
+            continue
+        if line.startswith("|-"):
+            flush()
+            continue
+        if line.startswith("!"):
+            current.extend(line[1:].split("!!"))
+            continue
+        if line.startswith("|"):
+            current.extend(line[1:].split("||"))
+            continue
+        if current:
+            current[-1] += " " + line
+    flush()
+
+    output: list[str] = []
+    for values in rows[:40]:
+        if len(values) == 1:
+            output.append(values[0])
+        else:
+            output.append("• " + " — ".join(dict.fromkeys(values)))
+    return "\n".join(output)
+
+
+def _clean_wiki_table_cell(value: str) -> str:
+    text = value.strip()
+    if "|" in text:
+        attributes, content = text.split("|", 1)
+        if "=" in attributes:
+            text = content
+    text = re.sub(
+        r"(?:thumb|left|right|center|\d+px)(?:\|[^\]\n]*)?",
+        " ",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = _clean_wiki_value(text)
+    if re.fullmatch(r"(?:\d+px|yes|no)", text, re.IGNORECASE):
+        return ""
+    return text
+
+
+def parse_rendered_sections(rendered_html: str) -> list[dict[str, str]]:
+    """Extract readable article sections from MediaWiki's rendered HTML."""
+    if not rendered_html.strip():
+        return []
+    soup = BeautifulSoup(rendered_html, "html.parser")
+    root = soup.select_one(".mw-parser-output")
+    if root is None:
+        return []
+
+    sections: list[dict[str, str]] = []
+    title = ""
+    parts: list[str] = []
+    active = False
+
+    def flush() -> None:
+        nonlocal parts
+        body = "\n".join(dict.fromkeys(part for part in parts if part)).strip()
+        if title and body:
+            sections.append({"title": title, "text": body})
+        parts = []
+
+    for child in root.children:
+        if not isinstance(child, Tag):
+            continue
+        if child.name in {"h2", "h3", "h4"}:
+            heading = _rendered_heading_text(child)
+            if child.name == "h2":
+                flush()
+                folded = heading.casefold()
+                active = bool(heading) and folded not in _SKIPPED_DETAIL_SECTIONS
+                title = _DETAIL_SECTION_LABELS.get(folded, heading) if active else ""
+            elif active and heading:
+                flush()
+                title = heading
+            continue
+        if not active:
+            continue
+
+        if child.name == "p":
+            value = _rendered_text(child)
+            if value:
+                parts.append(value)
+            continue
+        if child.name in {"ul", "ol"}:
+            for item in child.find_all("li", recursive=False):
+                value = _rendered_text(item)
+                if value:
+                    parts.append(f"• {value}")
+            continue
+        if child.name == "dl":
+            value = _rendered_text(child)
+            if value and len(value) <= 500:
+                parts.append(value)
+            continue
+        if child.name == "table":
+            table_lines = _rendered_table_lines(child)
+            if table_lines:
+                parts.extend(table_lines)
+            elif parts and re.search(
+                r"(?:following|can be found|locations?)[^.!?]*[:：]\s*$",
+                parts[-1],
+                re.IGNORECASE,
+            ):
+                parts.pop()
+            continue
+        if child.name == "div" and "display:flex" in str(child.get("style", "")):
+            value = _rendered_text(child)
+            if value and len(value) <= 800:
+                parts.append(value)
+    flush()
+    return sections
+
+
+def _rendered_heading_text(heading: Tag) -> str:
+    headline = heading.select_one(".mw-headline")
+    return _rendered_text(headline or heading).removesuffix("[ edit ]").strip()
+
+
+def _rendered_text(element: Tag) -> str:
+    text = html.unescape(element.get_text(" ", strip=True))
+    text = re.sub(r"\[\s*edit\s*\]", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\[\d+(?:\.\d+)?\]", "", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _rendered_table_lines(table: Tag) -> list[str]:
+    classes = {str(value).casefold() for value in table.get("class", [])}
+    if classes & {"navbox", "wikirby-infobox", "metadata", "mbox-small"}:
+        return []
+
+    sample = _rendered_text(table)[:800].casefold()
+    if "locations in " in sample or (
+        "appearance?" in sample and "stage" in sample
+    ):
+        return []
+
+    output: list[str] = []
+    for row in table.find_all("tr"):
+        cells = row.find_all(["th", "td"], recursive=False)
+        values = [_rendered_text(cell) for cell in cells]
+        values = [
+            value
+            for value in dict.fromkeys(values)
+            if value and not re.fullmatch(r"\d+px", value, re.IGNORECASE)
+        ]
+        if not values:
+            continue
+        if all(cell.name == "th" for cell in cells):
+            if len(values) == 1 and not values[0].casefold().endswith("appearances"):
+                output.append(values[0])
+            continue
+        line = " — ".join(values)
+        if len(line) > 700:
+            line = line[:697].rsplit(" ", 1)[0].rstrip() + "..."
+        output.append(f"• {line}")
+        if len(output) >= 40:
+            break
+    return output
 
 
 def parse_page_details(
@@ -146,23 +343,28 @@ def parse_page_details(
                 else:
                     infobox_rows.append({"label": label, "value": clean_value})
 
-    sections: list[dict[str, str]] = []
-    headings = list(_SECTION_HEADING.finditer(source))
-    for index, heading in enumerate(headings):
-        title = heading.group(1).strip()
-        folded_title = title.casefold()
-        if folded_title in _SKIPPED_DETAIL_SECTIONS:
-            continue
-        section_end = headings[index + 1].start() if index + 1 < len(headings) else len(source)
-        content = _clean_wiki_block(source[heading.end() : section_end])
-        if not content:
-            continue
-        sections.append(
-            {
-                "title": _DETAIL_SECTION_LABELS.get(folded_title, title),
-                "text": content,
-            }
-        )
+    sections = parse_rendered_sections(rendered_html)
+    if not sections:
+        headings = list(_SECTION_HEADING.finditer(source))
+        for index, heading in enumerate(headings):
+            title = heading.group(1).strip()
+            folded_title = title.casefold()
+            if folded_title in _SKIPPED_DETAIL_SECTIONS:
+                continue
+            section_end = (
+                headings[index + 1].start()
+                if index + 1 < len(headings)
+                else len(source)
+            )
+            content = _clean_wiki_block(source[heading.end() : section_end])
+            if not content:
+                continue
+            sections.append(
+                {
+                    "title": _DETAIL_SECTION_LABELS.get(folded_title, title),
+                    "text": content,
+                }
+            )
     locations = parse_locations_html(rendered_html)
     if locations:
         for section in sections:
@@ -960,7 +1162,7 @@ class WikirbyClient:
         return str(rendered or "")
 
     async def get_page_details(self, page: dict[str, Any]) -> dict[str, list[dict[str, str]]]:
-        """Load selected readable details from a page's full wikitext."""
+        """Load selected readable details, preferring rendered MediaWiki HTML."""
         pageid = page.get("pageid", 0)
         revision = page.get("lastrevid", 0)
         key = f"details:{pageid}:{revision}"
@@ -971,14 +1173,13 @@ class WikirbyClient:
         if not wikitext:
             wikitext = await self.get_wikitext(str(page.get("title", "")))
         rendered_html = ""
-        if re.search(r"^==+\s*Locations\s*==+", wikitext, re.IGNORECASE | re.MULTILINE):
-            try:
-                rendered_html = await self._get_rendered_page_html(
-                    str(page.get("title", ""))
-                )
-            except WikirbyError:
-                # Wikitext still provides the section introduction if rendering is blocked.
-                pass
+        try:
+            rendered_html = await self._get_rendered_page_html(
+                str(page.get("title", ""))
+            )
+        except WikirbyError:
+            # Wikitext still provides readable content when page rendering is blocked.
+            pass
         result = parse_page_details(wikitext, rendered_html)
         self._cache_set(key, result)
         return result

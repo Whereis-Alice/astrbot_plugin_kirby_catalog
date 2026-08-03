@@ -43,7 +43,7 @@
         "default": true
       },
       "wikirby_show_image": {
-        "description": "普通百科查询显示页面首图",
+        "description": "百科回复显示页面首图",
         "type": "bool",
         "default": true
       },
@@ -64,7 +64,19 @@
           "文字+卡片合并转发"
         ],
         "default": "普通消息",
-        "hint": "卡片由 AstrBot 的 T2I 服务渲染；渲染失败时会自动回退到文字回复。"
+        "hint": "卡片由 AstrBot 的 T2I 服务渲染为一张完整图片；渲染失败时会自动回退到文字回复。"
+      },
+      "wikirby_card_template": {
+        "description": "百科卡片模板",
+        "type": "string",
+        "options": [
+          "梦之泉",
+          "卡比粉彩",
+          "瓦豆鲁迪",
+          "星际档案"
+        ],
+        "default": "梦之泉",
+        "hint": "选择仅百科卡片及其它卡片模式使用的 HTML 视觉模板。"
       },
       "wikirby_translate_enabled": {
         "description": "使用 LLM 将百科简介和页面资料翻译成简体中文",

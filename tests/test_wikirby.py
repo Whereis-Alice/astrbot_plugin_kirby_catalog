@@ -1,10 +1,12 @@
 import unittest
 from io import BytesIO
+from textwrap import dedent
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 from urllib.error import HTTPError
 
 import astrbot.api.message_components as Comp
+from jinja2 import BaseLoader, Environment
 
 from astrbot_plugin_kirby_catalog.main import KirbyCatalogPlugin
 from astrbot_plugin_kirby_catalog.wikirby import (
@@ -13,6 +15,14 @@ from astrbot_plugin_kirby_catalog.wikirby import (
     parse_language_names,
     parse_locations_html,
     parse_page_details,
+    parse_rendered_sections,
+)
+from astrbot_plugin_kirby_catalog.wikirby_card import (
+    CARD_TEMPLATE_NAMES,
+    WIKIRBY_CARD_TEMPLATE,
+    build_card_layout,
+    estimate_text_lines,
+    resolve_card_template,
 )
 
 
@@ -304,6 +314,147 @@ Driblee can be found in the following stages:
 
         self.assertIn("• Donut Dome", details["sections"][0]["text"])
 
+    def test_rendered_html_keeps_headings_and_compacts_tables(self):
+        rendered_html = """
+        <div class="mw-parser-output">
+          <h2><span class="mw-headline">Game appearances</span></h2>
+          <table class="wikitable">
+            <tr><th colspan="2">Waddle Doo's video game appearances</th></tr>
+            <tr><th>Game</th><th>Role</th></tr>
+            <tr><td>Kirby's Dream Land</td><td>Enemy</td></tr>
+          </table>
+          <h3><span class="mw-headline">Kirby's Dream Land</span></h3>
+          <figure>Artwork that should not be included</figure>
+          <p>Waddle Doo fires a beam at Kirby.</p>
+          <h2><span class="mw-headline">Gallery</span></h2>
+          <p>Gallery content should not be included.</p>
+        </div>
+        """
+
+        sections = parse_rendered_sections(rendered_html)
+
+        self.assertEqual(sections[0]["title"], "Game appearances")
+        self.assertIn("• Kirby's Dream Land — Enemy", sections[0]["text"])
+        self.assertEqual(sections[1]["title"], "Kirby's Dream Land")
+        self.assertIn("fires a beam", sections[1]["text"])
+        self.assertNotIn("Artwork", " ".join(item["text"] for item in sections))
+        self.assertNotIn("Gallery", " ".join(item["title"] for item in sections))
+
+    def test_wikitext_fallback_removes_table_and_media_syntax(self):
+        details = parse_page_details(
+            dedent(
+                """
+            ==Game appearances==
+            {| class="wikitable"
+            |-
+            ! Game !! Role
+            |-
+            | [[Kirby's Dream Land]] || Enemy
+            |}
+            ===Kirby's Adventure===
+            File:KA Waddle Doo sprite.png
+            Waddle Doo is a common enemy.
+            """
+            )
+        )
+
+        text = details["sections"][0]["text"]
+        self.assertIn("• Kirby's Dream Land — Enemy", text)
+        self.assertIn("Kirby's Adventure：", text)
+        self.assertNotIn("{|", text)
+        self.assertNotIn("File:", text)
+
+
+class WikirbyCardTests(unittest.TestCase):
+    def test_card_facts_band_turns_fact_rows_into_key_value_items(self):
+        layout = build_card_layout(
+            "简介。",
+            "种类：敌人\n提供能力：光束\n其他语言名称：\n• 日语：ワドルドゥ\n• 简体中文：瓦豆鲁笃",
+        )
+
+        self.assertEqual(
+            layout["left_blocks"][0]["fact_items"][0],
+            {"label": "种类", "value": "敌人"},
+        )
+        self.assertEqual(
+            layout["left_blocks"][1]["fact_items"][1],
+            {"label": "简体中文", "value": "瓦豆鲁笃"},
+        )
+
+    def test_card_template_renders_fact_items(self):
+        layout = build_card_layout("简介。", "种类：敌人\n提供能力：光束")
+        html = Environment(loader=BaseLoader(), autoescape=True).from_string(
+            WIKIRBY_CARD_TEMPLATE
+        ).render(
+            title="Waddle Doo",
+            source="https://wikirby.com/wiki/Waddle_Doo",
+            theme=resolve_card_template("梦之泉"),
+            **layout,
+            image_data_uri="",
+        )
+
+        self.assertIn('class="fact-list"', html)
+        self.assertIn('class="facts-band"', html)
+        self.assertNotIn('class="sidebar"', html)
+        self.assertIn("提供能力", html)
+
+    def test_card_layout_uses_facts_band_and_two_detail_columns(self):
+        detail = "游戏登场：\n" + "\n".join(
+            f"第 {index} 段：" + "瓦豆鲁笃在关卡中移动并攻击卡比。" * 8
+            for index in range(1, 24)
+        )
+        detail += "\n其他语言名称：\n英语：Waddle Doo\n日语：ワドルドゥ"
+
+        layout = build_card_layout(
+            "这是一段简介。" * 30,
+            detail,
+        )
+
+        self.assertIn("简介", layout["summary"])
+        self.assertTrue(layout["left_blocks"])
+        self.assertEqual(len(layout["right_columns"]), 2)
+        self.assertGreater(
+            sum(
+                estimate_text_lines(block["body"])
+                for column in layout["right_columns"]
+                for block in column
+            ),
+            100,
+        )
+
+    def test_all_card_templates_resolve_to_distinct_variants(self):
+        themes = [resolve_card_template(name) for name in CARD_TEMPLATE_NAMES]
+
+        self.assertEqual(len({theme["slug"] for theme in themes}), 4)
+        self.assertEqual(resolve_card_template("unknown")["slug"], "fountain")
+
+
+class WikirbyClientDetailsTests(unittest.IsolatedAsyncioTestCase):
+    async def test_details_always_request_rendered_html(self):
+        client = WikirbyClient(cache_ttl_seconds=0)
+        page = {
+            "pageid": 7,
+            "lastrevid": 11,
+            "title": "Waddle Doo",
+            "wikitext": "{{Infobox-Enemy|copy ability=[[Beam]]}}",
+        }
+        rendered_html = """
+        <div class="mw-parser-output">
+          <h2><span class="mw-headline">Game appearances</span></h2>
+          <p>Waddle Doo appears in Kirby's Dream Land.</p>
+        </div>
+        """
+
+        with patch.object(
+            client,
+            "_get_rendered_page_html",
+            new=AsyncMock(return_value=rendered_html),
+        ) as get_rendered:
+            details = await client.get_page_details(page)
+
+        get_rendered.assert_awaited_once_with("Waddle Doo")
+        self.assertEqual(details["sections"][0]["title"], "Game appearances")
+
 
 class WikirbyCommandTests(unittest.IsolatedAsyncioTestCase):
     async def test_page_falls_back_to_rest_when_mediawiki_api_is_blocked(self):
@@ -428,6 +579,33 @@ class WikirbyCommandTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIsInstance(results[0][0], Comp.Image)
         plugin.html_render.assert_awaited_once()
+        render_call = plugin.html_render.await_args
+        self.assertEqual(render_call.kwargs["options"]["selector"], "#kirby-card")
+        self.assertTrue(render_call.kwargs["options"]["full_page"])
+
+    async def test_card_renders_one_image_with_selected_template(self):
+        plugin = KirbyCatalogPlugin.__new__(KirbyCatalogPlugin)
+        plugin.config = {
+            "wikirby_card_template": "瓦豆鲁迪",
+        }
+        plugin.html_render = AsyncMock(return_value="card.png")
+        page = {
+            "title": "Waddle Doo",
+            "url": "https://wikirby.com/wiki/Waddle_Doo",
+        }
+
+        component = await plugin._wikirby_card_component(
+            page,
+            "简介。" * 300,
+            "游戏登场：\n" + ("瓦豆鲁笃会发射光束。" * 1200),
+            None,
+        )
+
+        self.assertIsNotNone(component)
+        self.assertEqual(plugin.html_render.await_count, 1)
+        first_payload = plugin.html_render.await_args_list[0].args[1]
+        self.assertEqual(first_payload["theme"]["slug"], "waddle")
+        self.assertEqual(len(first_payload["right_columns"]), 2)
 
     async def test_summary_can_use_native_provider_for_translation(self):
         plugin = KirbyCatalogPlugin.__new__(KirbyCatalogPlugin)
