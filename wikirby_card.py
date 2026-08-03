@@ -13,65 +13,81 @@ CARD_TEMPLATES: dict[str, dict[str, str]] = {
         "slug": "fountain",
         "label": "梦之泉",
         "eyebrow": "梦之泉档案",
-        "canvas": "#f3f8f8",
-        "surface": "#ffffff",
-        "header": "#dff4f1",
-        "image_bg": "#eef8ff",
-        "title": "#16313a",
-        "text": "#24343a",
-        "muted": "#5f7378",
-        "accent": "#008b87",
-        "accent_alt": "#e34f7b",
-        "accent_warm": "#f2b134",
-        "border": "#bedbd8",
+        "canvas": "#0e2933",
+        "surface": "#153e49",
+        "header": "#123845",
+        "image_bg": "#17656a",
+        "title": "#f5fffc",
+        "text": "#e8f7f3",
+        "muted": "#b7d8d1",
+        "accent": "#68ded1",
+        "accent_alt": "#ff8aae",
+        "accent_warm": "#ffd166",
+        "border": "#35717a",
+        "band": "#1d4e58",
+        "footer": "#0b222b",
+        "chip": "#225361",
+        "chip_text": "#f5fffc",
     },
     "卡比粉彩": {
         "slug": "popstar",
         "label": "卡比粉彩",
         "eyebrow": "波普之星角色档案",
-        "canvas": "#fff7fa",
-        "surface": "#ffffff",
-        "header": "#ffe3ed",
-        "image_bg": "#e9f6ff",
-        "title": "#3e2942",
-        "text": "#3d3340",
-        "muted": "#756573",
-        "accent": "#d93f73",
-        "accent_alt": "#167d9a",
-        "accent_warm": "#f1aa2b",
-        "border": "#efbfd0",
+        "canvas": "#4a1e40",
+        "surface": "#70284f",
+        "header": "#8d305c",
+        "image_bg": "#b64778",
+        "title": "#fff4f8",
+        "text": "#fff0f6",
+        "muted": "#ffd1e0",
+        "accent": "#ffd166",
+        "accent_alt": "#83d9f5",
+        "accent_warm": "#ff9ab7",
+        "border": "#c75883",
+        "band": "#5a2348",
+        "footer": "#36162f",
+        "chip": "#5a2348",
+        "chip_text": "#fff4f8",
     },
     "瓦豆鲁迪": {
         "slug": "waddle",
         "label": "瓦豆鲁迪",
         "eyebrow": "瓦豆鲁迪观察笔记",
-        "canvas": "#f7f8f5",
-        "surface": "#ffffff",
-        "header": "#ffe8c6",
-        "image_bg": "#fff4df",
-        "title": "#3b3028",
-        "text": "#403832",
-        "muted": "#75685d",
-        "accent": "#d9562b",
-        "accent_alt": "#0b7d75",
-        "accent_warm": "#e4a11b",
-        "border": "#e8c99a",
+        "canvas": "#244c49",
+        "surface": "#35645d",
+        "header": "#d65d42",
+        "image_bg": "#e57e4f",
+        "title": "#fff7ea",
+        "text": "#fff7ea",
+        "muted": "#ffe1ba",
+        "accent": "#9ce7d7",
+        "accent_alt": "#ffdd75",
+        "accent_warm": "#f4a261",
+        "border": "#6fa59b",
+        "band": "#2a5753",
+        "footer": "#1b3d3b",
+        "chip": "#a74337",
+        "chip_text": "#fff7ea",
     },
     "星际档案": {
         "slug": "archive",
         "label": "星际档案",
         "eyebrow": "星际参考档案",
-        "canvas": "#eef1f3",
-        "surface": "#ffffff",
-        "header": "#27313b",
-        "image_bg": "#e8f0ee",
-        "title": "#ffffff",
-        "text": "#26313a",
-        "muted": "#66747d",
-        "accent": "#20a39e",
-        "accent_alt": "#e54f6d",
-        "accent_warm": "#f0b429",
-        "border": "#b9c5ca",
+        "canvas": "#121c2b",
+        "surface": "#1b2b3d",
+        "header": "#101827",
+        "image_bg": "#24485a",
+        "title": "#f4f8ff",
+        "text": "#e5eff8",
+        "muted": "#b5c7d6",
+        "accent": "#7ee8d7",
+        "accent_alt": "#ff7f96",
+        "accent_warm": "#ffd166",
+        "border": "#3d5f74",
+        "band": "#20384e",
+        "footer": "#0d1420",
+        "chip": "#263b50",
+        "chip_text": "#f4f8ff",
     },
 }
 
@@ -80,7 +96,7 @@ WIKIRBY_CARD_TEMPLATE = r"""
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="viewport" content="width=1280, height=600, initial-scale=1" />
   <style>
     * {
       box-sizing: border-box;
@@ -92,7 +108,7 @@ WIKIRBY_CARD_TEMPLATE = r"""
       width: 100%;
       margin: 0;
       padding: 0;
-      background: transparent;
+      background: {{ theme.canvas }};
     }
 
     body {
@@ -104,7 +120,7 @@ WIKIRBY_CARD_TEMPLATE = r"""
     #kirby-card {
       width: 100%;
       overflow: hidden;
-      background: {{ theme.canvas }};
+      background: {{ theme.surface }};
       border: 1px solid {{ theme.border }};
       border-radius: 6px;
       box-shadow: 0 14px 38px rgba(24, 39, 48, 0.12);
@@ -157,8 +173,8 @@ WIKIRBY_CARD_TEMPLATE = r"""
     .page-chip {
       min-width: 112px;
       padding: 12px 15px;
-      color: {{ theme.text }};
-      background: {{ theme.surface }};
+      color: {{ theme.chip_text }};
+      background: {{ theme.chip }};
       border: 1px solid {{ theme.border }};
       border-radius: 4px;
       text-align: center;
@@ -240,7 +256,7 @@ WIKIRBY_CARD_TEMPLATE = r"""
     }
 
     .content {
-      padding: 0 44px 18px;
+      padding: 0;
       background: {{ theme.surface }};
     }
 
@@ -248,7 +264,8 @@ WIKIRBY_CARD_TEMPLATE = r"""
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
       gap: 34px;
-      padding: 30px 0 28px;
+      padding: 30px 44px 28px;
+      background: {{ theme.band }};
       border-bottom: 1px solid {{ theme.border }};
     }
 
@@ -263,7 +280,8 @@ WIKIRBY_CARD_TEMPLATE = r"""
       grid-template-columns: repeat(2, minmax(0, 1fr));
       gap: 36px;
       min-width: 0;
-      padding: 32px 0 8px;
+      padding: 32px 44px 10px;
+      background: {{ theme.surface }};
       align-items: start;
     }
 
@@ -370,7 +388,7 @@ WIKIRBY_CARD_TEMPLATE = r"""
       align-items: start;
       padding: 22px 44px 26px;
       color: {{ theme.muted }};
-      background: {{ theme.canvas }};
+      background: {{ theme.footer }};
       border-top: 1px solid {{ theme.border }};
       font-size: 15px;
       line-height: 1.55;
@@ -389,6 +407,7 @@ WIKIRBY_CARD_TEMPLATE = r"""
     #kirby-card.template-popstar .masthead {
       display: block;
       text-align: center;
+      border-bottom: 8px solid {{ theme.accent_alt }};
     }
 
     #kirby-card.template-popstar .page-chip {
@@ -397,7 +416,7 @@ WIKIRBY_CARD_TEMPLATE = r"""
     }
 
     #kirby-card.template-popstar .hero {
-      grid-template-columns: 330px 1fr;
+      grid-template-columns: 360px 1fr;
     }
 
     #kirby-card.template-popstar .hero-copy {
@@ -412,6 +431,19 @@ WIKIRBY_CARD_TEMPLATE = r"""
       padding-right: 12px;
     }
 
+    #kirby-card.template-popstar .facts-band {
+      border-bottom: 8px solid {{ theme.accent_warm }};
+    }
+
+    #kirby-card.template-fountain .masthead {
+      border-left: 18px solid {{ theme.accent }};
+      padding-left: 26px;
+    }
+
+    #kirby-card.template-fountain .facts-band {
+      border-top: 8px solid {{ theme.accent_warm }};
+    }
+
     #kirby-card.template-waddle {
       border-top: 12px solid {{ theme.accent }};
     }
@@ -424,6 +456,22 @@ WIKIRBY_CARD_TEMPLATE = r"""
       border-left: 18px solid {{ theme.accent_alt }};
     }
 
+    #kirby-card.template-waddle .hero {
+      grid-template-columns: 380px 1fr;
+    }
+
+    #kirby-card.template-waddle .hero-copy {
+      order: 2;
+      padding-left: 18px;
+      padding-right: 44px;
+    }
+
+    #kirby-card.template-waddle .hero-art {
+      order: 1;
+      padding-left: 44px;
+      padding-right: 12px;
+    }
+
     #kirby-card.template-archive {
       border-radius: 0;
       box-shadow: none;
@@ -432,17 +480,26 @@ WIKIRBY_CARD_TEMPLATE = r"""
 
     #kirby-card.template-archive .eyebrow,
     #kirby-card.template-archive .subtitle {
-      color: #d8e2e7;
+      color: {{ theme.muted }};
     }
 
     #kirby-card.template-archive .page-chip {
-      color: #ffffff;
-      background: #34414c;
-      border-color: #5c6b76;
+      color: {{ theme.chip_text }};
+      background: {{ theme.chip }};
+      border-color: {{ theme.border }};
     }
 
     #kirby-card.template-archive .page-chip span {
-      color: #d8e2e7;
+      color: {{ theme.muted }};
+    }
+
+    #kirby-card.template-archive .masthead {
+      border-bottom: 5px solid {{ theme.accent }};
+    }
+
+    #kirby-card.template-archive .facts-band {
+      border-top: 1px dashed {{ theme.accent }};
+      border-bottom: 1px dashed {{ theme.accent }};
     }
 
     #kirby-card.template-archive .block-heading,
@@ -468,7 +525,8 @@ WIKIRBY_CARD_TEMPLATE = r"""
         padding-right: 28px;
       }
 
-      .content {
+      .facts-band,
+      .details-columns {
         padding-left: 34px;
         padding-right: 34px;
       }
@@ -514,12 +572,14 @@ WIKIRBY_CARD_TEMPLATE = r"""
       }
 
       .hero,
-      #kirby-card.template-popstar .hero {
+      #kirby-card.template-popstar .hero,
+      #kirby-card.template-waddle .hero {
         grid-template-columns: 1fr;
       }
 
       .hero-copy,
-      #kirby-card.template-popstar .hero-copy {
+      #kirby-card.template-popstar .hero-copy,
+      #kirby-card.template-waddle .hero-copy {
         order: 1;
         padding: 30px 28px 20px;
       }
@@ -529,7 +589,8 @@ WIKIRBY_CARD_TEMPLATE = r"""
       }
 
       .hero-art,
-      #kirby-card.template-popstar .hero-art {
+      #kirby-card.template-popstar .hero-art,
+      #kirby-card.template-waddle .hero-art {
         order: 2;
         padding: 0 28px 28px;
       }
@@ -538,7 +599,8 @@ WIKIRBY_CARD_TEMPLATE = r"""
         height: 220px;
       }
 
-      .content {
+      .facts-band,
+      .details-columns {
         padding-left: 28px;
         padding-right: 28px;
       }

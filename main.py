@@ -38,7 +38,7 @@ IMAGE_BASE_URL = "http://save.my996.top/?/img/"
     PLUGIN_ID,
     "Whereis-Alice",
     "星之卡比盟友抽取、图鉴、猜名与排行榜插件",
-    "2.8.2",
+    "2.8.3",
     "https://github.com/Whereis-Alice/astrbot_plugin_kirby_catalog",
 )
 class KirbyCatalogPlugin(Star):
@@ -61,8 +61,12 @@ class KirbyCatalogPlugin(Star):
         self.wikirby = WikirbyClient(
             api_url=str(self._config_value("wikirby_api_url", DEFAULT_API_URL)),
             timeout_seconds=float(self._config_value("wikirby_timeout_seconds", 12)),
-            cache_ttl_seconds=int(self._config_value("wikirby_cache_ttl_seconds", 3600)),
-            max_summary_chars=int(self._config_value("wikirby_max_summary_chars", 1800)),
+            cache_ttl_seconds=int(
+                self._config_value("wikirby_cache_ttl_seconds", 3600)
+            ),
+            max_summary_chars=int(
+                self._config_value("wikirby_max_summary_chars", 1800)
+            ),
             proxy_url=str(self._config_value("wikirby_proxy_url", "")),
             proxy_token=str(self._config_value("wikirby_proxy_token", "")),
         )
@@ -407,11 +411,13 @@ class KirbyCatalogPlugin(Star):
                 },
                 return_url=False,
                 options={
-                    "viewport": {"width": 1280, "height": 2600},
+                    "viewport_width": 1280,
+                    "viewport_height": 600,
                     "selector": "#kirby-card",
                     "full_page": True,
                     "type": "png",
-                    "scale": "css",
+                    "scale": "device",
+                    "device_scale_factor_level": "ultra",
                     "animations": "disabled",
                     "wait_until": "load",
                 },
@@ -680,14 +686,17 @@ class KirbyCatalogPlugin(Star):
         query, names_only = self._wikirby_query_parts(event)
         if not query:
             yield event.plain_result(
-                "用法：卡比百科 <角色名或页面名>；只查官方译名可用：卡比百科名称 <角色名>。"
+                "用法：卡比百科 <角色名或页面名>；"
+                "只查官方译名可用：卡比百科名称 <角色名>。"
             )
             return
         try:
             resolved = await client.resolve(query)
             if resolved.get("kind") == "candidates":
                 yield event.plain_result(
-                    self._wikirby_candidate_text(resolved.get("candidates", []), names_only)
+                    self._wikirby_candidate_text(
+                        resolved.get("candidates", []), names_only
+                    )
                 )
                 return
             if resolved.get("kind") != "page":
@@ -707,7 +716,12 @@ class KirbyCatalogPlugin(Star):
             text, summary, detail_text = await self._wikirby_page_content(event, page)
             show_image = self._config_value("wikirby_show_image", True)
             if isinstance(show_image, str):
-                show_image = show_image.strip().casefold() not in {"0", "false", "no", "off"}
+                show_image = show_image.strip().casefold() not in {
+                    "0",
+                    "false",
+                    "no",
+                    "off",
+                }
             image_bytes = None
             if show_image and page.get("image_url"):
                 image_bytes = await self.wikirby.get_image_bytes(page["image_url"])

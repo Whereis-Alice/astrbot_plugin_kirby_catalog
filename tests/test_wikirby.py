@@ -467,6 +467,8 @@ class WikirbyCardTests(unittest.TestCase):
         themes = [resolve_card_template(name) for name in CARD_TEMPLATE_NAMES]
 
         self.assertEqual(len({theme["slug"] for theme in themes}), 4)
+        self.assertEqual(len({theme["surface"] for theme in themes}), 4)
+        self.assertTrue(all(theme["surface"].casefold() != "#ffffff" for theme in themes))
         self.assertEqual(resolve_card_template("unknown")["slug"], "fountain")
 
 
@@ -678,6 +680,13 @@ class WikirbyCommandTests(unittest.IsolatedAsyncioTestCase):
         render_call = plugin.html_render.await_args
         self.assertEqual(render_call.kwargs["options"]["selector"], "#kirby-card")
         self.assertTrue(render_call.kwargs["options"]["full_page"])
+        self.assertEqual(render_call.kwargs["options"]["viewport_width"], 1280)
+        self.assertEqual(render_call.kwargs["options"]["viewport_height"], 600)
+        self.assertEqual(render_call.kwargs["options"]["scale"], "device")
+        self.assertEqual(
+            render_call.kwargs["options"]["device_scale_factor_level"], "ultra"
+        )
+        self.assertNotIn("viewport", render_call.kwargs["options"])
 
     async def test_card_renders_one_image_with_selected_template(self):
         plugin = KirbyCatalogPlugin.__new__(KirbyCatalogPlugin)
