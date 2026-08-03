@@ -30,7 +30,7 @@ IMAGE_BASE_URL = "http://save.my996.top/?/img/"
     PLUGIN_ID,
     "Whereis-Alice",
     "星之卡比盟友抽取、图鉴、猜名与排行榜插件",
-    "2.1.2",
+    "2.1.3",
     "https://github.com/Whereis-Alice/astrbot_plugin_kirby_catalog",
 )
 class KirbyCatalogPlugin(Star):
@@ -410,16 +410,9 @@ class KirbyCatalogPlugin(Star):
                 f"{self._display_name(entry)}。"
             )
 
-        user_id = self._sender_id(event)
-        config = self.store.load_group(group_id)
-        user = self._user_data(config, user_id, self._sender_name(event))
-        is_new = self.store.unlock(user, entry["filename"])
-        config[user_id] = user
-        self.store.save_group(group_id, config)
         self._guess_sessions.pop(group_id, None)
         self._cancel_guess_timeout(group_id)
-        status = "并已收入你的图鉴" if is_new else "但你已经解锁过它了"
-        return f"答对啦！答案是 #{entry['id']} {self._display_name(entry)}，{status}。"
+        return f"答对啦！答案是 #{entry['id']} {self._display_name(entry)}。"
 
     async def _draw_ally_impl(self, event: AstrMessageEvent):
         """每天抽取盟友，重复时使用连续未出新保底。"""
@@ -633,7 +626,7 @@ class KirbyCatalogPlugin(Star):
     @filter.command("猜盟友")
     @filter.event_message_type(EventMessageType.GROUP_MESSAGE)
     async def guess_ally(self, event: AstrMessageEvent):
-        """发起或回答一轮猜盟友，答对者会解锁该盟友。"""
+        """发起或回答一轮猜盟友，答对只公布答案，不改变图鉴。"""
         group_id = self._group_id(event)
         if not group_id:
             yield event.plain_result("该功能仅支持群聊。")
@@ -760,7 +753,7 @@ class KirbyCatalogPlugin(Star):
             "我的盟友图鉴：查看个人收藏\n"
             "星之卡比图鉴：查看本群图鉴（编号和名字）\n"
             "随机盟友：随机查看一位盟友，不计入抽取记录\n"
-            "猜盟友：发起猜名，回复“猜盟友 名字”作答\n"
+            "猜盟友：发起猜名，答对只公布答案，不改变图鉴\n"
             "盟友排行榜：查看本群收藏排行\n"
             "盟友名单 [关键词]：检索图鉴编号和名字\n"
             "管理员命令：星之卡比图鉴添加、换图、改名、迁移、清理旧名、删除重复"

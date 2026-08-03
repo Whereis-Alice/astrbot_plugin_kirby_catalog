@@ -179,7 +179,7 @@ class CatalogStoreTests(unittest.TestCase):
             self.assertIn(renamed["filename"], filenames)
             self.assertNotIn(filename, filenames)
 
-    def test_repairs_duplicate_local_files_left_by_old_rename(self):
+    def test_keeps_duplicate_local_files_for_explicit_repair(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             new = root / "new"
@@ -217,9 +217,47 @@ class CatalogStoreTests(unittest.TestCase):
             store = CatalogStore(new, image_base_url="")
 
             entries = store.entries()
-            self.assertEqual([entry["id"] for entry in entries], [227])
+            self.assertEqual([entry["id"] for entry in entries], [227, 417])
             self.assertEqual(entries[0]["name"], "结晶化针卡比")
-            self.assertIn(old_filename, entries[0]["aliases"])
+            self.assertEqual(entries[1]["name"], "水晶针卡比")
+
+    def test_restores_local_file_hidden_by_old_same_name_merge(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            new = root / "new"
+            assets = new / "img" / "allies"
+            assets.mkdir(parents=True)
+            visible_filename = "星之卡比 探索发现.同名盟友.png"
+            hidden_filename = "ally_0002_同名盟友.png"
+            image = self.make_image()
+            assets.joinpath(visible_filename).write_bytes(image)
+            assets.joinpath(hidden_filename).write_bytes(image)
+            (new / "catalog.json").write_text(
+                json.dumps(
+                    {
+                        "version": 1,
+                        "items": [
+                            {
+                                "filename": visible_filename,
+                                "id": 3,
+                                "name": "同名盟友",
+                                "source": "星之卡比 探索发现",
+                                "aliases": [hidden_filename],
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            store = CatalogStore(new, image_base_url="")
+
+            entries = store.entries()
+            self.assertEqual(len(entries), 2)
+            restored = store.resolve_entry(hidden_filename)
+            self.assertIsNotNone(restored)
+            self.assertNotIn(hidden_filename, entries[0]["aliases"])
 
     def test_cleanup_renamed_prefix_preserves_users_and_one_kept_name(self):
         with tempfile.TemporaryDirectory() as temp:

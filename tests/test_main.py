@@ -178,9 +178,10 @@ class GuessFlowTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(
             results,
-            ["答对啦！答案是 #12 星之卡比，并已收入你的图鉴。"],
+            ["答对啦！答案是 #12 星之卡比。"],
         )
         self.assertNotIn("group-1", plugin._guess_sessions)
+        self.assertFalse(plugin.store.group)
 
     async def test_active_guess_cannot_be_replaced_by_new_command(self):
         plugin = make_plugin(self.entry)

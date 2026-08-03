@@ -572,11 +572,63 @@ class CatalogStore:
         """Backward-compatible name for callers from older plugin versions."""
         return self._is_retired_asset(filename)
 
+    def _restore_named_alias_assets(self) -> None:
+        """Restore files hidden by the old automatic same-name merge.
+
+        The old release stored the hidden filename as an alias but left the
+        file on disk. If its parsed name is the same as the visible entry,
+        restore it as a real entry and fill the first missing catalogue id.
+        Explicit merges remove their old files, so they remain unaffected.
+        """
+        used_ids = {
+            int(entry.get("id", 0) or 0) for entry in self._catalog.values()
+        }
+        max_id = max(used_ids, default=0)
+        for path in list(self.assets_dir.iterdir()):
+            if not path.is_file() or path.suffix.lower() not in IMAGE_EXTENSIONS:
+                continue
+            owners = [
+                entry
+                for entry in self._catalog.values()
+                if path.name in entry.get("aliases", [])
+            ]
+            if len(owners) != 1:
+                continue
+            owner = owners[0]
+            inferred_name, inferred_source = _parse_filename(path.name)
+            if _as_text(owner.get("name")).casefold() != inferred_name.casefold():
+                continue
+            owner_source = _as_text(owner.get("source"))
+            if (
+                owner_source
+                and inferred_source
+                and owner_source.casefold() != inferred_source.casefold()
+            ):
+                continue
+
+            while (max_id + 1) in used_ids:
+                max_id += 1
+            candidate_id = next(
+                (value for value in range(1, max_id + 1) if value not in used_ids),
+                max_id + 1,
+            )
+            used_ids.add(candidate_id)
+            max_id = max(max_id, candidate_id)
+            owner["aliases"] = [
+                alias for alias in owner.get("aliases", []) if alias != path.name
+            ]
+            self._set_entry(
+                path.name,
+                candidate_id,
+                _as_text(owner.get("name")),
+                owner_source or inferred_source,
+                [],
+            )
+
     def _refresh_catalog(self) -> None:
         with self._lock:
             self._merge_legacy_duplicate_assets()
-            self._merge_duplicate_local_assets()
-            self._merge_duplicate_named_assets()
+            self._restore_named_alias_assets()
             for asset_dir in [
                 self.assets_dir,
                 *[legacy / "img" / "wife" for legacy in self.legacy_dirs],
