@@ -18,7 +18,7 @@ from .wikirby import parse_rendered_sections
 DEFAULT_FANDOM_API_URL = "https://kirby.fandom.com/api.php"
 FANDOM_SITE_URL = "https://kirby.fandom.com"
 USER_AGENT = (
-    "astrbot-plugin-kirby-catalog/2.9.0 "
+    "astrbot-plugin-kirby-catalog/2.9.1 "
     "(+https://github.com/Whereis-Alice/astrbot_plugin_kirby_catalog)"
 )
 _RETRYABLE_HTTP_CODES = {408, 425, 429, 500, 502, 503, 504}

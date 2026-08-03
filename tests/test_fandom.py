@@ -188,13 +188,33 @@ class FandomCommandTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Physical Appearance", results[0][0].text)
         self.assertIn("来源：https://kirby.fandom.com/wiki/Spinni", results[0][0].text)
 
+    def test_short_commands_parse_page_names_sections_and_detail(self):
+        plugin = self.make_plugin()
+
+        self.assertEqual(
+            plugin._fandom_query_parts(FakeEvent("卡比F Spinni")),
+            ("Spinni", "page", ""),
+        )
+        self.assertEqual(
+            plugin._fandom_query_parts(FakeEvent("卡比F名称 Spinni")),
+            ("Spinni", "names", ""),
+        )
+        self.assertEqual(
+            plugin._fandom_query_parts(FakeEvent("/卡比F章节 Spinni")),
+            ("Spinni", "sections", ""),
+        )
+        self.assertEqual(
+            plugin._fandom_query_parts(FakeEvent("卡比F Spinni | Games")),
+            ("Spinni", "page", "Games"),
+        )
+
     async def test_section_query_returns_only_requested_parent_section(self):
         plugin = self.make_plugin()
 
         results = [
             result
             async for result in plugin.fandom_query_plain(
-                FakeEvent("卡比Fandom Spinni | Games")
+                FakeEvent("卡比F Spinni | Games")
             )
         ]
 

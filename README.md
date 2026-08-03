@@ -144,10 +144,10 @@ data/plugin_data/astrbot_plugin_kirby_catalog/img/allies
 | 命令 | 来源 | 适合查询 |
 | --- | --- | --- |
 | `卡比百科` | [WiKirby](https://wikirby.com/wiki/Kirby_Wiki) | 结构化资料、简介、出现信息、趣闻和页面记录的多语言名称 |
-| `卡比Fandom` | [Kirby Wiki \| Fandom](https://kirby.fandom.com/wiki/Kirby_Wiki) | 作品经历、外观、性格、信息框、分类和按章节读取的长篇正文 |
+| `卡比F` | [Kirby Wiki \| Fandom](https://kirby.fandom.com/wiki/Kirby_Wiki) | 作品经历、外观、性格、信息框、分类和按章节读取的长篇正文 |
 
 > [!CAUTION]
-> `卡比Fandom名称` 返回的是不同语言 Fandom 社区的页面标题，只能作为检索线索，不等同于任天堂官方译名。需要核对官方译名时，请优先使用 `卡比百科名称`，并以任天堂正式发布内容为最终依据。
+> `卡比F名称` 返回的是不同语言 Fandom 社区的页面标题，只能作为检索线索，不等同于任天堂官方译名。需要核对官方译名时，请优先使用 `卡比百科名称`，并以任天堂正式发布内容为最终依据。
 
 ### WiKirby 命令
 
@@ -162,12 +162,12 @@ data/plugin_data/astrbot_plugin_kirby_catalog/img/allies
 
 | 命令 | 作用 |
 | --- | --- |
-| `卡比Fandom [页面名]` | 查询简介、信息框、分类、正文栏目、首图和来源 |
-| `卡比Fandom章节 [页面名]` | 列出当前页面可查询的栏目 |
-| `卡比Fandom [页面名] \| [栏目名]` | 只读取指定栏目；父栏目会自动汇总其子栏目 |
-| `卡比Fandom名称 [页面名]` | 查询日文名和各语言 Fandom 社区页面标题 |
+| `卡比F [页面名]` | 查询简介、信息框、分类、正文栏目、首图和来源 |
+| `卡比F章节 [页面名]` | 列出当前页面可查询的栏目 |
+| `卡比F [页面名] \| [栏目名]` | 只读取指定栏目；父栏目会自动汇总其子栏目 |
+| `卡比F名称 [页面名]` | 查询日文名和各语言 Fandom 社区页面标题 |
 
-`卡比社区百科` 可以作为 `卡比Fandom` 的别名。
+兼容别名：`卡比Fandom`、`卡比Fandom章节`、`卡比Fandom名称` 和 `卡比社区百科`。
 
 ### 查询示例
 
@@ -175,10 +175,10 @@ data/plugin_data/astrbot_plugin_kirby_catalog/img/allies
 卡比百科 Driblee
 卡比百科名称 Meta Knight
 
-卡比Fandom Spinni
-卡比Fandom章节 Spinni
-卡比Fandom Spinni | Games
-卡比Fandom名称 Spinni
+卡比F Spinni
+卡比F章节 Spinni
+卡比F Spinni | Games
+卡比F名称 Spinni
 ```
 
 查询词对应多个页面时，插件会列出候选项，避免把角色、关卡、作品或续作页面混在一起。
@@ -413,7 +413,7 @@ python -m unittest discover -s tests -t .. -q
 1. [zgojin/astrbot_plugin_AW](https://github.com/zgojin/astrbot_plugin_AW)：原始 AstrBot 群老婆插件，上游代码与数据格式参考来源。
 2. [Rinco304/AnimeWife](https://github.com/Rinco304/AnimeWife)：早期功能灵感来源。
 3. [WiKirby](https://wikirby.com/wiki/Kirby_Wiki)：`卡比百科` 的资料来源和 MediaWiki API 服务。
-4. [Kirby Wiki | Fandom](https://kirby.fandom.com/wiki/Kirby_Wiki)：`卡比Fandom` 的资料来源和 MediaWiki API 服务。
+4. [Kirby Wiki | Fandom](https://kirby.fandom.com/wiki/Kirby_Wiki)：`卡比F` 的资料来源和 MediaWiki API 服务。
 
 感谢上游作者、百科编辑者及所有贡献者的工作。
 

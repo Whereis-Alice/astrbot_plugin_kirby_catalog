@@ -43,7 +43,7 @@ IMAGE_BASE_URL = "http://save.my996.top/?/img/"
     PLUGIN_ID,
     "Whereis-Alice",
     "星之卡比盟友抽取、收藏图鉴与双百科查询插件",
-    "2.9.0",
+    "2.9.1",
     "https://github.com/Whereis-Alice/astrbot_plugin_kirby_catalog",
 )
 class KirbyCatalogPlugin(Star):
@@ -913,19 +913,29 @@ class KirbyCatalogPlugin(Star):
         command_text = raw[1:].lstrip() if raw.startswith("/") else raw
         folded = command_text.casefold()
         mode = "page"
-        if folded.startswith(("卡比fandom名称", "卡比社区百科名称")):
+        if folded.startswith(
+            ("卡比f名称", "卡比fandom名称", "卡比社区百科名称")
+        ):
             mode = "names"
-        elif folded.startswith(("卡比fandom章节", "卡比社区百科章节")):
+        elif folded.startswith(
+            ("卡比f章节", "卡比fandom章节", "卡比社区百科章节")
+        ):
             mode = "sections"
         remainder = self._command_remainder(
             event,
             {
+                "卡比F名称",
+                "卡比f名称",
                 "卡比Fandom名称",
                 "卡比fandom名称",
                 "卡比社区百科名称",
+                "卡比F章节",
+                "卡比f章节",
                 "卡比Fandom章节",
                 "卡比fandom章节",
                 "卡比社区百科章节",
+                "卡比F",
+                "卡比f",
                 "卡比Fandom",
                 "卡比fandom",
                 "卡比社区百科",
@@ -953,9 +963,9 @@ class KirbyCatalogPlugin(Star):
         for index, page in enumerate(candidates, start=1):
             lines.append(f"{index}. {page.get('title') or '未命名页面'}")
         command = {
-            "names": "卡比Fandom名称",
-            "sections": "卡比Fandom章节",
-        }.get(mode, "卡比Fandom")
+            "names": "卡比F名称",
+            "sections": "卡比F章节",
+        }.get(mode, "卡比F")
         lines.append(f"例如：{command} {candidates[0].get('title', '')}")
         return "\n".join(lines)
 
@@ -1021,7 +1031,7 @@ class KirbyCatalogPlugin(Star):
             lines.append(f"另有 {len(sections) - 60} 个章节未显示。")
         lines.extend(
             [
-                f"查询章节：卡比Fandom {page['title']} | {sections[0]['title']}",
+                f"查询章节：卡比F {page['title']} | {sections[0]['title']}",
                 f"来源：{page.get('url') or 'https://kirby.fandom.com'}",
             ]
         )
@@ -1184,9 +1194,9 @@ class KirbyCatalogPlugin(Star):
         query, mode, section = self._fandom_query_parts(event)
         if not query:
             yield event.plain_result(
-                "用法：卡比Fandom <页面名>；卡比Fandom名称 <页面名>；"
-                "卡比Fandom章节 <页面名>；"
-                "指定章节：卡比Fandom <页面名> | <章节名>。"
+                "用法：卡比F <页面名>；卡比F名称 <页面名>；"
+                "卡比F章节 <页面名>；"
+                "指定章节：卡比F <页面名> | <章节名>。"
             )
             return
         try:
@@ -1494,7 +1504,8 @@ class KirbyCatalogPlugin(Star):
             yield result
 
     @filter.regex(
-        r"(?i)^/?(?:卡比fandom(?:名称|章节)?|卡比社区百科(?:名称|章节)?|kirbyfandom)(?:\s+.+)?$"
+        r"(?i)^/?(?:卡比f(?:名称|章节)?|卡比fandom(?:名称|章节)?"
+        r"|卡比社区百科(?:名称|章节)?|kirbyfandom)(?:\s+.+)?$"
     )
     @filter.event_message_type(EventMessageType.GROUP_MESSAGE)
     async def fandom_query_plain(self, event: AstrMessageEvent):
@@ -1739,9 +1750,9 @@ class KirbyCatalogPlugin(Star):
             "盟友名单 [关键词]：检索图鉴编号和名字\n"
             "卡比百科 [角色名]：查询 WiKirby 页面简介、资料、语言名称和首图\n"
             "卡比百科名称 [角色名]：只查询页面的多语言官方名称\n"
-            "卡比Fandom [页面名]：查询 Kirby Fandom 简介、资料、正文栏目和首图\n"
-            "卡比Fandom章节 [页面名]：查看可查询栏目；用“页面名 | 栏目名”读取指定栏目\n"
-            "卡比Fandom名称 [页面名]：查看各语言社区页面名（不等同于官方译名）\n"
+            "卡比F [页面名]：查询 Kirby Fandom 简介、资料、正文栏目和首图\n"
+            "卡比F章节 [页面名]：查看可查询栏目；用“页面名 | 栏目名”读取指定栏目\n"
+            "卡比F名称 [页面名]：查看各语言社区页面名（不等同于官方译名）\n"
             "管理员命令：星之卡比图鉴添加、换图、改名、迁移、清理旧名、删除重复"
         )
 
