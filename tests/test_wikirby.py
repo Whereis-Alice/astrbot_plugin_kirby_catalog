@@ -1,8 +1,10 @@
 import unittest
 from io import BytesIO
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 from urllib.error import HTTPError
+
+import astrbot.api.message_components as Comp
 
 from astrbot_plugin_kirby_catalog.main import KirbyCatalogPlugin
 from astrbot_plugin_kirby_catalog.wikirby import (
@@ -237,7 +239,9 @@ Driblee can be found in the following stages:
 ==Gallery==
 {{center|<gallery>file.png</gallery>}}
 ==Names in other languages==
-{{Names|en=Driblee}}
+{{Names
+|en=Driblee
+}}
 """
 
         details = parse_page_details(wikitext)
@@ -255,6 +259,9 @@ Driblee can be found in the following stages:
         self.assertEqual(details["sections"][1]["title"], "趣闻")
         self.assertNotIn("Gallery", " ".join(row["title"] for row in details["sections"]))
         self.assertNotIn("Names", " ".join(row["title"] for row in details["sections"]))
+        language_section = details["sections"][2]
+        self.assertEqual(language_section["title"], "其他语言名称")
+        self.assertIn("英语：Driblee", language_section["text"])
 
     def test_extracts_yes_locations_from_rendered_wikitable(self):
         rendered_html = """
@@ -366,16 +373,61 @@ class WikirbyCommandTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("简体中文：噗噜鳗（pū lū màn）", result)
         self.assertIn("来源：https://wikirby.com/wiki/Driblee", result)
 
-    async def test_plain_handler_does_not_duplicate_wake_command(self):
+    async def test_unified_handler_handles_slash_command_once(self):
         plugin = KirbyCatalogPlugin.__new__(KirbyCatalogPlugin)
         plugin.config = {"wikirby_enabled": True, "wikirby_show_image": False}
         plugin.wikirby = FakeWikirby()
-        event = FakeEvent("卡比百科 Driblee")
-        event.is_at_or_wake_command = True
+        event = FakeEvent("/卡比百科 Driblee")
 
         results = [result async for result in plugin.wikirby_query_plain(event)]
 
-        self.assertEqual(results, [])
+        self.assertEqual(len(results), 1)
+        self.assertIn("WiKirby：Driblee", results[0][0].text)
+
+    async def test_output_mode_accepts_forward_and_card_choices(self):
+        plugin = KirbyCatalogPlugin.__new__(KirbyCatalogPlugin)
+        plugin.config = {"wikirby_output_mode": "文字+卡片合并转发"}
+
+        self.assertEqual(plugin._wikirby_output_mode(), "card_forward")
+
+    async def test_forward_mode_wraps_text_in_one_forward_node(self):
+        plugin = KirbyCatalogPlugin.__new__(KirbyCatalogPlugin)
+        plugin.config = {
+            "wikirby_enabled": True,
+            "wikirby_show_image": False,
+            "wikirby_output_mode": "合并转发",
+        }
+        plugin.wikirby = FakeWikirby()
+
+        results = [
+            result
+            async for result in plugin._wikirby_query_impl(
+                FakeEvent("卡比百科 Driblee")
+            )
+        ]
+
+        self.assertIsInstance(results[0][0], Comp.Nodes)
+        self.assertEqual(len(results[0][0].nodes), 1)
+
+    async def test_card_mode_uses_astrbot_html_renderer(self):
+        plugin = KirbyCatalogPlugin.__new__(KirbyCatalogPlugin)
+        plugin.config = {
+            "wikirby_enabled": True,
+            "wikirby_show_image": False,
+            "wikirby_output_mode": "仅百科卡片",
+        }
+        plugin.wikirby = FakeWikirby()
+        plugin.html_render = AsyncMock(return_value="card.png")
+
+        results = [
+            result
+            async for result in plugin._wikirby_query_impl(
+                FakeEvent("卡比百科 Driblee")
+            )
+        ]
+
+        self.assertIsInstance(results[0][0], Comp.Image)
+        plugin.html_render.assert_awaited_once()
 
     async def test_summary_can_use_native_provider_for_translation(self):
         plugin = KirbyCatalogPlugin.__new__(KirbyCatalogPlugin)

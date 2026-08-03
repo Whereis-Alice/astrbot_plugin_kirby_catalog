@@ -17,7 +17,7 @@ FALLBACK_API_URL = "https://www.wikirby.com/w/api.php"
 DEFAULT_REST_URL = "https://wikirby.com/w/rest.php"
 FALLBACK_REST_URL = "https://www.wikirby.com/w/rest.php"
 USER_AGENT = (
-    "astrbot-plugin-kirby-catalog/2.6.1 "
+    "astrbot-plugin-kirby-catalog/2.7.0 "
     "(+https://github.com/Whereis-Alice/astrbot_plugin_kirby_catalog)"
 )
 _RETRYABLE_HTTP_CODES = {403, 408, 425, 429, 500, 502, 503, 504}
@@ -172,6 +172,20 @@ def parse_page_details(
                     + "\n".join(f"• {location}" for location in locations)
                 )
                 break
+    language_names = parse_language_names(source)
+    if language_names:
+        name_lines: list[str] = []
+        for row in language_names:
+            value = row["name"]
+            if row.get("romanisation"):
+                value += f'（{row["romanisation"]}）'
+            name_lines.append(f'• {row["language"]}：{value}')
+        sections.append(
+            {
+                "title": "其他语言名称",
+                "text": "\n".join(name_lines),
+            }
+        )
     return {"infobox": infobox_rows, "sections": sections}
 
 

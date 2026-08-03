@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import random
 import re
 import time
@@ -25,13 +26,35 @@ from .wikirby import DEFAULT_API_URL, WikirbyClient, WikirbyError
 PLUGIN_ID = "astrbot_plugin_kirby_catalog"
 LEGACY_PLUGIN_ID = "astrbot_plugin_AnimeWife"
 IMAGE_BASE_URL = "http://save.my996.top/?/img/"
+WIKIRBY_CARD_TEMPLATE = """
+<div style="width: 900px; box-sizing: border-box; padding: 34px 42px; background: #f4f7fb; color: #1f2937; font-family: Arial, 'Microsoft YaHei', sans-serif;">
+  <div style="border-left: 8px solid #2563eb; padding-left: 22px; margin-bottom: 24px;">
+    <div style="font-size: 18px; color: #64748b;">WiKirby</div>
+    <div style="font-size: 38px; font-weight: 700; color: #111827; margin-top: 5px;">{{ title }}</div>
+  </div>
+  {% if image_data_uri %}
+  <img src="{{ image_data_uri }}" style="display: block; width: 100%; max-height: 330px; object-fit: contain; background: #ffffff; border: 1px solid #dbe4f0; margin-bottom: 24px;" />
+  {% endif %}
+  <div style="background: #ffffff; border: 1px solid #dbe4f0; padding: 22px 26px; margin-bottom: 18px;">
+    <div style="font-size: 23px; font-weight: 700; color: #2563eb; margin-bottom: 10px;">简介</div>
+    <div style="font-size: 20px; line-height: 1.75; white-space: pre-wrap;">{{ summary }}</div>
+  </div>
+  {% if detail_text %}
+  <div style="background: #ffffff; border: 1px solid #dbe4f0; padding: 22px 26px; margin-bottom: 18px;">
+    <div style="font-size: 23px; font-weight: 700; color: #e11d48; margin-bottom: 10px;">资料</div>
+    <div style="font-size: 18px; line-height: 1.7; white-space: pre-wrap;">{{ detail_text }}</div>
+  </div>
+  {% endif %}
+  <div style="font-size: 15px; color: #64748b; word-break: break-all;">来源：{{ source }}</div>
+</div>
+"""
 
 
 @register(
     PLUGIN_ID,
     "Whereis-Alice",
     "星之卡比盟友抽取、图鉴、猜名与排行榜插件",
-    "2.6.1",
+    "2.7.0",
     "https://github.com/Whereis-Alice/astrbot_plugin_kirby_catalog",
 )
 class KirbyCatalogPlugin(Star):
@@ -344,6 +367,68 @@ class KirbyCatalogPlugin(Star):
             return value
         return str(value).strip().casefold() not in {"0", "false", "no", "off"}
 
+    def _wikirby_output_mode(self) -> str:
+        value = str(self._config_value("wikirby_output_mode", "普通消息") or "普通消息")
+        normalized = value.strip().casefold()
+        return {
+            "普通消息": "text",
+            "text": "text",
+            "合并转发": "forward",
+            "forward": "forward",
+            "仅百科卡片": "card",
+            "card": "card",
+            "百科文字+卡片": "card_and_text",
+            "card_and_text": "card_and_text",
+            "文字+卡片合并转发": "card_forward",
+            "card_forward": "card_forward",
+        }.get(normalized, "text")
+
+    @staticmethod
+    def _wikirby_image_data_uri(data: bytes | None) -> str:
+        if not data:
+            return ""
+        if data.startswith(b"\x89PNG"):
+            mime = "image/png"
+        elif data.startswith(b"\xff\xd8\xff"):
+            mime = "image/jpeg"
+        elif data.startswith((b"GIF87a", b"GIF89a")):
+            mime = "image/gif"
+        elif data.startswith(b"RIFF") and data[8:12] == b"WEBP":
+            mime = "image/webp"
+        else:
+            mime = "image/png"
+        return f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}"
+
+    async def _wikirby_card_component(
+        self,
+        page: Dict[str, Any],
+        summary: str,
+        detail_text: str,
+        image_bytes: bytes | None,
+    ) -> Any | None:
+        try:
+            rendered = await self.html_render(
+                WIKIRBY_CARD_TEMPLATE,
+                {
+                    "title": str(page.get("title") or "WiKirby"),
+                    "summary": summary,
+                    "detail_text": detail_text,
+                    "source": str(page.get("url") or "https://wikirby.com"),
+                    "image_data_uri": self._wikirby_image_data_uri(image_bytes),
+                },
+                return_url=False,
+                options={"full_page": True, "type": "png", "scale": "css"},
+            )
+        except Exception as exc:
+            logger.warning("[%s] WiKirby 卡片渲染失败: %s", PLUGIN_ID, exc)
+            return None
+        if not rendered:
+            return None
+        rendered = str(rendered)
+        if rendered.startswith(("http://", "https://")):
+            return Comp.Image.fromURL(rendered)
+        return Comp.Image.fromFileSystem(rendered)
+
     async def _wikirby_translate_text(
         self, event: AstrMessageEvent, summary: str
     ) -> str:
@@ -385,7 +470,14 @@ class KirbyCatalogPlugin(Star):
         )
         remainder = self._command_remainder(
             event,
-            {"卡比百科名称", "卡比百科名", "卡比百科译名", "卡比百科"},
+            {
+                "卡比百科名称",
+                "卡比百科名",
+                "卡比百科译名",
+                "卡比百科",
+                "wikirby",
+                "WiKirby",
+            },
         )
         for prefix in ("名称", "名字", "译名"):
             if remainder == prefix:
@@ -526,6 +618,7 @@ class KirbyCatalogPlugin(Star):
                     "no",
                     "off",
                 }
+            detail_text = ""
             if show_details:
                 try:
                     details = await client.get_page_details(page)
@@ -556,14 +649,58 @@ class KirbyCatalogPlugin(Star):
                     f"来源：{page.get('url') or 'https://wikirby.com'}",
                 ]
             )
-            chain: List[Any] = [Comp.Plain("\n".join(lines))]
+            text = "\n".join(lines)
             show_image = self._config_value("wikirby_show_image", True)
             if isinstance(show_image, str):
                 show_image = show_image.strip().casefold() not in {"0", "false", "no", "off"}
+            image_bytes = None
             if show_image and page.get("image_url"):
                 image_bytes = await self.wikirby.get_image_bytes(page["image_url"])
+
+            output_mode = self._wikirby_output_mode()
+            card_component = None
+            if output_mode in {"card", "card_and_text", "card_forward"}:
+                card_component = await self._wikirby_card_component(
+                    page, summary, detail_text, image_bytes
+                )
+                if card_component is None:
+                    output_mode = "forward" if output_mode == "card_forward" else "text"
+
+            if output_mode == "card" and card_component is not None:
+                yield event.chain_result([card_component])
+                return
+            if output_mode == "card_and_text" and card_component is not None:
+                yield event.chain_result([Comp.Plain(text), card_component])
+                return
+            if output_mode == "card_forward" and card_component is not None:
+                yield event.chain_result(
+                    [
+                        Comp.Nodes(
+                            nodes=[
+                                Comp.Node(
+                                    name="星之卡比图鉴",
+                                    content=[Comp.Plain(text), card_component],
+                                )
+                            ]
+                        )
+                    ]
+                )
+                return
+            if output_mode == "forward":
+                content: List[Any] = [Comp.Plain(text)]
                 if image_bytes:
-                    chain.append(Comp.Image.fromBytes(image_bytes))
+                    content.append(Comp.Image.fromBytes(image_bytes))
+                yield event.chain_result(
+                    [
+                        Comp.Nodes(
+                            nodes=[Comp.Node(name="星之卡比图鉴", content=content)]
+                        )
+                    ]
+                )
+                return
+            chain: List[Any] = [Comp.Plain(text)]
+            if image_bytes:
+                chain.append(Comp.Image.fromBytes(image_bytes))
             yield event.chain_result(chain)
         except WikirbyError as exc:
             logger.warning("[%s] WiKirby 查询失败: %s", PLUGIN_ID, exc)
@@ -806,22 +943,12 @@ class KirbyCatalogPlugin(Star):
         )
         yield event.chain_result(await self._ally_chain(entry, text))
 
-    @filter.command(
-        "卡比百科",
-        alias={"卡比百科名称", "卡比百科名", "卡比百科译名", "wikirby", "WiKirby"},
+    @filter.regex(
+        r"^/?(?:卡比百科(?:名称|名|译名)?|wikirby|WiKirby)(?:\s+.+)?$"
     )
     @filter.event_message_type(EventMessageType.GROUP_MESSAGE)
-    async def wikirby_query(self, event: AstrMessageEvent):
-        """查询 WiKirby 页面，或只查看页面中的多语言官方名称。"""
-        async for result in self._wikirby_query_impl(event):
-            yield result
-
-    @filter.regex(r"^卡比百科(?:名称|名|译名)?(?:\s+.+)?$")
-    @filter.event_message_type(EventMessageType.GROUP_MESSAGE)
     async def wikirby_query_plain(self, event: AstrMessageEvent):
-        """让不带斜杠的“卡比百科”及其参数形式也能触发。"""
-        if getattr(event, "is_at_or_wake_command", False):
-            return
+        """统一处理带斜杠和纯文本的 WiKirby 查询，避免双 Handler 重复回复。"""
         async for result in self._wikirby_query_impl(event):
             yield result
 
@@ -1027,7 +1154,7 @@ class KirbyCatalogPlugin(Star):
             "猜盟友：发起猜名，答对只公布答案，不改变图鉴\n"
             "盟友排行榜：查看本群收藏排行\n"
             "盟友名单 [关键词]：检索图鉴编号和名字\n"
-            "卡比百科 [角色名]：查询 WiKirby 页面简介、资料和首图\n"
+            "卡比百科 [角色名]：查询 WiKirby 页面简介、资料、语言名称和首图\n"
             "卡比百科名称 [角色名]：只查询页面的多语言官方名称\n"
             "管理员命令：星之卡比图鉴添加、换图、改名、迁移、清理旧名、删除重复"
         )
