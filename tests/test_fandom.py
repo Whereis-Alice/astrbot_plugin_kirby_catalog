@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock
 
 from astrbot_plugin_kirby_catalog.kirby_fandom import (
     KirbyFandomClient,
+    _trim_rich_sections,
     parse_fandom_image_url,
     parse_fandom_infobox,
     parse_fandom_intro,
@@ -224,11 +225,15 @@ class FandomParserTests(unittest.TestCase):
         self.assertEqual([group["label"] for group in techniques["groups"]], ["Type A", "Type B"])
         first = techniques["groups"][0]["rows"][0]
         self.assertEqual(first["move"], "Brush Slash")
-        self.assertIn("Pro Controller：B", first["controls"])
-        self.assertIn("Joy-Con：Down Button", first["controls"])
+        self.assertIn("Pro 手柄：B", first["controls"])
+        self.assertIn("Joy-Con：下方向键", first["controls"])
         self.assertEqual(
             techniques["groups"][0]["rows"][1]["controls"],
-            "Left Stick Down + B",
+            "左摇杆↓ + B",
+        )
+        self.assertEqual(
+            techniques["groups"][1]["rows"][0]["controls"],
+            "冲刺 + B",
         )
         self.assertEqual(first["damage"], "14")
 
@@ -253,6 +258,69 @@ class FandomParserTests(unittest.TestCase):
         self.assertEqual(details["sections"], [])
         self.assertEqual(len(details["rich_sections"]), 1)
         self.assertEqual(details["rich_sections"][0]["kind"], "techniques")
+
+    def test_rich_section_budget_keeps_each_game_and_control_type(self):
+        long_description = "A detailed move description. " * 16
+        sections = [
+            {
+                "kind": "techniques",
+                "title": "Techniques",
+                "context": "Games · First Game",
+                "ancestors": ["Games", "First Game"],
+                "intro": "",
+                "groups": [
+                    {
+                        "label": label,
+                        "rows": [
+                            {
+                                "move": f"Move {index}",
+                                "controls": "左摇杆↓ + B",
+                                "description": long_description,
+                                "damage": "12",
+                            }
+                            for index in range(3)
+                        ],
+                    }
+                    for label in ("Type A", "Type B")
+                ],
+                "omitted_count": 0,
+            },
+            {
+                "kind": "techniques",
+                "title": "Techniques",
+                "context": "Games · Second Game",
+                "ancestors": ["Games", "Second Game"],
+                "intro": "",
+                "groups": [
+                    {
+                        "label": "",
+                        "rows": [
+                            {
+                                "move": f"Move {index}",
+                                "controls": "下方向键",
+                                "description": long_description,
+                                "damage": "10",
+                            }
+                            for index in range(3)
+                        ],
+                    }
+                ],
+                "omitted_count": 0,
+            },
+        ]
+
+        selected, _ = _trim_rich_sections(sections, 1800)
+
+        self.assertEqual(
+            [section["context"] for section in selected],
+            ["Games · First Game", "Games · Second Game"],
+        )
+        self.assertEqual(
+            [group["label"] for group in selected[0]["groups"]],
+            ["Type A", "Type B"],
+        )
+        self.assertGreater(selected[0]["omitted_count"], 0)
+        self.assertGreater(selected[1]["omitted_count"], 0)
 
     def test_normalised_page_caches_parsed_rich_sections_only(self):
         client = KirbyFandomClient(cache_ttl_seconds=3600)
@@ -368,6 +436,7 @@ class FandomCommandTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             plugin.html_render.await_args.kwargs["options"]["viewport_width"], 1600
         )
+        self.assertIn("已显示", plugin.html_render.await_args.args[0])
 
     async def test_invalid_structured_translation_falls_back_to_original(self):
         plugin = self.make_plugin(fandom_translate_enabled=True)
@@ -412,6 +481,50 @@ class FandomCommandTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(first["description"], "卡比挥动画笔。")
         self.assertEqual(first["controls"], original_first["controls"])
         self.assertEqual(first["damage"], original_first["damage"])
+
+    async def test_structured_translation_accepts_safe_translated_controls(self):
+        plugin = self.make_plugin(fandom_translate_enabled=True)
+        rich_sections = parse_fandom_rich_sections(FANDOM_RICH_HTML)
+        translated_payload = json.loads(json.dumps(rich_sections))
+        techniques = next(
+            row for row in translated_payload if row["kind"] == "techniques"
+        )
+        translated_controls = "Pro 手柄：按 B\nJoy-Con：按下方向键"
+        techniques["groups"][0]["rows"][0]["controls"] = translated_controls
+        plugin.context = FakeTranslationContext(
+            json.dumps(translated_payload, ensure_ascii=False)
+        )
+
+        translated = await plugin._fandom_translate_rich_sections(
+            FakeEvent(""), rich_sections
+        )
+
+        translated_techniques = next(
+            row for row in translated if row["kind"] == "techniques"
+        )
+        self.assertEqual(
+            translated_techniques["groups"][0]["rows"][0]["controls"],
+            translated_controls,
+        )
+
+    def test_control_translation_rejects_missing_or_changed_inputs(self):
+        source = "Pro 手柄：左摇杆↓ + B\nJoy-Con：下方向键"
+
+        self.assertFalse(
+            KirbyCatalogPlugin._translated_controls_are_safe(
+                source, "Pro 手柄：左摇杆↑ + B\nJoy-Con：下方向键"
+            )
+        )
+        self.assertFalse(
+            KirbyCatalogPlugin._translated_controls_are_safe(
+                source, "Pro 手柄：左摇杆↓ + B\nJoy-Con：方向键"
+            )
+        )
+        self.assertFalse(
+            KirbyCatalogPlugin._translated_controls_are_safe(
+                source, "Pro 手柄：左摇杆↓ + B；Joy-Con：下方向键"
+            )
+        )
 
 
 if __name__ == "__main__":

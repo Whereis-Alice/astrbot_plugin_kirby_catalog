@@ -45,7 +45,7 @@ IMAGE_BASE_URL = "http://save.my996.top/?/img/"
     PLUGIN_ID,
     "Whereis-Alice",
     "星之卡比盟友抽取、收藏图鉴与双百科查询插件",
-    "2.10.0",
+    "2.10.1",
     "https://github.com/Whereis-Alice/astrbot_plugin_kirby_catalog",
 )
 class KirbyCatalogPlugin(Star):
@@ -631,8 +631,47 @@ class KirbyCatalogPlugin(Star):
         )
 
     @staticmethod
+    def _control_signature(value: str) -> tuple[str, ...]:
+        normalized = str(value or "").upper()
+        direction_patterns = (
+            (r"\bLEFT\s+STICK\s+DOWN\b|左摇杆(?:向)?下|左摇杆↓", "LS_DOWN"),
+            (r"\bLEFT\s+STICK\s+UP\b|左摇杆(?:向)?上|左摇杆↑", "LS_UP"),
+            (r"\bLEFT\s+STICK\s+LEFT\b|左摇杆(?:向)?左|左摇杆←", "LS_LEFT"),
+            (r"\bLEFT\s+STICK\s+RIGHT\b|左摇杆(?:向)?右|左摇杆→", "LS_RIGHT"),
+            (r"\bRIGHT\s+STICK\s+DOWN\b|右摇杆(?:向)?下|右摇杆↓", "RS_DOWN"),
+            (r"\bRIGHT\s+STICK\s+UP\b|右摇杆(?:向)?上|右摇杆↑", "RS_UP"),
+            (r"\bRIGHT\s+STICK\s+LEFT\b|右摇杆(?:向)?左|右摇杆←", "RS_LEFT"),
+            (r"\bRIGHT\s+STICK\s+RIGHT\b|右摇杆(?:向)?右|右摇杆→", "RS_RIGHT"),
+            (r"\b(?:CONTROL\s+STICK|STICK)\s+DOWN\b|摇杆(?:向)?下|摇杆↓", "STICK_DOWN"),
+            (r"\b(?:CONTROL\s+STICK|STICK)\s+UP\b|摇杆(?:向)?上|摇杆↑", "STICK_UP"),
+            (r"\b(?:CONTROL\s+STICK|STICK)\s+LEFT\b|摇杆(?:向)?左|摇杆←", "STICK_LEFT"),
+            (r"\b(?:CONTROL\s+STICK|STICK)\s+RIGHT\b|摇杆(?:向)?右|摇杆→", "STICK_RIGHT"),
+            (r"\b(?:D-?PAD\s+)?DOWN\s+BUTTON\b|(?:下方向键|方向键下|十字键下|向下键|下键|↓键)", "DPAD_DOWN"),
+            (r"\b(?:D-?PAD\s+)?UP\s+BUTTON\b|(?:上方向键|方向键上|十字键上|向上键|上键|↑键)", "DPAD_UP"),
+            (r"\b(?:D-?PAD\s+)?LEFT\s+BUTTON\b|(?:左方向键|方向键左|十字键左|向左键|左键|←键)", "DPAD_LEFT"),
+            (r"\b(?:D-?PAD\s+)?RIGHT\s+BUTTON\b|(?:右方向键|方向键右|十字键右|向右键|右键|→键)", "DPAD_RIGHT"),
+        )
+        for pattern, token in direction_patterns:
+            normalized = re.sub(pattern, f" {token} ", normalized)
+        return tuple(
+            re.findall(
+                r"(?:LS|RS|STICK|DPAD)_(?:DOWN|UP|LEFT|RIGHT)|"
+                r"(?<![A-Za-z0-9])(?:ZL|ZR|SL|SR|A|B|X|Y|L|R)(?![A-Za-z0-9])|\+",
+                normalized,
+            )
+        )
+
+    @classmethod
+    def _translated_controls_are_safe(cls, source: str, candidate: str) -> bool:
+        if bool(source.strip()) != bool(candidate.strip()):
+            return False
+        if source.count("\n") != candidate.count("\n"):
+            return False
+        return cls._control_signature(source) == cls._control_signature(candidate)
+
+    @classmethod
     def _translated_rich_sections(
-        original: List[Dict[str, Any]], translated: Any
+        cls, original: List[Dict[str, Any]], translated: Any
     ) -> List[Dict[str, Any]]:
         if isinstance(translated, dict):
             translated = translated.get("sections")
@@ -698,9 +737,15 @@ class KirbyCatalogPlugin(Star):
                             merged["groups"][group_index]["rows"][row_index][key] = (
                                 value.strip()
                             )
-                    merged["groups"][group_index]["rows"][row_index][
-                        "controls"
-                    ] = source_row.get("controls", "")
+                    translated_controls = translated_row.get("controls")
+                    if isinstance(translated_controls, str) and translated_controls.strip():
+                        source_controls = str(source_row.get("controls", "") or "")
+                        if cls._translated_controls_are_safe(
+                            source_controls, translated_controls
+                        ):
+                            merged["groups"][group_index]["rows"][row_index][
+                                "controls"
+                            ] = translated_controls.strip()
                     merged["groups"][group_index]["rows"][row_index][
                         "damage"
                     ] = source_row.get("damage", "")
@@ -731,8 +776,11 @@ class KirbyCatalogPlugin(Star):
                 "请把下面 Kirby Fandom 卡片 JSON 中的自然语言准确翻译成简体中文。"
                 "必须返回结构完全相同的 JSON 数组，保持所有键、数组数量和顺序。"
                 "只翻译 title、context、intro、语录的 text/attribution/source、"
-                "分组 label、招式 move 和 description。"
-                "不要翻译或改写 kind、ancestors、controls、damage、omitted_count，"
+                "分组 label，以及招式的 move、controls 和 description。"
+                "翻译 controls 时，只翻译自然语言和其中引用的招式名称；必须原样保留"
+                "A/B/X/Y/L/R/ZL/ZR/SL/SR 等按键、加号、每行的平台对应关系、"
+                "方向含义、操作先后和换行数量。"
+                "不要翻译或改写 kind、ancestors、damage、omitted_count，"
                 "不要添加 Markdown 或解释。\n\n"
                 f"JSON：\n{source_json}"
             ),

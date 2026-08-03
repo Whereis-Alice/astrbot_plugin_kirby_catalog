@@ -986,7 +986,9 @@ WIKIRBY_CARD_TEMPLATE = r"""
               <div class="rich-context">{{ section.context | e }}</div>
               {% endif %}
             </div>
-            <div class="rich-count">{{ section.item_count }} 项</div>
+            <div class="rich-count">
+              {% if section.omitted_count %}已显示 {{ section.item_count }}/{{ section.total_count }} 项{% else %}{{ section.item_count }} 项{% endif %}
+            </div>
           </div>
           {% if section.kind == 'quotes' %}
           <div class="quote-list">
@@ -1187,6 +1189,7 @@ def _prepare_rich_sections(
                     "context": context,
                     "quotes": quotes,
                     "item_count": len(quotes),
+                    "total_count": len(quotes) + omitted_count,
                     "omitted_count": omitted_count,
                 }
             )
@@ -1233,6 +1236,7 @@ def _prepare_rich_sections(
                     "intro": str(section.get("intro", "") or "").strip(),
                     "groups": groups,
                     "item_count": item_count,
+                    "total_count": item_count + omitted_count,
                     "omitted_count": omitted_count,
                 }
             )

@@ -18,7 +18,7 @@ from .wikirby import parse_rendered_sections
 DEFAULT_FANDOM_API_URL = "https://kirby.fandom.com/api.php"
 FANDOM_SITE_URL = "https://kirby.fandom.com"
 USER_AGENT = (
-    "astrbot-plugin-kirby-catalog/2.10.0 "
+    "astrbot-plugin-kirby-catalog/2.10.1 "
     "(+https://github.com/Whereis-Alice/astrbot_plugin_kirby_catalog)"
 )
 _RETRYABLE_HTTP_CODES = {408, 425, 429, 500, 502, 503, 504}
@@ -89,6 +89,60 @@ _TECHNIQUE_COLUMN_NAMES = {
     "description": {"description", "effect", "effects", "notes"},
     "damage": {"damage", "power"},
 }
+_CONTROL_TRANSLATIONS = (
+    ("Press and release", "按下再松开"),
+    ("Press and hold", "长按"),
+    ("Repeatedly press", "连续按"),
+    ("Press repeatedly", "连续按"),
+    ("Tap repeatedly", "连续轻按"),
+    ("Quickly tap", "快速轻按"),
+    ("Left Stick Down", "左摇杆↓"),
+    ("Left Stick Up", "左摇杆↑"),
+    ("Left Stick Left", "左摇杆←"),
+    ("Left Stick Right", "左摇杆→"),
+    ("Right Stick Down", "右摇杆↓"),
+    ("Right Stick Up", "右摇杆↑"),
+    ("Right Stick Left", "右摇杆←"),
+    ("Right Stick Right", "右摇杆→"),
+    ("Control Stick Down", "摇杆↓"),
+    ("Control Stick Up", "摇杆↑"),
+    ("Control Stick Left", "摇杆←"),
+    ("Control Stick Right", "摇杆→"),
+    ("D-Pad Down", "下方向键"),
+    ("D-Pad Up", "上方向键"),
+    ("D-Pad Left", "左方向键"),
+    ("D-Pad Right", "右方向键"),
+    ("Down Button", "下方向键"),
+    ("Up Button", "上方向键"),
+    ("Left Button", "左方向键"),
+    ("Right Button", "右方向键"),
+    ("Nintendo Switch Pro Controller", "Nintendo Switch Pro 手柄"),
+    ("Pro Controller", "Pro 手柄"),
+    ("Wii Remote", "Wii 遥控器"),
+    ("Control Stick", "摇杆"),
+    ("Left Stick", "左摇杆"),
+    ("Right Stick", "右摇杆"),
+    ("on the ground", "在地面时"),
+    ("in midair", "在空中"),
+    ("in the air", "在空中"),
+    ("while airborne", "在空中时"),
+    ("while dashing", "冲刺时"),
+    ("while running", "奔跑时"),
+    ("near an enemy", "靠近敌人时"),
+    ("attack with", "使用"),
+    ("and then", "然后"),
+    ("repeatedly", "连续"),
+    ("During", "在"),
+    ("after", "之后"),
+    ("before", "之前"),
+    ("then", "然后"),
+    ("Release", "松开"),
+    ("Dash", "冲刺"),
+    ("Press", "按"),
+    ("Hold", "长按"),
+    ("Tap", "轻按"),
+    ("Button", "键"),
+)
 
 
 class KirbyFandomError(RuntimeError):
@@ -272,6 +326,15 @@ def _column_matches(label: str, kind: str) -> bool:
     return any(token in folded.split() for token in _TECHNIQUE_COLUMN_NAMES[kind])
 
 
+def _localise_controls(value: str) -> str:
+    translated = value
+    for source, target in _CONTROL_TRANSLATIONS:
+        translated = re.sub(re.escape(source), target, translated, flags=re.IGNORECASE)
+    translated = re.sub(r"[ \t]+", " ", translated)
+    translated = re.sub(r"[ \t]*\n[ \t]*", "\n", translated)
+    return translated.strip()
+
+
 def _parse_technique_table(table: Tag) -> list[dict[str, str]]:
     matrix, tag_matrix = _expanded_table(table)
     if not matrix:
@@ -346,7 +409,7 @@ def _parse_technique_table(table: Tag) -> list[dict[str, str]]:
         rows.append(
             {
                 "move": _trim_text(move, 160),
-                "controls": _trim_text(controls, 260),
+                "controls": _trim_text(_localise_controls(controls), 260),
                 "description": _trim_text(description, 1200),
                 "damage": _trim_text(damage, 260),
             }
@@ -577,7 +640,7 @@ def _trim_rich_sections(
 ) -> tuple[list[dict[str, Any]], int]:
     selected: list[dict[str, Any]] = []
     remaining = max(0, budget)
-    for source in sections:
+    for section_index, source in enumerate(sections):
         if remaining <= 0:
             break
         kind = str(source.get("kind", "") or "")
@@ -615,14 +678,37 @@ def _trim_rich_sections(
         elif kind == "techniques":
             intro = str(source.get("intro", "") or "")
             groups: list[dict[str, Any]] = []
-            source_groups = list(source.get("groups", []) or [])
+            source_groups = [
+                group
+                for group in (source.get("groups", []) or [])
+                if group.get("rows")
+            ]
             omitted = int(source.get("omitted_count", 0) or 0)
             base_cost += len(intro)
+            techniques_left = sum(
+                1
+                for item in sections[section_index:]
+                if item.get("kind") == "techniques"
+            )
+            section_budget = (
+                remaining
+                if techniques_left <= 1
+                else max(700, remaining // techniques_left)
+            )
+            headers_cost = sum(
+                len(str(group.get("label", "") or "")) + 20
+                for group in source_groups
+            )
+            rows_budget = max(0, section_budget - base_cost - headers_cost)
+            group_budget, budget_remainder = divmod(
+                rows_budget, max(1, len(source_groups))
+            )
             for group_index, group in enumerate(source_groups):
                 label = str(group.get("label", "") or "")
                 rows: list[dict[str, str]] = []
                 source_rows = list(group.get("rows", []) or [])
-                group_cost = len(label) + 20
+                quota = group_budget + (1 if group_index < budget_remainder else 0)
+                used = 0
                 for row in source_rows:
                     value = {
                         "move": str(row.get("move", "") or ""),
@@ -631,26 +717,25 @@ def _trim_rich_sections(
                         "damage": str(row.get("damage", "") or ""),
                     }
                     row_cost = sum(len(item) for item in value.values()) + 32
-                    if rows and base_cost + group_cost + row_cost > remaining:
+                    if rows and used + row_cost > quota:
                         break
-                    if not rows and base_cost + group_cost + row_cost > remaining:
+                    if not rows and row_cost > quota:
+                        fixed_cost = (
+                            len(value["move"])
+                            + len(value["controls"])
+                            + len(value["damage"])
+                            + 32
+                        )
                         value["description"] = _trim_text(
                             value["description"],
-                            max(220, remaining - base_cost - group_cost - 120),
+                            max(120, quota - fixed_cost),
                         )
                         row_cost = sum(len(item) for item in value.values()) + 32
                     rows.append(value)
-                    group_cost += row_cost
+                    used += row_cost
                 omitted += len(source_rows) - len(rows)
                 if rows:
                     groups.append({"label": label, "rows": rows})
-                    base_cost += group_cost
-                if len(rows) < len(source_rows):
-                    omitted += sum(
-                        len(item.get("rows", []) or [])
-                        for item in source_groups[group_index + 1 :]
-                    )
-                    break
             if not groups:
                 continue
             section = {
