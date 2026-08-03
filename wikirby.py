@@ -1,19 +1,22 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import html
 import json
 import re
 import time
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.parse import unquote, urlencode, urlparse
+from urllib.parse import quote, unquote, urlencode, urlparse
 from urllib.request import Request, urlopen
 
 DEFAULT_API_URL = "https://wikirby.com/w/api.php"
 FALLBACK_API_URL = "https://www.wikirby.com/w/api.php"
+DEFAULT_REST_URL = "https://wikirby.com/w/rest.php"
+FALLBACK_REST_URL = "https://www.wikirby.com/w/rest.php"
 USER_AGENT = (
-    "astrbot-plugin-kirby-catalog/2.2.1 "
+    "astrbot-plugin-kirby-catalog/2.3.0 "
     "(+https://github.com/Whereis-Alice/astrbot_plugin_kirby_catalog)"
 )
 _RETRYABLE_HTTP_CODES = {403, 408, 425, 429, 500, 502, 503, 504}
@@ -163,6 +166,25 @@ class WikirbyClient:
                 urls.append(alternate)
         return tuple(urls)
 
+    def _rest_urls(self) -> tuple[str, ...]:
+        """Return REST API bases matching the configured MediaWiki hostnames."""
+        if self.api_url == DEFAULT_API_URL:
+            return (DEFAULT_REST_URL, FALLBACK_REST_URL)
+        urls: list[str] = []
+        for api_url in self._api_urls():
+            parsed = urlparse(api_url)
+            path = parsed.path or "/w/api.php"
+            if path.endswith("/api.php"):
+                path = f"{path[:-len('api.php')]}rest.php"
+            else:
+                path = "/w/rest.php"
+            rest_url = parsed._replace(
+                path=path, params="", query="", fragment=""
+            ).geturl().rstrip("/")
+            if rest_url not in urls:
+                urls.append(rest_url)
+        return tuple(urls)
+
     @staticmethod
     def _retry_delay(error: HTTPError, attempt: int) -> float:
         retry_after = error.headers.get("Retry-After") if error.headers else None
@@ -189,14 +211,20 @@ class WikirbyClient:
             return
         self._cache[key] = (time.monotonic() + self.cache_ttl_seconds, value)
 
-    def _request_sync(self, params: dict[str, Any]) -> dict[str, Any]:
-        query = {"format": "json", "formatversion": "2", **params}
+    def _read_urls_sync(
+        self,
+        urls: tuple[str, ...],
+        query: dict[str, Any] | None = None,
+    ) -> bytes:
+        """Read one of several equivalent endpoints with short WAF retries."""
         raw: bytes | None = None
         last_http_error: HTTPError | None = None
         last_url_error: URLError | None = None
-        for api_url in self._api_urls():
-            separator = "&" if "?" in api_url else "?"
-            url = f"{api_url}{separator}{urlencode(query)}"
+        query = query or {}
+        for base_url in urls:
+            separator = "&" if "?" in base_url else "?"
+            suffix = urlencode(query)
+            url = f"{base_url}{separator}{suffix}" if suffix else base_url
             request = Request(
                 url,
                 headers={
@@ -238,7 +266,10 @@ class WikirbyClient:
             if last_url_error is not None:
                 raise WikirbyError("无法连接 WiKirby，请稍后再试") from last_url_error
             raise WikirbyError("无法连接 WiKirby，请稍后再试")
+        return raw
 
+    @staticmethod
+    def _decode_json(raw: bytes) -> dict[str, Any]:
         try:
             data = json.loads(raw.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -247,7 +278,23 @@ class WikirbyClient:
             error = data["error"]
             message = error.get("info", "WiKirby API 请求失败") if isinstance(error, dict) else str(error)
             raise WikirbyError(message)
+        if not isinstance(data, dict):
+            raise WikirbyError("WiKirby 返回了无法识别的数据")
         return data
+
+    def _request_sync(self, params: dict[str, Any]) -> dict[str, Any]:
+        query = {"format": "json", "formatversion": "2", **params}
+        raw = self._read_urls_sync(self._api_urls(), query)
+        return self._decode_json(raw)
+
+    def _rest_request_sync(
+        self, endpoint: str, query: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        urls = tuple(
+            f"{base.rstrip('/')}/{endpoint.lstrip('/')}"
+            for base in self._rest_urls()
+        )
+        return self._decode_json(self._read_urls_sync(urls, query))
 
     async def _request(self, params: dict[str, Any]) -> dict[str, Any]:
         async with self._request_limit:
@@ -275,6 +322,99 @@ class WikirbyClient:
         }
 
     @staticmethod
+    def _page_url(title: str) -> str:
+        return "https://wikirby.com/wiki/" + quote(
+            title.replace(" ", "_"), safe="():"
+        )
+
+    @staticmethod
+    def _summary_from_wikitext(wikitext: str, max_chars: int) -> str:
+        """Extract a short readable introduction from REST wikitext."""
+        text = re.split(r"^==+\s*", wikitext or "", maxsplit=1, flags=re.MULTILINE)[0]
+        while "{{" in text:
+            start = text.find("{{")
+            end = _find_template_end(text, start)
+            text = text[:start] + " " + text[end:]
+        text = re.sub(r"\[https?://[^\s\]]+\s+([^]]+)\]", r"\1", text)
+        text = re.sub(r"\[\[([^]|]+)\|([^]]+)\]\]", r"\2", text)
+        text = re.sub(r"\[\[([^]]+)\]\]", r"\1", text)
+        text = re.sub(r"<br\s*/?>", " ", text, flags=re.IGNORECASE)
+        text = re.sub(r"<[^>]+>", "", text)
+        text = text.replace("'''", "").replace("''", "")
+        text = html.unescape(text)
+        text = re.sub(r"\s+", " ", text).strip()
+        if len(text) <= max_chars:
+            return text
+        return text[:max_chars].rsplit(" ", 1)[0].rstrip() + "..."
+
+    @staticmethod
+    def _image_url_from_wikitext(wikitext: str) -> str:
+        match = re.search(
+            r"\[\[\s*(?:File|Image)\s*:\s*([^|\]\n]+)",
+            wikitext or "",
+            re.IGNORECASE,
+        )
+        if not match:
+            return ""
+        filename = match.group(1).strip().replace(" ", "_")
+        digest = hashlib.md5(filename.encode("utf-8")).hexdigest()
+        return (
+            f"https://cdn.wikirby.com/{digest[0]}/{digest[:2]}/"
+            f"{quote(filename, safe='')}"
+        )
+
+    def _rest_page_sync(self, title: str) -> dict[str, Any]:
+        title = self._title_from_url(title.strip())
+        data = self._rest_request_sync(
+            f"v1/page/{quote(title, safe='')}"
+        )
+        actual_title = str(data.get("title") or title).strip()
+        source = str(data.get("source") or "")
+        latest = data.get("latest") or {}
+        return {
+            "pageid": int(data.get("id", 0) or 0),
+            "title": actual_title,
+            "summary": self._summary_from_wikitext(
+                source, self.max_summary_chars
+            ),
+            "url": self._page_url(actual_title),
+            "image_url": self._image_url_from_wikitext(source),
+            "lastrevid": int(latest.get("id", 0) or 0),
+            "wikitext": source,
+        }
+
+    def _rest_search_sync(self, query: str, limit: int) -> list[dict[str, Any]]:
+        data = self._rest_request_sync(
+            "v1/search/page",
+            {"q": query, "limit": max(1, min(limit, 20))},
+        )
+        rows = data.get("pages", [])
+        if not isinstance(rows, list):
+            return []
+        result: list[dict[str, Any]] = []
+        for row in rows:
+            if not isinstance(row, dict) or not row.get("id"):
+                continue
+            title = str(row.get("title") or row.get("key") or "").strip()
+            if not title:
+                continue
+            excerpt = str(row.get("excerpt") or "")
+            thumbnail = row.get("thumbnail") or {}
+            result.append(
+                {
+                    "pageid": int(row.get("id", 0) or 0),
+                    "title": title,
+                    "summary": self._clean_search_text(excerpt),
+                    "url": self._page_url(title),
+                    "image_url": str(thumbnail.get("url", "") or ""),
+                    "lastrevid": 0,
+                    "snippet": excerpt,
+                    "wordcount": 0,
+                }
+            )
+        return result
+
+    @staticmethod
     def _title_from_url(value: str) -> str:
         parsed = urlparse(value)
         if parsed.netloc.lower() not in {"wikirby.com", "www.wikirby.com"}:
@@ -290,22 +430,30 @@ class WikirbyClient:
         cached = self._cache_get(key)
         if cached is not None:
             return cached
-        data = await self._request(
-            {
-                "action": "query",
-                "titles": title,
-                "redirects": 1,
-                "prop": "info|extracts|pageimages",
-                "inprop": "url",
-                "exintro": 1,
-                "explaintext": 1,
-                "exchars": self.max_summary_chars,
-                "piprop": "thumbnail",
-                "pithumbsize": 600,
-            }
-        )
-        pages = [self._normalise_page(page) for page in self._page_values(data)]
-        result = next((page for page in pages if page), None)
+        try:
+            data = await self._request(
+                {
+                    "action": "query",
+                    "titles": title,
+                    "redirects": 1,
+                    "prop": "info|extracts|pageimages",
+                    "inprop": "url",
+                    "exintro": 1,
+                    "explaintext": 1,
+                    "exchars": min(self.max_summary_chars, 1200),
+                    "piprop": "thumbnail",
+                    "pithumbsize": 600,
+                }
+            )
+            pages = [
+                self._normalise_page(page) for page in self._page_values(data)
+            ]
+            result = next((page for page in pages if page), None)
+        except WikirbyError:
+            try:
+                result = await asyncio.to_thread(self._rest_page_sync, title)
+            except WikirbyError:
+                result = None
         self._cache_set(key, result)
         return result
 
@@ -319,17 +467,24 @@ class WikirbyClient:
         cached = self._cache_get(key)
         if cached is not None:
             return cached
-        search_data = await self._request(
-            {
-                "action": "query",
-                "list": "search",
-                "srsearch": query,
-                "srwhat": mode,
-                "srnamespace": 0,
-                "srlimit": max(1, min(limit, 20)),
-                "srprop": "snippet|wordcount",
-            }
-        )
+        try:
+            search_data = await self._request(
+                {
+                    "action": "query",
+                    "list": "search",
+                    "srsearch": query,
+                    "srwhat": mode,
+                    "srnamespace": 0,
+                    "srlimit": max(1, min(limit, 20)),
+                    "srprop": "snippet|wordcount",
+                }
+            )
+        except WikirbyError:
+            result = await asyncio.to_thread(
+                self._rest_search_sync, query, limit
+            )
+            self._cache_set(key, result)
+            return result
         rows = search_data.get("query", {}).get("search", [])
         if not isinstance(rows, list):
             return []
@@ -338,20 +493,27 @@ class WikirbyClient:
             self._cache_set(key, [])
             return []
 
-        details = await self._request(
-            {
-                "action": "query",
-                "pageids": "|".join(pageids),
-                "redirects": 1,
-                "prop": "info|extracts|pageimages",
-                "inprop": "url",
-                "exintro": 1,
-                "explaintext": 1,
-                "exchars": self.max_summary_chars,
-                "piprop": "thumbnail",
-                "pithumbsize": 600,
-            }
-        )
+        try:
+            details = await self._request(
+                {
+                    "action": "query",
+                    "pageids": "|".join(pageids),
+                    "redirects": 1,
+                    "prop": "info|extracts|pageimages",
+                    "inprop": "url",
+                    "exintro": 1,
+                    "explaintext": 1,
+                    "exchars": min(self.max_summary_chars, 1200),
+                    "piprop": "thumbnail",
+                    "pithumbsize": 600,
+                }
+            )
+        except WikirbyError:
+            result = await asyncio.to_thread(
+                self._rest_search_sync, query, limit
+            )
+            self._cache_set(key, result)
+            return result
         by_id = {
             str(page.get("pageid")): page
             for page in (
@@ -437,15 +599,21 @@ class WikirbyClient:
         cached = self._cache_get(key)
         if cached is not None:
             return str(cached)
-        data = await self._request(
-            {
-                "action": "query",
-                "titles": title,
-                "prop": "revisions",
-                "rvprop": "content",
-                "rvslots": "main",
-            }
-        )
+        try:
+            data = await self._request(
+                {
+                    "action": "query",
+                    "titles": title,
+                    "prop": "revisions",
+                    "rvprop": "content",
+                    "rvslots": "main",
+                }
+            )
+        except WikirbyError:
+            page = await asyncio.to_thread(self._rest_page_sync, title)
+            content = str(page.get("wikitext", "") or "")
+            self._cache_set(key, content)
+            return content
         page = next(iter(self._page_values(data)), {})
         revisions = page.get("revisions", [])
         content = ""
@@ -466,7 +634,9 @@ class WikirbyClient:
         cached = self._cache_get(key)
         if cached is not None:
             return cached
-        wikitext = await self.get_wikitext(str(page.get("title", "")))
+        wikitext = str(page.get("wikitext", "") or "")
+        if not wikitext:
+            wikitext = await self.get_wikitext(str(page.get("title", "")))
         result = parse_language_names(wikitext)
         self._cache_set(key, result)
         return result

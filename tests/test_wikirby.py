@@ -5,7 +5,11 @@ from unittest.mock import patch
 from urllib.error import HTTPError
 
 from astrbot_plugin_kirby_catalog.main import KirbyCatalogPlugin
-from astrbot_plugin_kirby_catalog.wikirby import WikirbyClient, parse_language_names
+from astrbot_plugin_kirby_catalog.wikirby import (
+    WikirbyClient,
+    WikirbyError,
+    parse_language_names,
+)
 
 
 class FakeEvent:
@@ -66,6 +70,13 @@ class WikirbyParserTests(unittest.TestCase):
                 "https://www.wikirby.com/w/api.php",
             ),
         )
+        self.assertEqual(
+            client._rest_urls(),
+            (
+                "https://wikirby.com/w/rest.php",
+                "https://www.wikirby.com/w/rest.php",
+            ),
+        )
 
     def test_api_request_retries_403_then_uses_alternate_hostname(self):
         error = HTTPError(
@@ -118,6 +129,14 @@ class WikirbyParserTests(unittest.TestCase):
             "Driblee",
         )
 
+    def test_rest_image_url_uses_cdn_file_hash(self):
+        self.assertEqual(
+            WikirbyClient._image_url_from_wikitext(
+                "{{Infobox|image=[[File:KSA Driblee Artwork.png|200px]]}}"
+            ),
+            "https://cdn.wikirby.com/3/33/KSA_Driblee_Artwork.png",
+        )
+
     def test_general_page_beats_work_specific_page_for_localised_name(self):
         query = "瓦豆鲁迪"
         base = {"title": "Waddle Dee", "snippet": query, "wordcount": 12809}
@@ -134,6 +153,29 @@ class WikirbyParserTests(unittest.TestCase):
 
 
 class WikirbyCommandTests(unittest.IsolatedAsyncioTestCase):
+    async def test_page_falls_back_to_rest_when_mediawiki_api_is_blocked(self):
+        plugin_client = WikirbyClient(cache_ttl_seconds=0)
+        rest_page = {
+            "pageid": 1,
+            "lastrevid": 2,
+            "title": "Driblee",
+            "summary": "summary",
+            "url": "https://wikirby.com/wiki/Driblee",
+            "image_url": "",
+            "wikitext": "==Names in other languages==",
+        }
+
+        with patch.object(
+            plugin_client,
+            "_request",
+            side_effect=WikirbyError("HTTP 403"),
+        ), patch.object(
+            plugin_client, "_rest_page_sync", return_value=rest_page
+        ):
+            result = await plugin_client.get_page("Driblee")
+
+        self.assertEqual(result, rest_page)
+
     async def test_name_command_only_returns_language_names(self):
         plugin = KirbyCatalogPlugin.__new__(KirbyCatalogPlugin)
         plugin.config = {"wikirby_enabled": True, "wikirby_show_image": False}
