@@ -99,6 +99,25 @@ class WikirbyParserTests(unittest.TestCase):
         self.assertEqual(open_url.call_count, 3)
         self.assertIn("www.wikirby.com", open_url.call_args_list[-1].args[0].full_url)
 
+    def test_proxy_rewrites_target_path_and_sends_bearer_token(self):
+        client = WikirbyClient(
+            proxy_url="https://kirby-proxy.example.workers.dev",
+            proxy_token="test-token",
+            cache_ttl_seconds=0,
+        )
+        response = FakeResponse(b'{"query":{"pages":[]}}')
+
+        with patch(
+            "astrbot_plugin_kirby_catalog.wikirby.urlopen",
+            return_value=response,
+        ) as open_url:
+            client._request_sync({"action": "query", "titles": "Driblee"})
+
+        request = open_url.call_args.args[0]
+        self.assertEqual(request.full_url.split("?", 1)[0], "https://kirby-proxy.example.workers.dev")
+        self.assertIn("path=%2Fw%2Fapi.php", request.full_url)
+        self.assertEqual(request.headers["Authorization"], "Bearer test-token")
+
     def test_extracts_language_names_without_meanings(self):
         wikitext = """
 ==Names in other languages==

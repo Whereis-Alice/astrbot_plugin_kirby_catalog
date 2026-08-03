@@ -211,6 +211,8 @@ WiKirby 查询默认开启。可以在插件配置的“WiKirby 查询设置”�
 
 如果 WiKirby 的 `api.php` 被云服务器出口 IP 暂时或持续返回 403，插件会自动重试并切换到 `www.wikirby.com` 的 REST API；精确页面查询还会继续尝试静态 `action=raw` 页面。页面查询、中文搜索和名称表读取会尽量继续工作；这段时间查询可能稍慢，但不会影响其它图鉴功能。
 
+如果云服务器对 WiKirby 的所有入口都返回 403，可以部署项目中的 `cloudflare_worker/wikirby_proxy.js` 作为可选中转。Worker 必须设置 `WIKIRBY_PROXY_TOKEN`，然后把 Worker 地址和密钥填入插件配置；详细步骤见 `cloudflare_worker/README.md`。中转仍可能被 WiKirby 拦截，部署后必须先用文档中的 `curl` 命令确认返回 200。
+
 ## 致谢与上游参考
 
 本项目在数据格式兼容、抽取流程和基础图鉴思路上参考并改造自：

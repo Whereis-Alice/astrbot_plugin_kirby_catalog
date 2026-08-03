@@ -72,6 +72,18 @@
         "default": 1800,
         "min": 300,
         "max": 6000
+      },
+      "wikirby_proxy_url": {
+        "description": "可选 Cloudflare Worker 中转地址",
+        "type": "string",
+        "default": "",
+        "hint": "填写 Worker URL，例如 https://kirby-wikirby-proxy.example.workers.dev；留空则直连。不要填写 /w/api.php。"
+      },
+      "wikirby_proxy_token": {
+        "description": "Cloudflare Worker 中转密钥",
+        "type": "string",
+        "default": "",
+        "hint": "对应 Worker 的 WIKIRBY_PROXY_TOKEN，只保存在本机配置中，不要提交到公开仓库。"
       }
     }
   },

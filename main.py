@@ -31,7 +31,7 @@ IMAGE_BASE_URL = "http://save.my996.top/?/img/"
     PLUGIN_ID,
     "Whereis-Alice",
     "星之卡比盟友抽取、图鉴、猜名与排行榜插件",
-    "2.2.0",
+    "2.4.0",
     "https://github.com/Whereis-Alice/astrbot_plugin_kirby_catalog",
 )
 class KirbyCatalogPlugin(Star):
@@ -56,6 +56,8 @@ class KirbyCatalogPlugin(Star):
             timeout_seconds=float(self._config_value("wikirby_timeout_seconds", 12)),
             cache_ttl_seconds=int(self._config_value("wikirby_cache_ttl_seconds", 3600)),
             max_summary_chars=int(self._config_value("wikirby_max_summary_chars", 1800)),
+            proxy_url=str(self._config_value("wikirby_proxy_url", "")),
+            proxy_token=str(self._config_value("wikirby_proxy_token", "")),
         )
 
     def _cancel_guess_timeout(self, group_id: str) -> None:

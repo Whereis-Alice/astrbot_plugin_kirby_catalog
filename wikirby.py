@@ -16,7 +16,7 @@ FALLBACK_API_URL = "https://www.wikirby.com/w/api.php"
 DEFAULT_REST_URL = "https://wikirby.com/w/rest.php"
 FALLBACK_REST_URL = "https://www.wikirby.com/w/rest.php"
 USER_AGENT = (
-    "astrbot-plugin-kirby-catalog/2.3.1 "
+    "astrbot-plugin-kirby-catalog/2.4.0 "
     "(+https://github.com/Whereis-Alice/astrbot_plugin_kirby_catalog)"
 )
 _RETRYABLE_HTTP_CODES = {403, 408, 425, 429, 500, 502, 503, 504}
@@ -144,11 +144,15 @@ class WikirbyClient:
         timeout_seconds: float = 12.0,
         cache_ttl_seconds: int = 3600,
         max_summary_chars: int = 1800,
+        proxy_url: str = "",
+        proxy_token: str = "",
     ) -> None:
         self.api_url = api_url.strip() or DEFAULT_API_URL
         self.timeout_seconds = max(2.0, float(timeout_seconds))
         self.cache_ttl_seconds = max(0, int(cache_ttl_seconds))
         self.max_summary_chars = max(300, int(max_summary_chars))
+        self.proxy_url = proxy_url.strip().rstrip("/")
+        self.proxy_token = proxy_token.strip()
         self._cache: dict[str, tuple[float, Any]] = {}
         self._request_limit = asyncio.Semaphore(2)
 
@@ -233,18 +237,28 @@ class WikirbyClient:
         last_http_error: HTTPError | None = None
         last_url_error: URLError | None = None
         query = query or {}
-        for base_url in urls:
-            separator = "&" if "?" in base_url else "?"
-            suffix = urlencode(query)
-            url = f"{base_url}{separator}{suffix}" if suffix else base_url
+        request_bases = urls[:1] if self.proxy_url else urls
+        for base_url in request_bases:
+            if self.proxy_url:
+                target_path = urlparse(base_url).path or "/"
+                proxy_query = {"path": target_path, **query}
+                separator = "&" if "?" in self.proxy_url else "?"
+                url = f"{self.proxy_url}{separator}{urlencode(proxy_query)}"
+            else:
+                separator = "&" if "?" in base_url else "?"
+                suffix = urlencode(query)
+                url = f"{base_url}{separator}{suffix}" if suffix else base_url
+            headers = {
+                "Accept": "application/json",
+                "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+                "Referer": "https://wikirby.com/",
+                "User-Agent": USER_AGENT,
+            }
+            if self.proxy_token:
+                headers["Authorization"] = f"Bearer {self.proxy_token}"
             request = Request(
                 url,
-                headers={
-                    "Accept": "application/json",
-                    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-                    "Referer": "https://wikirby.com/",
-                    "User-Agent": USER_AGENT,
-                },
+                headers=headers,
             )
             for attempt in range(2):
                 try:
