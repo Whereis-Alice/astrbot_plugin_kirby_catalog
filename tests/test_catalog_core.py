@@ -157,6 +157,25 @@ class CatalogStoreTests(unittest.TestCase):
             self.assertFalse(path.exists())
             self.assertTrue(store.asset_path(renamed).is_file())
 
+    def test_source_filename_keeps_periods_inside_character_name(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = CatalogStore(Path(temp_dir), "")
+            filename = "Kirby Air Riders.J.J.png"
+            path = store.assets_dir / filename
+            path.write_bytes(self.make_image())
+            store.refresh()
+
+            entry = store.resolve_entry(filename)
+
+            self.assertIsNotNone(entry)
+            entry = entry or {}
+            self.assertEqual(entry["source"], "Kirby Air Riders")
+            self.assertEqual(entry["name"], "J.J")
+            renamed = store.rename_entry(entry, "J.J.二号")
+            self.assertEqual(renamed["filename"], "Kirby Air Riders.J_J_二号.png")
+            self.assertFalse(path.exists())
+            self.assertTrue(store.asset_path(renamed).is_file())
+
     def test_renamed_legacy_asset_is_not_reintroduced_on_refresh(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

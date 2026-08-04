@@ -75,10 +75,10 @@ def _safe_filename(value: str) -> str:
 
 def _parse_filename(filename: str) -> Tuple[str, str]:
     """Infer the old source/name convention without making it mandatory."""
-    parts = Path(filename).name.split(".")
-    if len(parts) >= 3:
-        return parts[1] or Path(filename).stem, parts[0]
     stem = Path(filename).stem
+    if "." in stem:
+        source, name = stem.split(".", 1)
+        return name or stem, source
     match = re.match(r"ally_\d+_(.+)$", stem)
     return (match.group(1) if match else stem), ""
 
@@ -794,10 +794,9 @@ class CatalogStore:
             old_filename = Path(_as_text(entry["filename"])).name
             old_path = self.asset_path(entry)
             suffix = old_path.suffix if old_path else ".png"
-            old_stem = Path(old_filename).stem
-            prefix, separator, _old_name = old_stem.rpartition(".")
-            if not separator:
-                prefix = _as_text(entry.get("source"))
+            prefix = _as_text(entry.get("source"))
+            if not prefix:
+                _old_name, prefix = _parse_filename(old_filename)
             if prefix:
                 new_filename = f"{prefix}.{_safe_filename(new_name)}{suffix.lower()}"
             else:

@@ -289,6 +289,31 @@ Kirby Fandom 的特殊栏目会保留网页结构：`Related Quotes` 中每条�
 
 固定图鉴编号保持不变。
 
+### 素材文件命名
+
+需要让插件自动识别作品来源时，推荐使用：
+
+```text
+最早登场作品.盟友名称.png
+```
+
+插件只把文件名中的第一个半角点号 `.` 作为“作品来源 / 盟友名称”的分隔符，角色名中的后续点号会完整保留。例如：
+
+```text
+Kirby's Dream Land.瓦豆鲁迪（Waddle Dee）.png
+Kirby Air Riders.J.J.png
+```
+
+以上文件会分别解析出作品 `Kirby's Dream Land`、`Kirby Air Riders`，以及角色名 `瓦豆鲁迪（Waddle Dee）`、`J.J`。
+
+Windows 文件名不能包含半角 `:`、`?` 等字符。作品标题含这些标点时可改用全角形式，例如：
+
+```text
+Kirby： Squeak Squad.怪侠洛切团（Squeaks）.jpg
+```
+
+没有可靠作品来源的素材可以继续只使用 `盟友名称.png`，插件不会强制要求作品前缀。
+
 ### 添加新盟友
 
 在当前命令中附带图片，或引用一张图片：
