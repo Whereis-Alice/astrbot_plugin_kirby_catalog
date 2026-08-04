@@ -22,6 +22,10 @@ SHANGHAI = timezone(timedelta(hours=8))
 CATALOG_METADATA_KEYS = (
     "pageid",
     "page_title",
+    "entry_key",
+    "variant_key",
+    "catalog_kind",
+    "asset_set",
     "debut_work",
     "debut_year",
     "kind",

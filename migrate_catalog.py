@@ -39,6 +39,23 @@ def parse_args() -> argparse.Namespace:
         "--new-assets", type=Path, required=True, help="新素材目录，例如 /Kirby"
     )
     parser.add_argument(
+        "--supplemental-assets",
+        type=Path,
+        action="append",
+        default=[],
+        help="独立能力、形态或 EX 补充素材目录；可重复传入",
+    )
+    parser.add_argument(
+        "--history-source",
+        type=Path,
+        action="append",
+        default=[],
+        help=(
+            "迁移前的 .before-v3-* 历史数据目录；可重复传入。"
+            "仅用于补回历史解锁，不会被修改"
+        ),
+    )
+    parser.add_argument(
         "--report-dir",
         type=Path,
         help="报告目录；默认写入当前目录下的 kirby_migration_report",
@@ -85,6 +102,8 @@ def main() -> int:
         release_order_path=args.release_order,
         overrides_path=args.overrides,
         progress=progress,
+        supplemental_assets_roots=args.supplemental_assets,
+        history_roots=args.history_source,
     )
     validate_plan(plan)
     write_reports(plan)
