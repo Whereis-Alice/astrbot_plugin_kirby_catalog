@@ -3,14 +3,20 @@
     "description": "抽取与图鉴设置",
     "type": "object",
     "items": {
-      "daily_draw_limit": {
-        "description": "每人每日抽取次数",
-        "type": "int",
-        "default": 3,
-        "min": 1,
-        "max": 100
-      },
-      "draw_cooldown_seconds": {
+        "daily_draw_limit": {
+          "description": "每人每日抽取次数",
+          "type": "int",
+          "default": 3,
+          "min": 1,
+          "max": 100
+        },
+        "draw_message_template": {
+          "description": "今日盟友抽取文案模板",
+          "type": "text",
+          "default": "{nickname}，你今天的盟友是 {name}{flags}，图鉴编号 #{id}{source_text}。\n今日剩余次数：{remaining}",
+          "hint": "支持 {nickname}、{name}、{id}、{source}、{source_text}、{flags}、{remaining}。source_text 会在有出处时自动生成“，首次登场于《作品》”；模板无效时自动使用默认文案。"
+        },
+        "draw_cooldown_seconds": {
         "description": "连续抽取冷却时间（秒）",
         "type": "float",
         "default": 3,

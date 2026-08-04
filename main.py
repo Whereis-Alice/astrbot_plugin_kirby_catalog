@@ -39,13 +39,17 @@ from .wikirby_card import (
 PLUGIN_ID = "astrbot_plugin_kirby_catalog"
 LEGACY_PLUGIN_ID = "astrbot_plugin_AnimeWife"
 IMAGE_BASE_URL = "http://save.my996.top/?/img/"
+DEFAULT_DRAW_MESSAGE_TEMPLATE = (
+    "{nickname}，你今天的盟友是 {name}{flags}，图鉴编号 #{id}{source_text}。\n"
+    "今日剩余次数：{remaining}"
+)
 
 
 @register(
     PLUGIN_ID,
     "Whereis-Alice",
     "星之卡比盟友抽取、收藏图鉴与双百科查询插件",
-    "3.1.0",
+    "3.2.0",
     "https://github.com/Whereis-Alice/astrbot_plugin_kirby_catalog",
 )
 class KirbyCatalogPlugin(Star):
@@ -269,16 +273,45 @@ class KirbyCatalogPlugin(Star):
     @classmethod
     def _quoted_text(cls, event: AstrMessageEvent) -> str:
         parts: List[str] = []
+        seen: set[str] = set()
+
+        def append_text(value: Any) -> None:
+            text = plain_text_from_component(value)
+            if isinstance(value, dict) and not text:
+                data = value.get("data")
+                if isinstance(data, dict):
+                    text = str(data.get("text") or data.get("message_str") or "").strip()
+            if text and text not in seen:
+                seen.add(text)
+                parts.append(text)
+
+        def append_chain(value: Any) -> None:
+            for nested in cls._nested_components(value):
+                if isinstance(nested, Comp.Plain):
+                    append_text(nested)
+                elif isinstance(nested, dict) and str(
+                    nested.get("type", "")
+                ).casefold() in {"plain", "text"}:
+                    append_text(nested)
+
         components = getattr(getattr(event, "message_obj", None), "message", []) or []
-        for component in cls._nested_components(components):
-            if isinstance(component, Comp.Reply) or (
-                isinstance(component, dict)
-                and component.get("type") in {"reply", "Reply"}
-            ):
-                parts.append(plain_text_from_component(component))
-            elif isinstance(component, Comp.Plain):
-                parts.append(str(getattr(component, "text", "") or ""))
-        return " ".join(part.strip() for part in parts if part.strip())
+        for component in components:
+            if isinstance(component, Comp.Reply):
+                append_text(component)
+                append_chain(component.chain)
+            elif isinstance(component, dict) and str(
+                component.get("type", "")
+            ).casefold() == "reply":
+                append_text(component)
+                append_chain(component.get("chain") or component.get("message"))
+
+        raw_message = getattr(getattr(event, "message_obj", None), "raw_message", None)
+        if isinstance(raw_message, dict):
+            reply = raw_message.get("reply")
+            if isinstance(reply, dict):
+                append_text(reply)
+                append_chain(reply.get("message") or reply.get("chain"))
+        return "\n".join(parts)
 
     @classmethod
     def _image_bytes_from_event(cls, event: AstrMessageEvent) -> Optional[bytes]:
@@ -371,6 +404,105 @@ class KirbyCatalogPlugin(Star):
     @staticmethod
     def _display_name(entry: Dict[str, Any]) -> str:
         return str(entry.get("name") or "未命名盟友")
+
+    @staticmethod
+    def _english_name_from_text(value: Any) -> str:
+        text = str(value or "").strip()
+        for match in re.finditer(r"[（(]([^（）()\n]*[A-Za-z][^（）()\n]*)[）)]", text):
+            candidate = match.group(1).strip(" \t,，。；;：:")
+            if candidate and not candidate.casefold().startswith(("http://", "https://")):
+                return candidate
+        return ""
+
+    @staticmethod
+    def _trim_quoted_name(value: Any) -> str:
+        candidate = str(value or "").strip()
+        candidate = re.split(
+            r"\s*(?:，|,)?\s*(?:来自《|首次登场于《|图鉴编号|来源\s*[:：]|今日剩余次数\s*[:：])",
+            candidate,
+            maxsplit=1,
+        )[0]
+        candidate = re.sub(r"^\s*#\s*\d+\s*", "", candidate)
+        candidate = re.sub(
+            r"\.(?:png|jpe?g|gif|bmp|webp)\s*$", "", candidate, flags=re.IGNORECASE
+        )
+        if "." in candidate:
+            source, possible_name = candidate.split(".", 1)
+            if possible_name.strip() and re.search(
+                r"(?:星之卡比|卡比|Kirby)", source, re.IGNORECASE
+            ):
+                candidate = possible_name.strip()
+        return candidate.strip(" \t\"'“”‘’。；;")
+
+    def _entry_wiki_query(self, entry: Dict[str, Any]) -> str:
+        page_title = str(entry.get("page_title") or "").strip()
+        if page_title:
+            return page_title
+        for value in (
+            entry.get("variant_key"),
+            self._display_name(entry),
+            *entry.get("aliases", []),
+        ):
+            english = self._english_name_from_text(value)
+            if english:
+                return english
+            candidate = self._trim_quoted_name(value)
+            if re.search(r"[A-Za-z]", candidate) and not re.search(
+                r"[\u3400-\u9fff]", candidate
+            ):
+                return candidate
+        return self._display_name(entry)
+
+    def _quoted_wiki_query(self, event: AstrMessageEvent) -> str:
+        text = self._quoted_text(event)
+        if not text:
+            return ""
+
+        id_match = re.search(r"(?:#|编号\s*[:：]?)\s*(\d+)", text, re.IGNORECASE)
+        if id_match:
+            entry, _ = self._entry_or_error(id_match.group(1))
+            if entry:
+                return self._entry_wiki_query(entry)
+
+        target = self._quoted_target(event)
+        if target:
+            entry, _ = self._entry_or_error(target)
+            if entry:
+                return self._entry_wiki_query(entry)
+
+        candidates: List[str] = []
+        patterns = (
+            r"(?:WiKirby|Kirby Fandom)\s*[:：]\s*([^\n]+)",
+            r"(?:名称|盟友)\s*[:：]\s*([^\n]+)",
+            r"(?:今天的盟友是|随机盟友\s*[:：])\s*(?:#\s*\d+\s*)?([^\n]+)",
+            r"#\s*\d+\s+([^\n]+)",
+        )
+        for pattern in patterns:
+            candidates.extend(match.group(1) for match in re.finditer(pattern, text))
+        candidates.extend(
+            line
+            for line in text.splitlines()
+            if line.strip()
+            and not re.match(
+                r"^\s*(?:来源|来自|作品|今日剩余次数|提示)\s*[:：]", line
+            )
+        )
+
+        fallback = ""
+        for value in candidates:
+            candidate = self._trim_quoted_name(value)
+            if not candidate:
+                continue
+            english = self._english_name_from_text(candidate)
+            if english:
+                return english
+            if re.search(r"[A-Za-z]", candidate) and not re.search(
+                r"[\u3400-\u9fff]", candidate
+            ):
+                return candidate
+            if not fallback:
+                fallback = candidate
+        return fallback
 
     @staticmethod
     def _bool_value(value: Any) -> bool:
@@ -867,12 +999,13 @@ class KirbyCatalogPlugin(Star):
                 break
 
         query = remainder.strip()
-        if query.isdigit() or not query:
-            target = query or self._quoted_target(event)
-            if target:
-                entry, _ = self._entry_or_error(target)
-                if entry:
-                    query = self._display_name(entry)
+        numeric_target = query.lstrip("#") if query else ""
+        if numeric_target.isdigit():
+            entry, _ = self._entry_or_error(numeric_target)
+            if entry:
+                query = self._entry_wiki_query(entry)
+        elif not query:
+            query = self._quoted_wiki_query(event)
         return query, names_only
 
     @staticmethod
@@ -1161,12 +1294,13 @@ class KirbyCatalogPlugin(Star):
         if mode == "page" and "|" in remainder:
             remainder, section = (part.strip() for part in remainder.split("|", 1))
         query = remainder.strip()
-        if query.isdigit() or not query:
-            target = query or self._quoted_target(event)
-            if target:
-                entry, _ = self._entry_or_error(target)
-                if entry:
-                    query = self._display_name(entry)
+        numeric_target = query.lstrip("#") if query else ""
+        if numeric_target.isdigit():
+            entry, _ = self._entry_or_error(numeric_target)
+            if entry:
+                query = self._entry_wiki_query(entry)
+        elif not query:
+            query = self._quoted_wiki_query(event)
         return query, mode, section
 
     @staticmethod
@@ -1494,16 +1628,66 @@ class KirbyCatalogPlugin(Star):
     def _normalise_guess(value: str) -> str:
         return re.sub(r"[\s\W_]+", "", value.casefold())
 
-    def _guess_matches(self, entry: Dict[str, Any], answer: str) -> bool:
-        answer = self._normalise_guess(answer)
-        candidates = [
-            self._display_name(entry),
-            str(entry.get("filename", "")),
+    def _guess_aliases(self, entry: Dict[str, Any]) -> set[str]:
+        name = self._display_name(entry)
+        variant_key = str(entry.get("variant_key") or "").strip()
+        page_title = str(entry.get("page_title") or "").strip()
+        filename = str(entry.get("filename") or "").strip()
+        source = str(entry.get("source") or "").strip()
+        filename_name = Path(filename).stem
+        if source and filename_name.startswith(f"{source}."):
+            filename_name = filename_name[len(source) + 1 :]
+
+        raw_candidates = [
+            name,
+            filename,
+            filename_name,
+            variant_key,
             *[str(alias) for alias in entry.get("aliases", [])],
         ]
+        if not variant_key or self._normalise_guess(variant_key) == self._normalise_guess(
+            page_title
+        ):
+            raw_candidates.append(page_title)
+
+        aliases: set[str] = set()
+        blocked_base_name = (
+            self._normalise_guess(page_title)
+            if variant_key
+            and self._normalise_guess(variant_key)
+            != self._normalise_guess(page_title)
+            else ""
+        )
+
+        def add_alias(value: str) -> None:
+            value = value.strip()
+            if not value:
+                return
+            if blocked_base_name and self._normalise_guess(value) == blocked_base_name:
+                return
+            aliases.add(value)
+
+        for raw_candidate in raw_candidates:
+            candidate = str(raw_candidate or "").strip()
+            if not candidate:
+                continue
+            add_alias(candidate)
+            stem = re.sub(
+                r"\.(?:png|jpe?g|gif|bmp|webp)$", "", candidate, flags=re.IGNORECASE
+            )
+            add_alias(stem)
+            for match in re.finditer(r"[（(]([^（）()]+)[）)]", stem):
+                bracketed = match.group(1).strip()
+                add_alias(bracketed)
+            without_brackets = re.sub(r"[（(][^（）()]+[）)]", "", stem).strip()
+            add_alias(without_brackets)
+        return aliases
+
+    def _guess_matches(self, entry: Dict[str, Any], answer: str) -> bool:
+        answer = self._normalise_guess(answer)
         return any(
             answer and answer == self._normalise_guess(candidate)
-            for candidate in candidates
+            for candidate in self._guess_aliases(entry)
         )
 
     @classmethod
@@ -1584,6 +1768,33 @@ class KirbyCatalogPlugin(Star):
         self._cancel_guess_timeout(group_id)
         return f"答对啦！答案是 #{entry['id']} {self._display_name(entry)}。"
 
+    def _draw_message(
+        self,
+        entry: Dict[str, Any],
+        nickname: str,
+        remaining: int,
+        flags: str,
+    ) -> str:
+        source = str(entry.get("source") or entry.get("debut_work") or "").strip()
+        values = {
+            "nickname": nickname,
+            "name": self._display_name(entry),
+            "id": int(entry.get("id", 0) or 0),
+            "source": source,
+            "source_text": f"，首次登场于《{source}》" if source else "",
+            "flags": flags,
+            "remaining": remaining,
+        }
+        template = str(
+            self._config_value("draw_message_template", DEFAULT_DRAW_MESSAGE_TEMPLATE)
+            or DEFAULT_DRAW_MESSAGE_TEMPLATE
+        )
+        try:
+            return template.format_map(values)
+        except (KeyError, ValueError) as exc:
+            logger.warning("[%s] 抽取文案模板无效，已使用默认模板: %s", PLUGIN_ID, exc)
+            return DEFAULT_DRAW_MESSAGE_TEMPLATE.format_map(values)
+
     async def _draw_ally_impl(self, event: AstrMessageEvent):
         """每天抽取盟友，重复时使用连续未出新保底。"""
         group_id = self._group_id(event)
@@ -1596,7 +1807,7 @@ class KirbyCatalogPlugin(Star):
             yield event.plain_result("无法获取用户信息，请稍后再试。")
             return
 
-        limit = max(1, int(self._config_value("daily_draw_limit", 3)))
+        base_limit = max(1, int(self._config_value("daily_draw_limit", 3)))
         cooldown = max(0.0, float(self._config_value("draw_cooldown_seconds", 3)))
         now = time.monotonic()
         last_draw = self._cooldowns.get(group_id, {}).get(user_id, 0.0)
@@ -1611,9 +1822,12 @@ class KirbyCatalogPlugin(Star):
             self.store.refresh()
             today = get_today()
             count = self.store.draw_count(group_id, user_id, today)
+            bonus = self.store.draw_bonus(group_id, user_id, today)
+            limit = base_limit + bonus
             if count >= limit:
                 yield event.plain_result(
-                    f"{nickname}，你今天已经抽了 {limit} 次，明天再来吧。"
+                    f"{nickname}，你今天已经抽了 {count} 次，"
+                    f"今日可用次数为 {limit} 次，明天再来吧。"
                 )
                 return
             pool = self.store.get_draw_pool()
@@ -1639,12 +1853,7 @@ class KirbyCatalogPlugin(Star):
 
         remaining = limit - count - 1
         flags = ("（重复）" if repeated else "") + ("（保底）" if pity else "")
-        source = f"，来自《{entry['source']}》" if entry.get("source") else ""
-        text = (
-            f"{nickname}，你今天的盟友是 #{entry['id']} "
-            f"{self._display_name(entry)}{source}{flags}。\n"
-            f"今日剩余次数：{remaining}"
-        )
+        text = self._draw_message(entry, nickname, remaining, flags)
         yield event.chain_result(await self._ally_chain(entry, text))
 
     @filter.regex(r"^/?(?:今日盟友|抽盟友|抽取盟友)$")
@@ -1653,6 +1862,90 @@ class KirbyCatalogPlugin(Star):
         """统一处理带斜杠和纯文本的盟友抽取，避免双 Handler 重复抽取。"""
         async for result in self._draw_ally_impl(event):
             yield result
+
+    @filter.command(
+        "重置今日群抽取次数", alias={"重置今日抽取次数", "重置群抽取次数"}
+    )
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.event_message_type(EventMessageType.GROUP_MESSAGE)
+    async def reset_group_draw_counts(self, event: AstrMessageEvent):
+        """管理员清空当前群当天的已用次数和额外抽取机会。"""
+        group_id = self._group_id(event)
+        if not group_id:
+            yield event.plain_result("该功能仅支持群聊。")
+            return
+        today = get_today()
+        async with self._draw_lock:
+            result = self.store.reset_group_draws(group_id, today)
+            self._cooldowns.pop(group_id, None)
+        if result["users"]:
+            yield event.plain_result(
+                f"已重置本群 {today} 的抽取次数，共处理 {result['users']} 位群友；"
+                f"清除 {result['draw_records']} 条已用次数记录和 "
+                f"{result['bonus_records']} 条额外次数记录。"
+            )
+        else:
+            yield event.plain_result(f"本群 {today} 暂无抽取次数记录，无需重置。")
+
+    @filter.command(
+        "增加今日抽取次数", alias={"增加今日盟友次数", "增加盟友抽取次数"}
+    )
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.event_message_type(EventMessageType.GROUP_MESSAGE)
+    async def add_member_draw_count(self, event: AstrMessageEvent):
+        """管理员为指定群友增加当天可用的抽取机会。"""
+        group_id = self._group_id(event)
+        if not group_id:
+            yield event.plain_result("该功能仅支持群聊。")
+            return
+        command_names = {
+            "增加今日抽取次数",
+            "增加今日盟友次数",
+            "增加盟友抽取次数",
+        }
+        remainder = self._command_remainder(event, command_names)
+        target_id = self._at_target(event) or ""
+        amount = 1
+        if target_id:
+            plain_parts = [
+                str(getattr(component, "text", "") or "").strip()
+                for component in (
+                    getattr(getattr(event, "message_obj", None), "message", []) or []
+                )
+                if isinstance(component, Comp.Plain)
+                and str(getattr(component, "text", "") or "").strip()
+            ]
+            amount_source = " ".join(plain_parts) or remainder
+            amount_match = re.search(r"(?:^|\s)([+-]?\d+)\s*$", amount_source)
+            if amount_match and amount_match.group(1) != target_id:
+                amount = int(amount_match.group(1))
+        else:
+            match = re.fullmatch(r"\s*(\d+)(?:\s+([+-]?\d+))?\s*", remainder)
+            if match:
+                target_id = match.group(1)
+                amount = int(match.group(2) or 1)
+        if not target_id.isdigit() or amount <= 0:
+            yield event.plain_result(
+                "用法：增加今日抽取次数 @群友 [次数]；"
+                "也可以使用：增加今日抽取次数 用户ID [次数]。"
+            )
+            return
+
+        today = get_today()
+        base_limit = max(1, int(self._config_value("daily_draw_limit", 3)))
+        async with self._draw_lock:
+            total_bonus = self.store.add_draw_bonus(
+                group_id, target_id, amount=amount, today=today
+            )
+            used = self.store.draw_count(group_id, target_id, today)
+        config = self.store.load_group(group_id)
+        nickname = str(config.get(target_id, {}).get("nickname") or target_id)
+        total_limit = base_limit + total_bonus
+        remaining = max(0, total_limit - used)
+        yield event.plain_result(
+            f"已为 {nickname}（{target_id}）增加 {amount} 次今日抽取机会。"
+            f"今日可用 {total_limit} 次，已用 {used} 次，剩余 {remaining} 次。"
+        )
 
     @filter.command("随机盟友", alias={"随机查看盟友"})
     @filter.event_message_type(EventMessageType.GROUP_MESSAGE)
@@ -1969,7 +2262,7 @@ class KirbyCatalogPlugin(Star):
             "我的图鉴进度：查看有效解锁数、完成率和剩余数量\n"
             "星之卡比图鉴：查看本群图鉴（编号和名字）\n"
             "随机盟友：随机查看一位盟友，不计入抽取记录\n"
-            "猜盟友：发起猜名，答对只公布答案，不改变图鉴\n"
+            "猜盟友：发起猜名，中文名或英文名都可作答，不改变图鉴\n"
             "盟友排行榜：查看本群收藏排行\n"
             "盟友名单 [关键词]：检索图鉴编号和名字\n"
             "卡比百科 [角色名]：查询 WiKirby 页面简介、资料、语言名称和首图\n"
@@ -1977,7 +2270,8 @@ class KirbyCatalogPlugin(Star):
             "卡比F [页面名]：查询 Kirby Fandom 简介、资料、正文栏目和首图\n"
             "卡比F章节 [页面名]：查看可查询栏目；用“页面名 | 栏目名”读取指定栏目\n"
             "卡比F名称 [页面名]：查看各语言社区页面名（不等同于官方译名）\n"
-            "管理员命令：星之卡比图鉴添加、换图、改名、迁移、清理旧名、删除重复"
+            "管理员命令：重置今日群抽取次数、增加今日抽取次数，以及图鉴添加、"
+            "换图、改名、迁移、清理旧名、删除重复"
         )
 
     @filter.command("星之卡比图鉴换图", alias={"星之卡比图鉴替换图片"})

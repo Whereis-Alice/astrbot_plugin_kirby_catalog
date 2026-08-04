@@ -1397,8 +1397,8 @@ def migrate_groups(
         config_dir.glob("*.json"), key=lambda path: path.name.casefold()
     ):
         raw = _read_json(config_path, {})
-        if config_path.name == "draw_limits.json" or not _safe_group_filename(
-            config_path
+        if config_path.name in {"draw_limits.json", "draw_bonuses.json"} or not (
+            _safe_group_filename(config_path)
         ):
             copied[config_path.name] = raw
             continue

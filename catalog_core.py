@@ -30,6 +30,7 @@ CATALOG_METADATA_KEYS = (
     "debut_year",
     "kind",
 )
+NON_GROUP_CONFIG_FILENAMES = frozenset({"draw_limits.json", "draw_bonuses.json"})
 
 
 def get_today() -> str:
@@ -226,10 +227,12 @@ class CatalogStore:
         self.gallery_dir = self.root / "gallery"
         self.catalog_path = self.root / "catalog.json"
         self.draw_limits_path = self.config_dir / "draw_limits.json"
+        self.draw_bonuses_path = self.config_dir / "draw_bonuses.json"
         self.legacy_dirs = [Path(path) for path in legacy_dirs]
         self.image_base_url = image_base_url.strip()
         self._catalog: Dict[str, Dict[str, Any]] = {}
         self._draw_limits: Dict[str, Any] = {}
+        self._draw_bonuses: Dict[str, Any] = {}
         self._lock = threading.RLock()
         self._prepare()
 
@@ -240,6 +243,7 @@ class CatalogStore:
         self._load_catalog()
         self._migrate_legacy_data()
         self._load_draw_limits()
+        self._load_draw_bonuses()
         self._refresh_catalog()
 
     @property
@@ -452,6 +456,13 @@ class CatalogStore:
 
     def _save_draw_limits(self) -> None:
         _atomic_write_json(self.draw_limits_path, self._draw_limits)
+
+    def _load_draw_bonuses(self) -> None:
+        raw = _read_json(self.draw_bonuses_path, {})
+        self._draw_bonuses = raw if isinstance(raw, dict) else {}
+
+    def _save_draw_bonuses(self) -> None:
+        _atomic_write_json(self.draw_bonuses_path, self._draw_bonuses)
 
     def _is_retired_asset(self, filename: str) -> bool:
         return any(
@@ -666,7 +677,7 @@ class CatalogStore:
                         self._set_entry(path.name)
 
             for group_file in self.config_dir.glob("*.json"):
-                if group_file.name in {"draw_limits.json"}:
+                if group_file.name in NON_GROUP_CONFIG_FILENAMES:
                     continue
                 group = normalise_group_config(_read_json(group_file, {}))
                 for user in group.values():
@@ -689,6 +700,7 @@ class CatalogStore:
         """Run the idempotent legacy scan again after an administrator requests it."""
         self._migrate_legacy_data()
         self._load_draw_limits()
+        self._load_draw_bonuses()
 
     def entries(self) -> List[Dict[str, Any]]:
         return sorted(
@@ -790,10 +802,24 @@ class CatalogStore:
         self, group_id: str, user_id: str, today: Optional[str] = None
     ) -> int:
         today = today or get_today()
-        return int(
-            self._draw_limits.get(str(group_id), {}).get(str(user_id), {}).get(today, 0)
-            or 0
+        return self._daily_counter_value(
+            self._draw_limits, str(group_id), str(user_id), today
         )
+
+    @staticmethod
+    def _daily_counter_value(
+        data: Mapping[str, Any], group_id: str, user_id: str, today: str
+    ) -> int:
+        group = data.get(group_id, {})
+        if not isinstance(group, dict):
+            return 0
+        user = group.get(user_id, {})
+        if not isinstance(user, dict):
+            return 0
+        try:
+            return max(0, int(user.get(today, 0) or 0))
+        except (TypeError, ValueError):
+            return 0
 
     def increment_draw(
         self, group_id: str, user_id: str, today: Optional[str] = None
@@ -801,10 +827,87 @@ class CatalogStore:
         with self._lock:
             today = today or get_today()
             group = self._draw_limits.setdefault(str(group_id), {})
+            if not isinstance(group, dict):
+                group = {}
+                self._draw_limits[str(group_id)] = group
             user = group.setdefault(str(user_id), {})
+            if not isinstance(user, dict):
+                user = {}
+                group[str(user_id)] = user
             user[today] = self.draw_count(group_id, user_id, today) + 1
             self._save_draw_limits()
             return int(user[today])
+
+    def draw_bonus(
+        self, group_id: str, user_id: str, today: Optional[str] = None
+    ) -> int:
+        today = today or get_today()
+        return self._daily_counter_value(
+            self._draw_bonuses, str(group_id), str(user_id), today
+        )
+
+    def add_draw_bonus(
+        self,
+        group_id: str,
+        user_id: str,
+        amount: int = 1,
+        today: Optional[str] = None,
+    ) -> int:
+        amount = int(amount)
+        if amount <= 0:
+            raise ValueError("amount must be greater than zero")
+        with self._lock:
+            today = today or get_today()
+            group = self._draw_bonuses.setdefault(str(group_id), {})
+            if not isinstance(group, dict):
+                group = {}
+                self._draw_bonuses[str(group_id)] = group
+            user = group.setdefault(str(user_id), {})
+            if not isinstance(user, dict):
+                user = {}
+                group[str(user_id)] = user
+            user[today] = self.draw_bonus(group_id, user_id, today) + amount
+            self._save_draw_bonuses()
+            return int(user[today])
+
+    def reset_group_draws(
+        self, group_id: str, today: Optional[str] = None
+    ) -> Dict[str, int]:
+        """Clear one group's used counts and granted opportunities for one day."""
+
+        with self._lock:
+            today = today or get_today()
+            group_id = str(group_id)
+            affected_users: Set[str] = set()
+
+            def clear_day(data: Dict[str, Any]) -> int:
+                group = data.get(group_id)
+                if not isinstance(group, dict):
+                    return 0
+                cleared = 0
+                for user_id, dates in list(group.items()):
+                    if not isinstance(dates, dict) or today not in dates:
+                        continue
+                    dates.pop(today, None)
+                    affected_users.add(str(user_id))
+                    cleared += 1
+                    if not dates:
+                        group.pop(user_id, None)
+                if not group:
+                    data.pop(group_id, None)
+                return cleared
+
+            draw_records = clear_day(self._draw_limits)
+            bonus_records = clear_day(self._draw_bonuses)
+            if draw_records:
+                self._save_draw_limits()
+            if bonus_records:
+                self._save_draw_bonuses()
+            return {
+                "users": len(affected_users),
+                "draw_records": draw_records,
+                "bonus_records": bonus_records,
+            }
 
     def rename_entry(
         self,
@@ -997,7 +1100,7 @@ class CatalogStore:
 
     def _replace_references(self, old_filename: str, new_filename: str) -> None:
         for group_file in self.config_dir.glob("*.json"):
-            if group_file.name == self.draw_limits_path.name:
+            if group_file.name in NON_GROUP_CONFIG_FILENAMES:
                 continue
             config = normalise_group_config(_read_json(group_file, {}))
             changed = False

@@ -185,6 +185,9 @@ class CatalogMigrationTests(unittest.TestCase):
         config.joinpath("draw_limits.json").write_text(
             json.dumps({"100": {"42": {"2026-01-04": 2}}}), encoding="utf-8"
         )
+        config.joinpath("draw_bonuses.json").write_text(
+            json.dumps({"100": {"42": {"2026-01-04": 1}}}), encoding="utf-8"
+        )
 
     def test_dry_run_and_atomic_apply_preserve_recoverable_history(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -273,6 +276,10 @@ class CatalogMigrationTests(unittest.TestCase):
             self.assertEqual(plan.summary["unresolved_unlock_rows"], 1)
             self.assertEqual(plan.summary["matched_old_entries_referenced_by_users"], 2)
             self.assertEqual(plan.summary["referenced_old_filenames"], 3)
+            self.assertEqual(
+                plan.copied_config_files["draw_bonuses.json"],
+                {"100": {"42": {"2026-01-04": 1}}},
+            )
 
             backup = apply_plan(plan, "REPLACE_OLD_KIRBY_DATA")
             self.assertTrue(backup.joinpath("catalog.json").is_file())
@@ -286,6 +293,7 @@ class CatalogMigrationTests(unittest.TestCase):
             self.assertEqual(reloaded["total_count"], 88)
             self.assertEqual(reloaded["current"]["ally_filename"], "")
             self.assertEqual(store.draw_count("100", "42", "2026-01-04"), 2)
+            self.assertEqual(store.draw_bonus("100", "42", "2026-01-04"), 1)
             self.assertEqual(store.user_progress(reloaded)["unlocked"], 2)
             self.assertEqual(store.user_progress(reloaded)["total"], 5)
             self.assertEqual(store.leaderboard("100")[0][2], 2)

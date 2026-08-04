@@ -57,6 +57,53 @@ class CatalogStoreTests(unittest.TestCase):
             )
             self.assertEqual(store.draw_count("123", "42"), 2)
 
+    def test_draw_bonuses_and_resets_are_group_and_date_scoped(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "new"
+            store = CatalogStore(root, image_base_url="")
+            today = "2026-08-05"
+            previous_day = "2026-08-04"
+
+            store.increment_draw("group-1", "42", today)
+            store.increment_draw("group-1", "42", today)
+            store.increment_draw("group-2", "42", today)
+            store.increment_draw("group-1", "42", previous_day)
+            self.assertEqual(store.add_draw_bonus("group-1", "42", 2, today), 2)
+            self.assertEqual(
+                store.add_draw_bonus("group-1", "42", 1, previous_day), 1
+            )
+
+            result = store.reset_group_draws("group-1", today)
+
+            self.assertEqual(
+                result, {"users": 1, "draw_records": 1, "bonus_records": 1}
+            )
+            self.assertEqual(store.draw_count("group-1", "42", today), 0)
+            self.assertEqual(store.draw_bonus("group-1", "42", today), 0)
+            self.assertEqual(store.draw_count("group-2", "42", today), 1)
+            self.assertEqual(store.draw_count("group-1", "42", previous_day), 1)
+            self.assertEqual(store.draw_bonus("group-1", "42", previous_day), 1)
+
+            reloaded = CatalogStore(root, image_base_url="")
+            self.assertEqual(reloaded.draw_count("group-1", "42", today), 0)
+            self.assertEqual(reloaded.draw_bonus("group-1", "42", today), 0)
+            self.assertEqual(reloaded.draw_count("group-2", "42", today), 1)
+            self.assertEqual(reloaded.draw_bonus("group-1", "42", previous_day), 1)
+
+    def test_draw_bonus_file_is_not_rewritten_as_group_data(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "new"
+            store = CatalogStore(root, image_base_url="")
+            store.add_draw_bonus("group-1", "42", 3, "2026-08-05")
+            expected = json.loads(store.draw_bonuses_path.read_text(encoding="utf-8"))
+            entry = store.add_asset("测试盟友", self.make_image(), "星之卡比")
+
+            store.rename_entry(entry, "改名后的测试盟友")
+            store.refresh()
+
+            actual = json.loads(store.draw_bonuses_path.read_text(encoding="utf-8"))
+            self.assertEqual(actual, expected)
+
     def test_rename_updates_all_user_references_and_keeps_id(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
