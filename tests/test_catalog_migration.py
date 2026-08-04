@@ -12,6 +12,7 @@ from astrbot_plugin_kirby_catalog.catalog_core import CatalogStore
 from astrbot_plugin_kirby_catalog.catalog_migration import (
     apply_plan,
     create_plan,
+    load_new_assets,
     load_release_order,
     validate_plan,
     write_reports,
@@ -297,6 +298,65 @@ class CatalogMigrationTests(unittest.TestCase):
             order = load_release_order(path)
             self.assertLess(
                 order["Zeta Game"]["sequence"], order["Alpha Game"]["sequence"]
+            )
+
+    def test_page_rules_exclude_concepts_and_fill_manual_debut(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            new = root / "new_assets"
+            new.mkdir()
+            self.write_new_collection(new)
+            manifest_path = new / "_收集记录" / "候选清单.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            alpha = next(item for item in manifest if item["page_title"] == "Alpha")
+            alpha["earliest_work"] = ""
+            alpha["earliest_work_raw"] = ""
+            manifest.append(
+                {
+                    "pageid": 3,
+                    "page_title": "Concept Page",
+                    "filename": "concept.png",
+                }
+            )
+            manifest_path.write_text(
+                json.dumps(manifest, ensure_ascii=False), encoding="utf-8"
+            )
+            release_order = root / "release.json"
+            release_order.write_text(
+                json.dumps(
+                    {
+                        "works": {
+                            "Early Game": {"year": 1992, "date": ""},
+                            "Manual Debut": {"year": 2005, "date": ""},
+                        },
+                        "page_overrides": {
+                            "Alpha": {
+                                "debut_work": "Manual Debut",
+                                "year": 2005,
+                                "source": "手工首作",
+                            }
+                        },
+                        "excluded_pages": {"Concept Page": "概念页"},
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            assets, excluded = load_new_assets(new, release_order)
+            alpha_asset = next(asset for asset in assets if asset.page_title == "Alpha")
+            self.assertEqual(alpha_asset.debut_work, "Manual Debut")
+            self.assertEqual(alpha_asset.debut_year, 2005)
+            self.assertEqual(alpha_asset.source, "手工首作")
+            self.assertEqual(
+                excluded,
+                [
+                    {
+                        "page_title": "Concept Page",
+                        "filename": "concept.png",
+                        "reason": "概念页",
+                    }
+                ],
             )
 
 

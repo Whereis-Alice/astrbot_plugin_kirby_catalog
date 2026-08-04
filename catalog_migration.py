@@ -337,6 +337,7 @@ class MigrationPlan:
     new_assets_root: Path
     report_dir: Path
     catalog_items: List[Dict[str, Any]]
+    excluded_new_pages: List[Dict[str, str]]
     migrated_groups: Dict[str, Dict[str, Any]]
     copied_config_files: Dict[str, Any]
     matches: List[MatchResult]
@@ -484,7 +485,9 @@ def _kind_priority(kind: str) -> int:
     return KIND_PRIORITY_FOLDED.get(str(kind or "").casefold(), 125)
 
 
-def load_release_order(path: Path) -> Dict[str, Dict[str, Any]]:
+def _load_release_config(
+    path: Path,
+) -> Tuple[Dict[str, Dict[str, Any]], Dict[str, Dict[str, Any]], Dict[str, str]]:
     raw = _read_json(path, {})
     items = raw.get("works", raw) if isinstance(raw, dict) else {}
     result: Dict[str, Dict[str, Any]] = {}
@@ -498,7 +501,28 @@ def load_release_order(path: Path) -> Dict[str, Dict[str, Any]]:
                     "date": str(value.get("date", "") or ""),
                     "sequence": int(value.get("sequence", sequence) or sequence),
                 }
-    return result
+    page_overrides: Dict[str, Dict[str, Any]] = {}
+    raw_overrides = raw.get("page_overrides", {}) if isinstance(raw, dict) else {}
+    if isinstance(raw_overrides, dict):
+        page_overrides = {
+            str(title): dict(value)
+            for title, value in raw_overrides.items()
+            if isinstance(value, dict)
+        }
+    excluded_pages: Dict[str, str] = {}
+    raw_excluded = raw.get("excluded_pages", {}) if isinstance(raw, dict) else {}
+    if isinstance(raw_excluded, dict):
+        excluded_pages = {
+            str(title): str(reason or "非角色页面")
+            for title, reason in raw_excluded.items()
+        }
+    elif isinstance(raw_excluded, list):
+        excluded_pages = {str(title): "非角色页面" for title in raw_excluded}
+    return result, page_overrides, excluded_pages
+
+
+def load_release_order(path: Path) -> Dict[str, Dict[str, Any]]:
+    return _load_release_config(path)[0]
 
 
 def _collection_hashes(records_dir: Path) -> Dict[str, str]:
@@ -515,21 +539,36 @@ def _collection_hashes(records_dir: Path) -> Dict[str, str]:
     return result
 
 
-def load_new_assets(new_assets_root: Path, release_order_path: Path) -> List[NewAsset]:
+def load_new_assets(
+    new_assets_root: Path, release_order_path: Path
+) -> Tuple[List[NewAsset], List[Dict[str, str]]]:
     records_dir = new_assets_root / RECORDS_DIRNAME
     manifest_path = records_dir / MANIFEST_FILENAME
     manifest = _read_json(manifest_path, [])
     if not isinstance(manifest, list) or not manifest:
         raise RuntimeError(f"找不到有效的新素材清单：{manifest_path}")
-    release_order = load_release_order(release_order_path)
+    release_order, page_overrides, excluded_pages = _load_release_config(
+        release_order_path
+    )
     known_hashes = _collection_hashes(records_dir)
     assets: List[NewAsset] = []
+    excluded_assets: List[Dict[str, str]] = []
     seen_filenames: Set[str] = set()
     seen_pageids: Set[int] = set()
     for raw in manifest:
         if not isinstance(raw, dict):
             continue
+        page_title = str(raw.get("page_title", "") or "").strip()
         filename = Path(str(raw.get("filename", ""))).name
+        if page_title in excluded_pages:
+            excluded_assets.append(
+                {
+                    "page_title": page_title,
+                    "filename": filename,
+                    "reason": excluded_pages[page_title],
+                }
+            )
+            continue
         path = new_assets_root / filename
         if (
             not filename
@@ -552,20 +591,24 @@ def load_new_assets(new_assets_root: Path, release_order_path: Path) -> List[New
             if character_filename
             else _filename_stem(filename)
         )
-        debut_work = str(raw.get("earliest_work", "") or "").strip()
+        page_override = page_overrides.get(page_title, {})
+        debut_work = str(
+            page_override.get("debut_work") or raw.get("earliest_work", "") or ""
+        ).strip()
         work_order = release_order.get(debut_work, {})
-        year = int(work_order.get("year", 0) or 0)
+        year = int(page_override.get("year") or work_order.get("year", 0) or 0)
         if not year:
             year = _extract_year(str(raw.get("earliest_work_raw", "") or "")) or 9999
         source = str(
-            raw.get("work_display_name")
+            page_override.get("source")
+            or raw.get("work_display_name")
             or raw.get("official_chinese_work")
             or debut_work
             or ""
         ).strip()
         names = {
             display_name,
-            str(raw.get("page_title", "") or ""),
+            page_title,
             str(raw.get("chinese_name", "") or ""),
             str(raw.get("english_name", "") or ""),
             _filename_stem(filename),
@@ -574,7 +617,7 @@ def load_new_assets(new_assets_root: Path, release_order_path: Path) -> List[New
             filename=filename,
             path=path,
             pageid=pageid,
-            page_title=str(raw.get("page_title", "") or "").strip(),
+            page_title=page_title,
             name=display_name,
             source=source,
             debut_work=debut_work,
@@ -617,7 +660,7 @@ def load_new_assets(new_assets_root: Path, release_order_path: Path) -> List[New
     assets.sort(key=sort_key)
     for index, asset in enumerate(assets, 1):
         asset.catalog_id = index
-    return assets
+    return assets, excluded_assets
 
 
 def load_old_entries(old_root: Path) -> List[OldEntry]:
@@ -1381,7 +1424,7 @@ def create_plan(
         raise RuntimeError("旧插件数据目录与新素材目录必须彼此独立")
     if report_dir == old_root or old_root in report_dir.parents:
         raise RuntimeError("报告目录不能位于待替换的旧插件数据目录中")
-    assets = load_new_assets(new_assets_root, release_order_path)
+    assets, excluded_new_pages = load_new_assets(new_assets_root, release_order_path)
     old_entries = load_old_entries(old_root)
     overrides = load_overrides(overrides_path)
     signature_cache = SignatureCache(report_dir / "image_signatures.json")
@@ -1399,6 +1442,8 @@ def create_plan(
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "old_catalog_entries": len(old_entries),
         "old_asset_files": sum(entry.path is not None for entry in old_entries),
+        "source_manifest_entries": len(assets) + len(excluded_new_pages),
+        "excluded_non_character_pages": len(excluded_new_pages),
         "new_catalog_entries": len(catalog_items),
         "matched_old_entries": sum(match.matched for match in matches),
         "unmatched_old_entries": sum(not match.matched for match in matches),
@@ -1463,6 +1508,7 @@ def create_plan(
         new_assets_root=new_assets_root,
         report_dir=report_dir,
         catalog_items=catalog_items,
+        excluded_new_pages=excluded_new_pages,
         migrated_groups=groups,
         copied_config_files=copied,
         matches=matches,
@@ -1483,6 +1529,7 @@ def write_reports(plan: MigrationPlan) -> None:
             "matches": [asdict(match) for match in plan.matches],
             "unresolved_references": plan.unresolved_references,
             "users": plan.user_rows,
+            "excluded_new_pages": plan.excluded_new_pages,
             "catalog": {"version": 2, "items": plan.catalog_items},
         },
     )
@@ -1538,6 +1585,11 @@ def write_reports(plan: MigrationPlan) -> None:
         report_dir / "漏迁用户记录.csv",
         plan.unresolved_references,
         ("group_id", "user_id", "nickname", "location", "old_filename", "unlock_date"),
+    )
+    _write_csv(
+        report_dir / "已排除非角色页.csv",
+        plan.excluded_new_pages,
+        ("page_title", "filename", "reason"),
     )
     order_rows = [
         {

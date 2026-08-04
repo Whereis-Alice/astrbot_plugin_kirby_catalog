@@ -1,6 +1,30 @@
 {
   "version": 2,
   "source": "WiKirby game and publication pages; catalog groups use the earliest public release year, and ties follow the declared work order below",
+  "excluded_pages": {
+    "Apple": "通用物件与食物页面，不是独立角色",
+    "Burner Box": "关卡机关页面，不是独立角色",
+    "Copy Ability": "游戏机制页面，不是独立角色",
+    "Galaxia": "武器道具页面，不是独立角色",
+    "Haltmann Works Company": "组织页面，不是独立角色",
+    "Kirby (species)": "种族汇总页面，不是独立角色",
+    "Kirby Dance": "动作与演出汇总页面，不是独立角色",
+    "Kirby's characteristics": "角色特征说明页，与 Kirby 重复",
+    "Kirby's House": "地点页面，不是独立角色",
+    "Kirby's Pad": "地点页面，不是独立角色",
+    "Large enemy": "敌人类型说明页，不是独立角色",
+    "Mid-boss": "中魔王类型说明页，不是独立角色",
+    "Monster": "动画怪兽类型说明页，不是独立角色",
+    "Normal": "卡比的普通状态，不是独立角色"
+  },
+  "page_overrides": {
+    "Square Kirby": {
+      "debut_work": "Kirby Portal April Fools 2019",
+      "year": 2019,
+      "source": "Kirby Portal April Fools 2019",
+      "reason": "官方 Kirby Portal 于 2019-04-01 发布的愚人节角色形态"
+    }
+  },
   "works": {
     "Kirby's Dream Land": {"year": 1992, "date": ""},
     "Kirby's Adventure": {"year": 1993, "date": ""},
@@ -39,6 +63,7 @@
     "Kirby's Decisive Battle! Battle Royale!!": {"year": 2018, "date": ""},
     "Kirby Star Allies": {"year": 2018, "date": ""},
     "Kirby's Extra Epic Yarn": {"year": 2019, "date": ""},
+    "Kirby Portal April Fools 2019": {"year": 2019, "date": ""},
     "Kirby: Save the Rainbow Islands!": {"year": 2019, "date": ""},
     "Super Kirby Clash": {"year": 2019, "date": ""},
     "Kirby and the Search for the Dreamy Gears!": {"year": 2020, "date": ""},
