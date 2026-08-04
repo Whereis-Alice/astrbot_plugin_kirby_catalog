@@ -11,7 +11,7 @@ import threading
 from datetime import datetime, timedelta, timezone
 from io import BytesIO
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 
@@ -19,6 +19,13 @@ from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp"}
 SHANGHAI = timezone(timedelta(hours=8))
+CATALOG_METADATA_KEYS = (
+    "pageid",
+    "page_title",
+    "debut_work",
+    "debut_year",
+    "kind",
+)
 
 
 def get_today() -> str:
@@ -152,7 +159,7 @@ def normalise_group_config(raw: Any) -> Dict[str, Dict[str, Any]]:
             except (TypeError, ValueError):
                 no_new_count = 0
 
-        result[user_id] = {
+        normalised = {
             "current": {
                 "ally_filename": Path(current_filename).name
                 if current_filename
@@ -163,6 +170,11 @@ def normalise_group_config(raw: Any) -> Dict[str, Dict[str, Any]]:
             "nickname": nickname,
             "no_new_count": no_new_count,
         }
+        if isinstance(value, dict):
+            for key, item_value in value.items():
+                if key not in {"current", "unlocked", "nickname", "no_new_count"}:
+                    normalised[key] = item_value
+        result[user_id] = normalised
     return result
 
 
@@ -256,6 +268,7 @@ class CatalogStore:
                 _as_text(item.get("name")),
                 _as_text(item.get("source")),
                 item.get("aliases", []),
+                item,
             )
 
     def _set_entry(
@@ -265,6 +278,7 @@ class CatalogStore:
         name: str = "",
         source: str = "",
         aliases: Any = None,
+        metadata: Optional[Mapping[str, Any]] = None,
     ) -> Dict[str, Any]:
         filename = Path(filename).name
         inferred_name, inferred_source = _parse_filename(filename)
@@ -293,6 +307,10 @@ class CatalogStore:
                 ),
             }
         )
+        if metadata:
+            for key in CATALOG_METADATA_KEYS:
+                if key in metadata:
+                    entry[key] = metadata[key]
         self._catalog[filename] = entry
         return entry
 
@@ -348,7 +366,7 @@ class CatalogStore:
     def _save_catalog(self) -> None:
         self._deduplicate_ids()
         items = sorted(self._catalog.values(), key=lambda item: int(item["id"]))
-        _atomic_write_json(self.catalog_path, {"version": 1, "items": items})
+        _atomic_write_json(self.catalog_path, {"version": 2, "items": items})
 
     def _legacy_config_dirs(self) -> List[Path]:
         return [
@@ -1085,7 +1103,7 @@ class CatalogStore:
             (
                 user_id,
                 _as_text(user.get("nickname"), "用户"),
-                len(set(self.unlocked_filenames(user))),
+                int(self.user_progress(user)["unlocked"]),
             )
             for user_id, user in config.items()
         ]

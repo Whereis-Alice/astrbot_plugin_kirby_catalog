@@ -384,6 +384,29 @@ class CatalogStoreTests(unittest.TestCase):
             self.assertEqual(len(progress["missing"]), 1)
             self.assertEqual(progress["missing"][0]["name"], "多洛奇")
 
+    def test_leaderboard_counts_canonical_aliases_once(self):
+        with tempfile.TemporaryDirectory() as temp:
+            store = CatalogStore(Path(temp) / "new", image_base_url="")
+            first = store.add_asset("Kirby", self.make_image(), "Kirby's Dream Land")
+            store.add_asset("Waddle Dee", self.make_image((0, 255, 0)), "Kirby's Dream Land")
+            store._catalog[first["filename"]]["aliases"] = ["old-kirby.png"]
+            store._save_catalog()
+            store.save_group(
+                "100",
+                {
+                    "1": {
+                        "current": {"ally_filename": first["filename"], "date": get_today()},
+                        "unlocked": [
+                            {"ally_filename": first["filename"], "unlock_date": get_today()},
+                            {"ally_filename": "old-kirby.png", "unlock_date": get_today()},
+                        ],
+                        "nickname": "Tester",
+                    }
+                },
+            )
+
+            self.assertEqual(store.leaderboard("100")[0][2], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

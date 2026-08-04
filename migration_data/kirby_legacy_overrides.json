@@ -1,0 +1,123 @@
+{
+  "version": 1,
+  "by_old_filename": {
+    "悠悠球吉姆.png": "Gim",
+    "重锤瓦豆鲁迪.png": "Waddle Dee",
+    "星之卡比Wii 豪华版.椰子.png": "Coconut",
+    "星之卡比Wii 豪华版.巴布特.png": "Babut",
+    "星之卡比Wii 豪华版.大瓦豆鲁迪.png": "Big Waddle Dee",
+    "星之卡比 探索发现.IDF86.png": "Fecto Forgo",
+    "星之卡比Wii 豪华版.电火花球体喽啪EX.png": "Sphere Doomer",
+    "星之卡比Wii 豪华版.哈鲁炕·装甲瓦豆鲁迪.png": "Armor Waddle Dee",
+    "星之卡比Wii 豪华版.冰球体喽啪EX.png": "Sphere Doomer",
+    "大师王冠.png": "Master Crown (boss)",
+    "星之梦.png": "Star Dream",
+    "黑化帝帝帝大王.png": "Shadow Dedede",
+    "风系波比.png": "Poppy Bros. Jr.",
+    "星之梦 Soul OS（第三阶段）.jpg": "Star Dream Soul OS",
+    "星之卡比Wii 豪华版.鲍比.png": "Bowby",
+    "魔库鲁.png": "Marx",
+    "跨次元旅行者魔法洛亚.png": "Magolor",
+    "星之梦 Soul OS.jpg": "Star Dream Soul OS",
+    "星之卡比Wii 豪华版.加尔博.png": "Galbo",
+    "星之卡比Wii 豪华版.喷火轮.png": "Searches",
+    "可姆.png": "Como",
+    "暗影卡比承载星星.jpeg": "Shadow Kirby",
+    "星之卡比 探索发现.沙包先生.png": "Mr. Sandbag",
+    "星之卡比Wii 豪华版.猎人德古特.png": "Degout",
+    "星之卡比 探索发现.噬梦的极蝶冥蝶骑士.png": "Morpho Knight",
+    "虫力士.png": "Bugzzy",
+    "星之卡比Wii 豪华版.壳特（无头盔）.png": "Shelt",
+    "飞越天际船 洛亚.png": "Lor & Magolor",
+    "星之卡比Wii 豪华版.莫普.png": "Mopoo",
+    "星之卡比Wii 豪华版.瑟奇斯 危.png": "Searches",
+    "剑士瓦豆鲁迪.png": "Soldier Waddle Dee",
+    "星之卡比Wii 豪华版.火焰球体喽啪EX.png": "Sphere Doomer",
+    "星之卡比Wii 豪华版.魔法洛亚EX.png": "Traitor Magolor",
+    "星之卡比Wii 豪华版.瓦波德.png": "Wapod",
+    "星之卡比 探索发现.瓦豆鲁迪小弟.png": "Minion Waddle Dee",
+    "毛线瓦豆鲁迪.png": "Fluff Waddle Dee",
+    "星之卡比Wii 豪华版.木偶瓦豆鲁迪.png": "Puppet Waddle Dee",
+    "瓦豆鲁迪奖杯.png": "Waddle Dee",
+    "星之卡比Wii 豪华版.伟大喽啪第三阶段.png": "Grand Doomer",
+    "加农炮瓦豆鲁迪.png": "Waddle Dee",
+    "星之卡比Wii 豪华版.阳伞哈鲁炕德拉瓦豆鲁迪.png": "Halcandle Dee",
+    "星之卡比Wii 豪华版.哈鲁炕德拉瓦豆鲁迪.png": "Halcandle Dee",
+    "星之卡比Wii 豪华版.猎人尖耳怪（红温版）.png": "Scarfy",
+    "星之卡比Wii 豪华版.哈鲁炕·弹跳蝴蝶结（人称小虚无）.png": "Bouncy",
+    "星之卡比Wii 豪华版.洛亚EX&魔法洛亚.png": "Lor & Magolor",
+    "星之梦（第三阶段）.png": "Star Dream",
+    "虚无.png": "Void",
+    "ally_0385_结晶化原始加鲁鲁飞.png": "Primal Awoofy",
+    "经理魔法洛亚.png": "Magolor",
+    "星之卡比Wii 豪华版.哈鲁炕 鲍比.png": "Bowby",
+    "星之卡比 探索发现.自动贩卖机塞满嘴.png": "Kirby",
+    "星之卡比 探索发现.拱门塞满嘴.png": "Kirby",
+    "星之卡比 探索发现.齿轮塞满嘴.png": "Kirby",
+    "星之卡比 探索发现.三角锥塞满嘴.png": "Kirby",
+    "星之卡比 探索发现.灯泡塞满嘴.png": "Kirby",
+    "星之卡比 探索发现.弹簧塞满嘴.png": "Kirby",
+    "星之卡比 探索发现.汽车塞满嘴.png": "Kirby",
+    "星之卡比 探索发现.圆圈塞满嘴.png": "Kirby",
+    "星之卡比 探索发现.水球塞满嘴.png": "Kirby",
+    "星之卡比 探索发现.卡比三人组.jpeg": "Kirby",
+    "清洁卡比+冰壶.png": "Kirby",
+    "星之卡比 探索发现.卡比和头巾瓦豆鲁迪.png": {
+      "primary": "Kirby",
+      "unlock_targets": ["Kirby", "Bandana Waddle Dee"],
+      "reason": "图片成员已人工核对：卡比、头巾瓦豆鲁迪"
+    },
+    "星之卡比 探索发现.卡比、瓦豆鲁迪、艾菲灵.png": {
+      "primary": "Kirby",
+      "unlock_targets": ["Kirby", "Bandana Waddle Dee", "Elfilin"],
+      "reason": "图片成员已人工核对：卡比、头巾瓦豆鲁迪、艾菲灵"
+    },
+    "海恩&陆库&空.png": {
+      "primary": "Rick",
+      "unlock_targets": ["Rick", "Kine", "Coo"],
+      "reason": "图片成员已人工核对：陆库、海恩、空"
+    },
+    "海&陆&空.png": {
+      "primary": "Rick",
+      "unlock_targets": ["Rick", "Kine", "Coo"],
+      "reason": "图片成员已人工核对：陆库、海恩、空"
+    },
+    "阿朵莱妮&莉宝.png": {
+      "primary": "Adeleine",
+      "unlock_targets": ["Adeleine", "Ribbon"],
+      "reason": "图片成员已人工核对：阿朵莱妮、莉宝"
+    },
+    "阿朵莱妮&莉宝..png": {
+      "primary": "Adeleine",
+      "unlock_targets": ["Adeleine", "Ribbon"],
+      "reason": "历史重复文件；图片成员已人工核对：阿朵莱妮、莉宝"
+    },
+    "波比与卡比贴贴.png": {
+      "primary": "Poppy Bros. Jr.",
+      "unlock_targets": ["Poppy Bros. Jr.", "Kirby"],
+      "reason": "图片成员已人工核对：小波比兄弟、卡比"
+    },
+    "第一波梦幻盟友们.png": {
+      "primary": "Rick",
+      "unlock_targets": ["Rick", "Kine", "Coo", "Marx", "Gooey"],
+      "reason": "图片成员已人工核对：第一批梦幻盟友"
+    },
+    "第二波梦幻盟友们.png": {
+      "primary": "Adeleine",
+      "unlock_targets": ["Adeleine", "Ribbon", "Daroach", "Dark Meta Knight"],
+      "reason": "图片成员已人工核对：第二批梦幻盟友"
+    },
+    "第三波梦幻盟友们.png": {
+      "primary": "The Three Mage-Sisters",
+      "unlock_targets": ["The Three Mage-Sisters", "Magolor", "Taranza", "Susie"],
+      "reason": "图片成员已人工核对：第三批梦幻盟友"
+    }
+  },
+  "by_old_name": {},
+  "ignored": [
+    "盟友料理.png",
+    "盟友翻滚.png",
+    "传送之星.png",
+    "依古.png"
+  ]
+}
