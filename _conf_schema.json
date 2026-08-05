@@ -33,6 +33,37 @@
           "type": "bool",
           "default": true
         },
+        "ally_description_max_chars": {
+          "description": "盟友简介最大字数",
+          "type": "int",
+          "default": 600,
+          "min": 0,
+          "max": 10000,
+          "hint": "今日盟友、随机盟友、查盟友和查看简介共用此限制。超过后以“... ...”结尾；设为 0 时不截断。"
+        },
+        "ally_description_view_mode": {
+          "description": "查看简介的回复形式",
+          "type": "string",
+          "options": [
+            "普通消息",
+            "合并转发",
+            "简介卡片"
+          ],
+          "default": "普通消息",
+          "hint": "仅影响查看简介指令。合并转发和单张简介卡片可减少长简介刷屏；卡片渲染失败时自动回退为普通消息。"
+        },
+        "ally_description_card_template": {
+          "description": "查看简介卡片模板",
+          "type": "string",
+          "options": [
+            "梦之泉",
+            "卡比粉彩",
+            "瓦豆鲁迪",
+            "星际档案"
+          ],
+          "default": "卡比粉彩",
+          "hint": "选择“简介卡片”回复形式时使用的高分辨率 HTML 视觉模板。"
+        },
         "ally_wiki_hint_enabled": {
           "description": "盟友消息显示引用查询百科的提示",
           "type": "bool",

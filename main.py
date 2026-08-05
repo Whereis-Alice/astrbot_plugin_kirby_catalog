@@ -51,6 +51,8 @@ DEFAULT_QUERY_MESSAGE_TEMPLATE = (
 )
 DEFAULT_ALLY_DETAIL_TEMPLATE = "{base}{description_block}{wiki_hint_block}"
 DEFAULT_ALLY_WIKI_HINT = "详细信息引用本条消息并回复卡比百科即可查看（查百科会比较慢）"
+DEFAULT_ALLY_DESCRIPTION_MAX_CHARS = 600
+DESCRIPTION_TRUNCATION_SUFFIX = "... ..."
 CATALOG_PROFILES_PATH = Path(__file__).parent / "resources" / "catalog_profiles.json"
 
 
@@ -58,7 +60,7 @@ CATALOG_PROFILES_PATH = Path(__file__).parent / "resources" / "catalog_profiles.
     PLUGIN_ID,
     "Whereis-Alice",
     "星之卡比盟友抽取、收藏图鉴与双百科查询插件",
-    "3.3.0",
+    "3.3.1",
     "https://github.com/Whereis-Alice/astrbot_plugin_kirby_catalog",
 )
 class KirbyCatalogPlugin(Star):
@@ -408,10 +410,36 @@ class KirbyCatalogPlugin(Star):
             chain[0] = Comp.Plain(f"{text}\n图片暂时不可用，请管理员检查素材。")
         return chain
 
+    @staticmethod
+    def _truncate_ally_description(description: str, max_chars: int) -> str:
+        description = str(description or "").strip()
+        if max_chars <= 0 or len(description) <= max_chars:
+            return description
+        if max_chars <= len(DESCRIPTION_TRUNCATION_SUFFIX):
+            return DESCRIPTION_TRUNCATION_SUFFIX[:max_chars]
+        body = description[: max_chars - len(DESCRIPTION_TRUNCATION_SUFFIX)].rstrip()
+        return f"{body}{DESCRIPTION_TRUNCATION_SUFFIX}"
+
+    def _ally_description_text(
+        self, entry: Dict[str, Any], *, respect_enabled: bool = True
+    ) -> str:
+        if respect_enabled and not self._bool_value(
+            self._config_value("ally_description_enabled", True)
+        ):
+            return ""
+        description = self.store.description_for(entry)
+        try:
+            max_chars = int(
+                self._config_value(
+                    "ally_description_max_chars", DEFAULT_ALLY_DESCRIPTION_MAX_CHARS
+                )
+            )
+        except (TypeError, ValueError):
+            max_chars = DEFAULT_ALLY_DESCRIPTION_MAX_CHARS
+        return self._truncate_ally_description(description, max(0, max_chars))
+
     def _ally_detail_message(self, entry: Dict[str, Any], base: str) -> str:
-        description = ""
-        if self._bool_value(self._config_value("ally_description_enabled", True)):
-            description = self.store.description_for(entry)
+        description = self._ally_description_text(entry)
         wiki_hint = ""
         if self._bool_value(self._config_value("ally_wiki_hint_enabled", True)):
             wiki_hint = str(
@@ -582,6 +610,23 @@ class KirbyCatalogPlugin(Star):
         )
 
     @staticmethod
+    def _ally_description_view_mode_value(value: Any) -> str:
+        normalized = str(value or "普通消息").strip().casefold()
+        return {
+            "普通消息": "text",
+            "text": "text",
+            "合并转发": "forward",
+            "forward": "forward",
+            "简介卡片": "card",
+            "card": "card",
+        }.get(normalized, "text")
+
+    def _ally_description_view_mode(self) -> str:
+        return self._ally_description_view_mode_value(
+            self._config_value("ally_description_view_mode", "普通消息")
+        )
+
+    @staticmethod
     def _wikirby_image_data_uri(data: bytes | None) -> str:
         if not data:
             return ""
@@ -638,7 +683,7 @@ class KirbyCatalogPlugin(Star):
                 },
             )
         except Exception as exc:
-            logger.warning("[%s] WiKirby 卡片渲染失败: %s", PLUGIN_ID, exc)
+            logger.warning("[%s] HTML 卡片渲染失败: %s", PLUGIN_ID, exc)
             return None
         if not rendered:
             return None
@@ -685,6 +730,36 @@ class KirbyCatalogPlugin(Star):
             ),
             wiki_name="Kirby Fandom",
             reference_label="FANDOM REFERENCE",
+        )
+
+    async def _ally_description_card_component(
+        self, entry: Dict[str, Any], description: str
+    ) -> Any | None:
+        profile = self.store.profile_for(entry)
+        detail_lines = [f"图鉴编号：#{entry['id']}"]
+        display_work = str(
+            profile.get("display_work") or entry.get("source") or ""
+        ).strip()
+        if display_work:
+            detail_lines.append(f"首次登场：{display_work}")
+        source_url = str(profile.get("source_url") or "").strip()
+        if not source_url:
+            source_url = (
+                "https://github.com/Whereis-Alice/astrbot_plugin_kirby_catalog"
+            )
+        return await self._wiki_card_component(
+            {
+                "title": self._display_name(entry),
+                "url": source_url,
+            },
+            description,
+            "\n".join(detail_lines),
+            None,
+            template_name=self._config_value(
+                "ally_description_card_template", "卡比粉彩"
+            ),
+            wiki_name="星之卡比图鉴",
+            reference_label="ALLY INTRODUCTION",
         )
 
     @staticmethod
@@ -2069,6 +2144,56 @@ class KirbyCatalogPlugin(Star):
         text = self._ally_detail_message(entry, text)
         yield event.chain_result(await self._ally_chain(entry, text))
 
+    @filter.regex(r"^/?(?:查看简介|查看盟友简介)(?:\s+.+)?$")
+    @filter.event_message_type(EventMessageType.GROUP_MESSAGE)
+    async def view_ally_description(self, event: AstrMessageEvent):
+        """查看引用盟友或指定图鉴条目的简介。"""
+        command_names = {"查看简介", "查看盟友简介"}
+        target = self._command_remainder(event, command_names) or self._quoted_target(
+            event
+        )
+        if not target:
+            yield event.plain_result(
+                "请引用一条 Bot 发送的盟友消息后回复“查看简介”，"
+                "也可以使用：查看简介 <图鉴编号>。"
+            )
+            return
+        entry, error = self._entry_or_error(target)
+        if error:
+            yield event.plain_result(error)
+            return
+        assert entry is not None
+        description = self._ally_description_text(entry, respect_enabled=False)
+        if not description:
+            yield event.plain_result(
+                f"#{entry['id']} {self._display_name(entry)} 暂无简介。"
+            )
+            return
+        text = f"#{entry['id']} {self._display_name(entry)}\n简介：\n{description}"
+        output_mode = self._ally_description_view_mode()
+        if output_mode == "forward":
+            yield event.chain_result(
+                [
+                    Comp.Nodes(
+                        nodes=[
+                            Comp.Node(
+                                name="星之卡比图鉴",
+                                content=[Comp.Plain(text)],
+                            )
+                        ]
+                    )
+                ]
+            )
+            return
+        if output_mode == "card":
+            card_component = await self._ally_description_card_component(
+                entry, description
+            )
+            if card_component is not None:
+                yield event.chain_result([card_component])
+                return
+        yield event.plain_result(text)
+
     @filter.regex(r"^/?(?:卡比百科(?:名称|名|译名)?|wikirby|WiKirby)(?:\s+.+)?$")
     @filter.event_message_type(EventMessageType.GROUP_MESSAGE)
     async def wikirby_query_plain(self, event: AstrMessageEvent):
@@ -2312,6 +2437,7 @@ class KirbyCatalogPlugin(Star):
             "星之卡比图鉴\n"
             "今日盟友：每天抽取盟友\n"
             "查盟友：查看自己今天的盟友，可 @ 成员\n"
+            "查看简介：引用 Bot 的盟友消息查看简介，也可直接填写图鉴编号\n"
             "我的盟友图鉴：查看个人收藏\n"
             "我的图鉴进度：查看有效解锁数、完成率和剩余数量\n"
             "星之卡比图鉴：查看本群图鉴（编号和名字）\n"

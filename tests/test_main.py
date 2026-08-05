@@ -2,6 +2,7 @@ import asyncio
 import time
 import unittest
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 from astrbot.api import message_components as Comp
 from astrbot.core.star.filter.regex import RegexFilter
@@ -482,6 +483,105 @@ class DrawManagementTests(unittest.IsolatedAsyncioTestCase):
             plugin._ally_detail_message(self.entry, "基础文案"),
             "基础文案\n资料：这是一段简体中文盟友简介。\n引用后发送卡比百科",
         )
+
+    def test_ally_description_limit_includes_suffix_and_zero_is_unlimited(self):
+        plugin = make_plugin(self.entry)
+        plugin.store.description = "星" * 40
+        plugin.config = {"ally_description_max_chars": 16}
+
+        truncated = plugin._ally_description_text(self.entry)
+
+        self.assertEqual(len(truncated), 16)
+        self.assertTrue(truncated.endswith("... ..."))
+
+        plugin.config = {"ally_description_max_chars": 0}
+        self.assertEqual(plugin._ally_description_text(self.entry), "星" * 40)
+
+    async def test_view_description_works_when_automatic_display_is_disabled(self):
+        plugin = make_plugin(self.entry)
+        plugin.config = {"ally_description_enabled": False}
+        quoted = Comp.Reply(
+            id="reply-view-description",
+            message_str="随机查看的盟友是 Papi，图鉴编号 #1202。",
+        )
+
+        results = [
+            result
+            async for result in plugin.view_ally_description(
+                FakeEvent("查看简介", [quoted])
+            )
+        ]
+
+        self.assertEqual(len(results), 1)
+        self.assertIn("#1202 Papi", results[0])
+        self.assertIn("这是一段简体中文盟友简介。", results[0])
+
+    async def test_view_description_can_use_forward_message(self):
+        plugin = make_plugin(self.entry)
+        plugin.config = {"ally_description_view_mode": "合并转发"}
+
+        results = [
+            result
+            async for result in plugin.view_ally_description(
+                FakeEvent("查看简介 1202")
+            )
+        ]
+
+        self.assertEqual(len(results), 1)
+        self.assertEqual(len(results[0]), 1)
+        self.assertIsInstance(results[0][0], Comp.Nodes)
+        node = results[0][0].nodes[0]
+        self.assertEqual(node.name, "星之卡比图鉴")
+        self.assertIn("#1202 Papi", node.content[0].text)
+
+    async def test_view_description_can_render_single_card(self):
+        plugin = make_plugin(self.entry)
+        plugin.store.description = "卡比简介" * 20
+        plugin.config = {
+            "ally_description_max_chars": 30,
+            "ally_description_view_mode": "简介卡片",
+            "ally_description_card_template": "星际档案",
+        }
+        plugin.html_render = AsyncMock(return_value="C:\\temp\\ally-introduction.png")
+
+        results = [
+            result
+            async for result in plugin.view_ally_description(
+                FakeEvent("/查看简介 1202")
+            )
+        ]
+
+        self.assertEqual(len(results), 1)
+        self.assertEqual(len(results[0]), 1)
+        self.assertIsInstance(results[0][0], Comp.Image)
+        plugin.html_render.assert_awaited_once()
+        payload = plugin.html_render.await_args.args[1]
+        payload_text = str(payload)
+        expected = plugin._truncate_ally_description(plugin.store.description, 30)
+        self.assertIn(expected, payload_text)
+        self.assertEqual(payload["title"], "Papi")
+        self.assertEqual(payload["theme"]["label"], "星际档案")
+        self.assertEqual(payload["image_data_uri"], "")
+        self.assertIn("图鉴编号", payload_text)
+        self.assertIn("#1202", payload_text)
+        self.assertIn("Kirby: Meta Knight and the Knight of Yomi", payload_text)
+        self.assertEqual(payload["source"], "https://wikirby.com/wiki/Test")
+
+    async def test_view_description_card_failure_falls_back_to_text(self):
+        plugin = make_plugin(self.entry)
+        plugin.config = {"ally_description_view_mode": "简介卡片"}
+        plugin.html_render = AsyncMock(side_effect=RuntimeError("render failed"))
+
+        results = [
+            result
+            async for result in plugin.view_ally_description(
+                FakeEvent("查看简介 1202")
+            )
+        ]
+
+        self.assertEqual(len(results), 1)
+        self.assertIsInstance(results[0], str)
+        self.assertIn("这是一段简体中文盟友简介。", results[0])
 
     async def test_draw_message_places_description_before_hint(self):
         plugin = make_plugin(self.entry)
