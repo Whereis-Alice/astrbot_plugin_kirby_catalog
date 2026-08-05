@@ -674,13 +674,15 @@ AstrBot v4.26.8 的 aiocqhttp 适配器会把 `Image` 组件统一转换为 base
 | `media_max_megapixels` / `media_max_bytes_mb` | `18` / `8` | 所有本地发送图片的总像素与文件大小保护 |
 | `gallery_max_height_px` | `7600` | 群或个人图鉴超过此高度才分页；`0` 表示关闭 |
 | `wiki_card_auto_paginate` | 开启 | 只分页真正过长的百科卡片 |
-| `wiki_card_page_line_budget` | `110` | 每页内容预算，越大则单页越长 |
+| `wiki_card_page_line_budget` | `110` | 每页内容预算，可配置范围 `60-3000`；复杂页面可从 `500` 或 `600` 开始测试 |
 | `wiki_card_resolution` | `高清（推荐）` | 标准、高清或超清 |
 | `wiki_card_image_format` | `JPEG` | JPEG 体积更小；PNG 保留无损文字边缘 |
 
 AstrBot 与 NapCat 运行在同一系统、NapCat 能读取 AstrBot 文件路径时，共享目录可以留空。容器部署时应给两边挂载同一个目录：若容器内路径相同，只填写 `media_shared_directory`；若路径不同，再填写 NapCat 侧的 `media_napcat_directory`。插件只会在共享目录下使用自己的 `astrbot_plugin_kirby_catalog` 子目录，并定期清理过期暂存图片；同一源文件未变化时会复用暂存副本，重复查询不再反复复制或转码。
 
 群总图鉴会根据 `gallery_max_height_px` 自动分成少量图片；状态、素材和版式未变化时会直接复用上次生成结果。个人图鉴较短时仍只发送一张。百科分页和图鉴分页都不删除内容，只改变图片分组。若今日盟友等原始素材自身仍超过通用阈值，插件只创建等比缩放的发送缓存副本，原素材文件、图鉴编号和用户数据都不会被修改。百科卡片宽度超过安全值时会自动降低一级渲染清晰度后重试。
+
+`wiki_card_page_line_budget` 从 v3.5.2 起不再限制为最高 `300`，现在最高可设为 `3000`。它是分页目标，不是绕过图片安全检查的开关：如果单页渲染后仍超过 `wiki_card_max_height_px`、`wiki_card_max_megapixels` 或 `wiki_card_max_bytes_mb`，插件会自动降低预算重新分页。大幅提高这些图片阈值可能重新触发 NapCat/QQNT 上传失败。
 
 ### LLM 翻译
 

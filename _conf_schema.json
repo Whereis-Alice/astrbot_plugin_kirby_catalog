@@ -278,11 +278,11 @@
       "wiki_card_page_line_budget": {
         "description": "百科卡片分页行预算",
         "type": "int",
-        "default": 110,
-        "min": 60,
-        "max": 300,
-        "hint": "数值越大，每页内容越多、图片越长。建议先保持默认值。"
-      },
+          "default": 110,
+          "min": 60,
+          "max": 3000,
+          "hint": "数值越大，每页内容越多、图片越长。复杂页面可从 500 或 600 开始测试；若渲染结果超过百科卡片的高度、像素或文件大小安全阈值，插件仍会自动降低预算并重新分页。"
+        },
       "wiki_card_max_width_px": {
         "description": "百科卡片安全宽度（像素）",
         "type": "int",

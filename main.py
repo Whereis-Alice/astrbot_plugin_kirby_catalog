@@ -73,6 +73,7 @@ DEFAULT_FORWARD_RETRY_COUNT = 1
 DEFAULT_FORWARD_RETRY_DELAY_SECONDS = 0.5
 DEFAULT_FORWARD_BATCH_DELAY_SECONDS = 0.2
 DEFAULT_WIKI_CARD_PAGE_LINE_BUDGET = 110
+MAX_WIKI_CARD_PAGE_LINE_BUDGET = 3000
 DEFAULT_WIKI_CARD_MAX_WIDTH_PX = 2160
 DEFAULT_WIKI_CARD_MAX_HEIGHT_PX = 8000
 DEFAULT_WIKI_CARD_MAX_MEGAPIXELS = 18.0
@@ -99,7 +100,7 @@ class AllyDrawOutcome:
     PLUGIN_ID,
     "Whereis-Alice",
     "星之卡比盟友抽取、收藏图鉴与双百科查询插件",
-    "3.5.1",
+    "3.5.2",
     "https://github.com/Whereis-Alice/astrbot_plugin_kirby_catalog",
 )
 class KirbyCatalogPlugin(Star):
@@ -1426,7 +1427,7 @@ class KirbyCatalogPlugin(Star):
             ),
             DEFAULT_WIKI_CARD_PAGE_LINE_BUDGET,
             60,
-            300,
+            MAX_WIKI_CARD_PAGE_LINE_BUDGET,
         )
         max_width = self._bounded_int(
             self._config_value(

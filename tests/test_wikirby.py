@@ -1034,6 +1034,32 @@ class WikirbyCommandTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertTrue(all(payload["page_total"] == len(payloads) for payload in payloads))
 
+    async def test_wiki_card_line_budget_accepts_values_above_300(self):
+        plugin = KirbyCatalogPlugin.__new__(KirbyCatalogPlugin)
+        plugin.config = {
+            "wiki_card_auto_paginate": True,
+            "wiki_card_page_line_budget": 1200,
+        }
+        plugin.html_render = AsyncMock(return_value="card.png")
+        page = {
+            "title": "Kirby",
+            "url": "https://wikirby.com/wiki/Kirby",
+        }
+
+        with patch(
+            "astrbot_plugin_kirby_catalog.main.build_card_pages",
+            wraps=build_card_pages,
+        ) as page_builder:
+            components = await plugin._wikirby_card_components(
+                page,
+                "卡比简介。",
+                "游戏登场：\n星之卡比",
+                None,
+            )
+
+        self.assertEqual(len(components), 1)
+        self.assertEqual(page_builder.call_args.kwargs["page_line_budget"], 1200)
+
     async def test_summary_can_use_native_provider_for_translation(self):
         plugin = KirbyCatalogPlugin.__new__(KirbyCatalogPlugin)
         plugin.config = {
