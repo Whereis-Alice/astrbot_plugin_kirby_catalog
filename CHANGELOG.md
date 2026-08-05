@@ -1,5 +1,20 @@
 # 更新日志
 
+## v3.5.1 - 2026-08-05
+
+### NapCat 合并转发容错
+
+- 超长百科的文字节点与卡片图片改为分批发送；普通短内容仍保持一条合并转发，图片批次默认每条最多 2 张。
+- aiocqhttp/NapCat 默认由插件直接调用 OneBot 合并转发接口，因此可以在 `UploadForwardMsgV2` 或 `resId` 错误发生的位置捕获异常，不再把同一条失败消息交回 AstrBot 响应阶段。
+- 多节点上传失败时自动二分为更小批次；单节点重试后仍失败时，文字改发普通消息，图片使用现有本地文件直发与 AstrBot 标准发送兜底。
+- 合并转发节点内的图片现在同样经过尺寸、像素和文件大小保护；本地图片可使用 `file://` 路径，避免全部强制转为 Base64 后再交给 NapCat。
+- `查看简介` 的合并转发接入同一发送与兜底链路。
+
+### 配置与验证
+
+- 新增 `forward_max_images_per_message`、`forward_direct_send_enabled`、`forward_retry_count`、`forward_retry_delay_seconds` 和 `forward_batch_delay_seconds`。
+- 增加长文本与图片分离、图片限流、短转发合并、本地文件转发、失败批次缩小及普通消息兜底测试。
+
 ## v3.5.0 - 2026-08-05
 
 ### 超长百科与图鉴分页

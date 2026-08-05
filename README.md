@@ -699,8 +699,13 @@ AstrBot 与 NapCat 运行在同一系统、NapCat 能读取 AstrBot 文件路径
 | --- | ---: | --- |
 | `forward_node_max_chars` | `3000` | 单个合并转发文字节点的最大字符数，按段落优先拆分 |
 | `forward_max_nodes_per_message` | `20` | 单条合并转发的最大节点数，超过后自动分成下一条合并转发 |
+| `forward_max_images_per_message` | `2` | 单条合并转发最多包含的图片数；超长百科的文字与图片会分开打包 |
+| `forward_direct_send_enabled` | `true` | aiocqhttp/NapCat 上由插件直接发送，以便捕获异常并执行兜底 |
+| `forward_retry_count` | `1` | 已无法继续拆分的单节点转发失败后重试次数 |
+| `forward_retry_delay_seconds` | `0.5` | 单节点转发重试间隔 |
+| `forward_batch_delay_seconds` | `0.2` | 多条转发之间的发送间隔；设为 `0` 更快，但连续上传稳定性可能降低 |
 
-这两项由 WiKirby、Kirby Fandom 和 `查看简介` 的合并转发共用。通常应保持默认值：把字符数调得过大会重新形成超大节点，调得过小则会制造过多节点，同样可能触发 QQ 或 NapCat 的限制。
+这些设置由 WiKirby、Kirby Fandom 和 `查看简介` 的合并转发共用。普通短正文和一张图片仍会保持为一条转发；只有长正文、多卡片或节点超限时才拆分。通常应保持默认值：把字符数调得过大会重新形成超大节点，调得过小则会制造过多节点，同样可能触发 QQ 或 NapCat 的限制。
 
 ### WiKirby Cloudflare Worker
 
@@ -761,12 +766,15 @@ Kirby Fandom 使用独立 API，不读取 WiKirby Worker 配置。
 
 如果日志同时出现 `send_group_forward_msg`、`UploadForwardMsgV2`、`retcode=1200` 和 `Cannot read properties of undefined (reading 'resId')`，失败发生在 NapCat/QQ 上传合并转发的阶段，不是 WiKirby 抓取或 LLM 翻译阶段。NapCat 项目中已有相同错误的报告：[NapCatQQ #885](https://github.com/NapNeko/NapCatQQ/issues/885)；另一个转发超时案例在更新 QQNT 后恢复：[NapCatQQ #1147](https://github.com/NapNeko/NapCatQQ/issues/1147)。
 
-插件从 v3.3.2 起会自动拆分超大文字节点、分离图片，并限制单条转发的节点数。如果仍然失败，请依次检查：
+插件从 v3.5.1 起会直接捕获 aiocqhttp/NapCat 的转发异常：长文字与卡片图片分开发送，图片按独立上限分批；失败批次会继续缩小，单节点仍失败时自动改发普通消息或普通图片。这样即使 NapCat 无法生成合并转发 `resId`，也不会再由 AstrBot 响应阶段原样抛出整条失败消息。
+
+如果仍然失败，请依次检查：
 
 1. 将 NapCat 和 QQNT 更新到彼此兼容的当前版本；
-2. 保持 `forward_node_max_chars=3000`、`forward_max_nodes_per_message=20` 先测试；
-3. 将百科回复形式改为“仅百科卡片”，绕开超长合并转发；
-4. 若普通短合并转发也失败，检查 NapCat 网络、QQ 风控和账号发送状态。
+2. 保持 `forward_direct_send_enabled=true`、`forward_node_max_chars=3000`、`forward_max_nodes_per_message=20` 和 `forward_max_images_per_message=2` 先测试；
+3. 若图片转发仍不稳定，将 `forward_max_images_per_message` 调为 `1`；
+4. 将百科回复形式改为“仅百科卡片”，绕开合并转发；
+5. 若普通短合并转发和普通图片也失败，检查 NapCat 网络、QQ 风控和账号发送状态。
 
 百科全文不会因为这些兼容处理而被截断；极长页面可能拆成多条合并转发。
 

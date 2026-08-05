@@ -68,6 +68,10 @@ DEFAULT_ALLY_DESCRIPTION_MAX_CHARS = 600
 DESCRIPTION_TRUNCATION_SUFFIX = "... ..."
 DEFAULT_FORWARD_NODE_MAX_CHARS = 3000
 DEFAULT_FORWARD_MAX_NODES = 20
+DEFAULT_FORWARD_MAX_IMAGES = 2
+DEFAULT_FORWARD_RETRY_COUNT = 1
+DEFAULT_FORWARD_RETRY_DELAY_SECONDS = 0.5
+DEFAULT_FORWARD_BATCH_DELAY_SECONDS = 0.2
 DEFAULT_WIKI_CARD_PAGE_LINE_BUDGET = 110
 DEFAULT_WIKI_CARD_MAX_WIDTH_PX = 2160
 DEFAULT_WIKI_CARD_MAX_HEIGHT_PX = 8000
@@ -95,7 +99,7 @@ class AllyDrawOutcome:
     PLUGIN_ID,
     "Whereis-Alice",
     "星之卡比盟友抽取、收藏图鉴与双百科查询插件",
-    "3.5.0",
+    "3.5.1",
     "https://github.com/Whereis-Alice/astrbot_plugin_kirby_catalog",
 )
 class KirbyCatalogPlugin(Star):
@@ -570,7 +574,6 @@ class KirbyCatalogPlugin(Star):
     async def _prepare_media_components(
         self, components: List[Any]
     ) -> List[Any]:
-        prepared_components: List[Any] = []
         cache_dir = self._media_cache_dir()
         max_width = self._bounded_int(
             self._config_value("media_max_width_px", 2160), 2160, 0, 20000
@@ -599,17 +602,40 @@ class KirbyCatalogPlugin(Star):
             60,
             98,
         )
-        for component in components:
+        async def prepare_component(component: Any) -> Any:
+            if isinstance(component, Comp.Node):
+                content = [
+                    await prepare_component(item)
+                    for item in list(getattr(component, "content", []) or [])
+                ]
+                return Comp.Node(
+                    name=getattr(component, "name", "星之卡比图鉴"),
+                    uin=getattr(component, "uin", "0"),
+                    content=content,
+                )
+            if isinstance(component, Comp.Nodes):
+                nodes = [
+                    await prepare_component(node)
+                    for node in list(getattr(component, "nodes", []) or [])
+                ]
+                return Comp.Nodes(nodes=nodes)
             if not isinstance(component, Comp.Image):
-                prepared_components.append(component)
-                continue
+                return component
+
+            file_value = str(getattr(component, "file", "") or "")
             source = local_path_from_image_file(
-                str(getattr(component, "file", "") or ""),
+                file_value,
                 str(getattr(component, "path", "") or ""),
             )
+            if source is None and file_value.startswith("base64://"):
+                try:
+                    source = Path(await component.convert_to_file_path())
+                except Exception as exc:
+                    logger.warning(
+                        "[%s] Base64 图片暂存失败，保留原图片: %s", PLUGIN_ID, exc
+                    )
             if source is None:
-                prepared_components.append(component)
-                continue
+                return component
             try:
                 source_normalize = normalize_enabled and not source.name.startswith(
                     ("kirby-delivery-", "kirby-card-")
@@ -643,13 +669,14 @@ class KirbyCatalogPlugin(Star):
                             else "unknown"
                         ),
                     )
-                prepared_components.append(Comp.Image.fromFileSystem(str(prepared)))
+                return Comp.Image.fromFileSystem(str(prepared))
             except Exception as exc:
                 logger.warning(
                     "[%s] 图片发送副本生成失败，保留原图片: %s", PLUGIN_ID, exc
                 )
-                prepared_components.append(component)
-        return prepared_components
+                return component
+
+        return [await prepare_component(component) for component in components]
 
     async def _try_direct_media_send(
         self, event: AstrMessageEvent, components: List[Any]
@@ -744,10 +771,243 @@ class KirbyCatalogPlugin(Star):
                     await asyncio.sleep(retry_delay)
         return False
 
+    def _forward_max_images(self) -> int:
+        return self._bounded_int(
+            self._config_value(
+                "forward_max_images_per_message", DEFAULT_FORWARD_MAX_IMAGES
+            ),
+            DEFAULT_FORWARD_MAX_IMAGES,
+            1,
+            10,
+        )
+
+    def _forward_retry_count(self) -> int:
+        return self._bounded_int(
+            self._config_value("forward_retry_count", DEFAULT_FORWARD_RETRY_COUNT),
+            DEFAULT_FORWARD_RETRY_COUNT,
+            0,
+            3,
+        )
+
+    def _forward_retry_delay(self) -> float:
+        return self._bounded_float(
+            self._config_value(
+                "forward_retry_delay_seconds", DEFAULT_FORWARD_RETRY_DELAY_SECONDS
+            ),
+            DEFAULT_FORWARD_RETRY_DELAY_SECONDS,
+            0,
+            10,
+        )
+
+    def _forward_batch_delay(self) -> float:
+        return self._bounded_float(
+            self._config_value(
+                "forward_batch_delay_seconds", DEFAULT_FORWARD_BATCH_DELAY_SECONDS
+            ),
+            DEFAULT_FORWARD_BATCH_DELAY_SECONDS,
+            0,
+            10,
+        )
+
+    async def _forward_component_segment(self, component: Any) -> Dict[str, Any]:
+        if isinstance(component, Comp.Plain):
+            return {"type": "text", "data": {"text": component.text}}
+        if isinstance(component, Comp.Image):
+            if self._media_send_mode() != "standard":
+                image_value = await self._direct_image_value(component)
+                if image_value:
+                    return {"type": "image", "data": {"file": image_value}}
+            encoded = await component.convert_to_base64()
+            return {"type": "image", "data": {"file": f"base64://{encoded}"}}
+
+        to_dict = getattr(component, "to_dict", None)
+        if callable(to_dict):
+            value = to_dict()
+            if asyncio.iscoroutine(value):
+                value = await value
+            if isinstance(value, dict):
+                return value
+        to_legacy_dict = getattr(component, "toDict", None)
+        if callable(to_legacy_dict):
+            value = to_legacy_dict()
+            if isinstance(value, dict):
+                return value
+        raise TypeError(f"不支持的合并转发组件: {type(component).__name__}")
+
+    async def _forward_payload(self, nodes: List[Any]) -> Dict[str, Any]:
+        messages: List[Dict[str, Any]] = []
+        for node in nodes:
+            content = [
+                await self._forward_component_segment(component)
+                for component in list(getattr(node, "content", []) or [])
+            ]
+            messages.append(
+                {
+                    "type": "node",
+                    "data": {
+                        "user_id": str(getattr(node, "uin", "0") or "0"),
+                        "nickname": str(
+                            getattr(node, "name", "星之卡比图鉴")
+                            or "星之卡比图鉴"
+                        ),
+                        "content": content,
+                    },
+                }
+            )
+        return {"messages": messages}
+
+    async def _fallback_forward_node(
+        self, event: AstrMessageEvent, node: Any
+    ) -> bool:
+        content = list(getattr(node, "content", []) or [])
+        if not content:
+            return True
+
+        delivered = True
+        for component in content:
+            if isinstance(component, Comp.Image) and await self._try_direct_media_send(
+                event, [component]
+            ):
+                continue
+            send = getattr(event, "send", None)
+            if not callable(send):
+                logger.error(
+                    "[%s] 合并转发兜底失败：当前事件不支持主动发送", PLUGIN_ID
+                )
+                delivered = False
+                continue
+            try:
+                await send(MessageChain([component]))
+            except Exception as exc:
+                delivered = False
+                logger.exception(
+                    "[%s] 合并转发节点改发普通消息仍失败: %s", PLUGIN_ID, exc
+                )
+        return delivered
+
+    async def _deliver_forward_nodes(
+        self,
+        event: AstrMessageEvent,
+        bot: Any,
+        action: str,
+        route_key: str,
+        route_value: int,
+        nodes: List[Any],
+    ) -> bool:
+        attempts = self._forward_retry_count() + 1 if len(nodes) == 1 else 1
+        retry_delay = self._forward_retry_delay()
+        last_error: Exception | None = None
+        for attempt in range(attempts):
+            try:
+                payload = await self._forward_payload(nodes)
+                payload[route_key] = route_value
+                await bot.call_action(action, **payload)
+                logger.info(
+                    "[%s] NapCat 合并转发直发成功: nodes=%d, attempt=%d",
+                    PLUGIN_ID,
+                    len(nodes),
+                    attempt + 1,
+                )
+                return True
+            except Exception as exc:
+                last_error = exc
+                if attempt + 1 < attempts:
+                    logger.warning(
+                        "[%s] 单节点合并转发失败，准备重试 %d/%d: %s",
+                        PLUGIN_ID,
+                        attempt + 1,
+                        attempts - 1,
+                        exc,
+                    )
+                    if retry_delay:
+                        await asyncio.sleep(retry_delay)
+
+        if len(nodes) > 1:
+            split_at = max(1, len(nodes) // 2)
+            logger.warning(
+                "[%s] 合并转发上传失败，缩小批次重试: nodes=%d -> %d+%d, error=%s",
+                PLUGIN_ID,
+                len(nodes),
+                split_at,
+                len(nodes) - split_at,
+                last_error,
+            )
+            left_ok = await self._deliver_forward_nodes(
+                event, bot, action, route_key, route_value, nodes[:split_at]
+            )
+            if self._forward_batch_delay():
+                await asyncio.sleep(self._forward_batch_delay())
+            right_ok = await self._deliver_forward_nodes(
+                event, bot, action, route_key, route_value, nodes[split_at:]
+            )
+            return left_ok and right_ok
+
+        logger.warning(
+            "[%s] 单节点合并转发仍失败，改发普通消息: %s", PLUGIN_ID, last_error
+        )
+        return await self._fallback_forward_node(event, nodes[0])
+
+    async def _try_direct_forward_send(
+        self, event: AstrMessageEvent, components: List[Any]
+    ) -> bool:
+        if not self._bool_value(
+            self._config_value("forward_direct_send_enabled", True)
+        ):
+            return False
+        if not components or not all(
+            isinstance(component, Comp.Nodes) for component in components
+        ):
+            return False
+        umo = str(getattr(event, "unified_msg_origin", "") or "").casefold()
+        if not umo.startswith("aiocqhttp:"):
+            return False
+        bot = getattr(event, "bot", None)
+        if bot is None or not callable(getattr(bot, "call_action", None)):
+            return False
+
+        group_id = self._group_id(event)
+        user_id = self._sender_id(event)
+        if group_id and group_id.isdigit():
+            action = "send_group_forward_msg"
+            route_key = "group_id"
+            route_value = int(group_id)
+        elif user_id and user_id.isdigit():
+            action = "send_private_forward_msg"
+            route_key = "user_id"
+            route_value = int(user_id)
+        else:
+            return False
+
+        delivered = True
+        batch_delay = self._forward_batch_delay()
+        for index, component in enumerate(components):
+            nodes = list(getattr(component, "nodes", []) or [])
+            if nodes:
+                delivered = (
+                    await self._deliver_forward_nodes(
+                        event,
+                        bot,
+                        action,
+                        route_key,
+                        route_value,
+                        nodes,
+                    )
+                    and delivered
+                )
+            if batch_delay and index + 1 < len(components):
+                await asyncio.sleep(batch_delay)
+        if not delivered:
+            logger.error(
+                "[%s] 部分合并转发节点在普通消息兜底后仍发送失败", PLUGIN_ID
+            )
+        return True
+
     async def _chain_result_with_media(
         self, event: AstrMessageEvent, components: List[Any]
     ) -> Any | None:
         components = await self._prepare_media_components(components)
+        if await self._try_direct_forward_send(event, components):
+            return None
         if await self._try_direct_media_send(event, components):
             return None
         return event.chain_result(components)
@@ -1462,18 +1722,50 @@ class KirbyCatalogPlugin(Star):
     def _forward_nodes(
         self, text: str, trailing_components: Optional[List[Any]] = None
     ) -> List[Comp.Nodes]:
-        nodes = [
+        text_nodes = [
             Comp.Node(name="星之卡比图鉴", content=[Comp.Plain(chunk)])
             for chunk in self._split_forward_text(text, self._forward_node_max_chars())
         ]
+        trailing_nodes: List[Any] = []
         for component in trailing_components or []:
             if component is not None:
-                nodes.append(Comp.Node(name="星之卡比图鉴", content=[component]))
+                trailing_nodes.append(
+                    Comp.Node(name="星之卡比图鉴", content=[component])
+                )
+
         max_nodes = self._forward_max_nodes()
-        return [
-            Comp.Nodes(nodes=nodes[index : index + max_nodes])
-            for index in range(0, len(nodes), max_nodes)
+        max_images = self._forward_max_images()
+        image_nodes = [
+            node
+            for node in trailing_nodes
+            if any(isinstance(item, Comp.Image) for item in node.content)
         ]
+        other_trailing_nodes = [
+            node for node in trailing_nodes if node not in image_nodes
+        ]
+        all_nodes = [*text_nodes, *other_trailing_nodes, *image_nodes]
+
+        # Keep ordinary short replies compact. Long text and image-heavy card sets are
+        # separated so NapCat does not upload large text and rich media in one packet.
+        if (
+            len(text_nodes) <= 1
+            and len(all_nodes) <= max_nodes
+            and len(image_nodes) <= max_images
+        ):
+            return [Comp.Nodes(nodes=all_nodes)] if all_nodes else []
+
+        batches: List[Comp.Nodes] = []
+        non_image_nodes = [*text_nodes, *other_trailing_nodes]
+        batches.extend(
+            Comp.Nodes(nodes=non_image_nodes[index : index + max_nodes])
+            for index in range(0, len(non_image_nodes), max_nodes)
+        )
+        image_batch_size = min(max_nodes, max_images)
+        batches.extend(
+            Comp.Nodes(nodes=image_nodes[index : index + image_batch_size])
+            for index in range(0, len(image_nodes), image_batch_size)
+        )
+        return batches
 
     def _wiki_response_components(
         self,
@@ -3110,9 +3402,12 @@ class KirbyCatalogPlugin(Star):
         text = f"#{entry['id']} {self._display_name(entry)}\n简介：\n{description}"
         output_mode = self._ally_description_view_mode()
         if output_mode == "forward":
-            yield event.chain_result(
-                self._wiki_response_components(text, None, "forward", None)
+            result = await self._chain_result_with_media(
+                event,
+                self._wiki_response_components(text, None, "forward", None),
             )
+            if result is not None:
+                yield result
             return
         if output_mode == "card":
             card_component = await self._ally_description_card_component(

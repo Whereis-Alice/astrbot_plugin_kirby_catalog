@@ -541,6 +541,96 @@ class DrawManagementTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(sent)
         self.assertEqual(event.bot.calls, 2)
 
+    async def test_napcat_direct_forward_uses_file_uri_and_consumes_result(self):
+        class FakeBot:
+            def __init__(self):
+                self.calls = []
+
+            async def call_action(self, action, **kwargs):
+                self.calls.append((action, kwargs))
+
+        plugin = make_plugin(self.entry)
+        plugin.config = {
+            "media_send_mode": "NapCat本地文件直发",
+            "media_normalize_jpeg": False,
+            "forward_direct_send_enabled": True,
+            "forward_retry_count": 0,
+            "forward_batch_delay_seconds": 0,
+        }
+        event = FakeEvent("测试", group_id="123456")
+        event.unified_msg_origin = "aiocqhttp:group:123456"
+        event.bot = FakeBot()
+        with tempfile.TemporaryDirectory() as temp:
+            plugin.store.root = Path(temp) / "plugin-data"
+            image_path = Path(temp) / "card.jpg"
+            Image.new("RGB", (64, 64), "pink").save(image_path, format="JPEG")
+            components = plugin._forward_nodes(
+                "简短百科", [Comp.Image.fromFileSystem(str(image_path))]
+            )
+
+            result = await plugin._chain_result_with_media(event, components)
+
+        self.assertIsNone(result)
+        self.assertEqual(len(event.bot.calls), 1)
+        action, payload = event.bot.calls[0]
+        self.assertEqual(action, "send_group_forward_msg")
+        self.assertEqual(payload["group_id"], 123456)
+        self.assertEqual(len(payload["messages"]), 2)
+        image_segment = payload["messages"][1]["data"]["content"][0]
+        self.assertTrue(image_segment["data"]["file"].startswith("file:///"))
+        self.assertNotIn("base64://", image_segment["data"]["file"])
+
+    async def test_failed_forward_splits_then_falls_back_to_normal_messages(self):
+        class FailingForwardBot:
+            def __init__(self):
+                self.forward_sizes = []
+                self.normal_messages = []
+
+            async def call_action(self, _action, **kwargs):
+                self.forward_sizes.append(len(kwargs["messages"]))
+                raise RuntimeError("Cannot read properties of undefined (reading 'resId')")
+
+            async def send_group_msg(self, **kwargs):
+                self.normal_messages.append(kwargs["message"])
+
+        class SendingEvent(FakeEvent):
+            def __init__(self):
+                super().__init__("测试", group_id="123456")
+                self.unified_msg_origin = "aiocqhttp:group:123456"
+                self.sent_chains = []
+
+            async def send(self, chain):
+                self.sent_chains.append(chain)
+
+        plugin = make_plugin(self.entry)
+        plugin.config = {
+            "media_send_mode": "NapCat本地文件直发",
+            "media_normalize_jpeg": False,
+            "media_direct_retry_count": 0,
+            "forward_direct_send_enabled": True,
+            "forward_retry_count": 0,
+            "forward_retry_delay_seconds": 0,
+            "forward_batch_delay_seconds": 0,
+        }
+        event = SendingEvent()
+        event.bot = FailingForwardBot()
+        with tempfile.TemporaryDirectory() as temp:
+            plugin.store.root = Path(temp) / "plugin-data"
+            image_path = Path(temp) / "card.jpg"
+            Image.new("RGB", (64, 64), "pink").save(image_path, format="JPEG")
+            components = plugin._forward_nodes(
+                "简短百科", [Comp.Image.fromFileSystem(str(image_path))]
+            )
+
+            result = await plugin._chain_result_with_media(event, components)
+
+        self.assertIsNone(result)
+        self.assertEqual(event.bot.forward_sizes, [2, 1, 1])
+        self.assertEqual(len(event.sent_chains), 1)
+        self.assertEqual(event.sent_chains[0].chain[0].text, "简短百科")
+        self.assertEqual(len(event.bot.normal_messages), 1)
+        self.assertEqual(event.bot.normal_messages[0][0]["type"], "image")
+
     async def test_direct_send_ignores_non_aiocqhttp_events(self):
         class FakeBot:
             def __init__(self):

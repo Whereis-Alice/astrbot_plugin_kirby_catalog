@@ -825,17 +825,66 @@ class WikirbyCommandTests(unittest.IsolatedAsyncioTestCase):
             text, b"image-bytes", "forward", None
         )
 
-        self.assertEqual(len(components), 1)
-        self.assertIsInstance(components[0], Comp.Nodes)
-        nodes = components[0].nodes
-        self.assertGreater(len(nodes), 2)
-        self.assertIsInstance(nodes[-1].content[0], Comp.Image)
-        text_nodes = nodes[:-1]
+        self.assertEqual(len(components), 2)
+        self.assertTrue(all(isinstance(component, Comp.Nodes) for component in components))
+        text_nodes = components[0].nodes
+        image_nodes = components[1].nodes
+        self.assertGreater(len(text_nodes), 2)
+        self.assertEqual(len(image_nodes), 1)
+        self.assertIsInstance(image_nodes[0].content[0], Comp.Image)
         self.assertTrue(
             all(isinstance(node.content[0], Comp.Plain) for node in text_nodes)
         )
         self.assertTrue(all(len(node.content[0].text) <= 1000 for node in text_nodes))
         self.assertEqual("".join(node.content[0].text for node in text_nodes), text)
+
+    def test_short_forward_keeps_text_and_one_image_in_one_message(self):
+        plugin = KirbyCatalogPlugin.__new__(KirbyCatalogPlugin)
+        plugin.config = {"forward_max_images_per_message": 2}
+
+        components = plugin._wiki_response_components(
+            "简短百科内容", b"image-bytes", "forward", None
+        )
+
+        self.assertEqual(len(components), 1)
+        self.assertEqual(len(components[0].nodes), 2)
+        self.assertIsInstance(components[0].nodes[0].content[0], Comp.Plain)
+        self.assertIsInstance(components[0].nodes[1].content[0], Comp.Image)
+
+    def test_card_forward_limits_images_and_does_not_mix_long_text(self):
+        plugin = KirbyCatalogPlugin.__new__(KirbyCatalogPlugin)
+        plugin.config = {
+            "forward_node_max_chars": 500,
+            "forward_max_images_per_message": 2,
+        }
+        text = "完整百科正文。" * 600
+        cards = [Comp.Image.fromBytes(f"card-{index}".encode()) for index in range(5)]
+
+        components = plugin._wiki_response_components(
+            text, None, "card_forward", cards
+        )
+
+        text_batches = [
+            component
+            for component in components
+            if all(isinstance(node.content[0], Comp.Plain) for node in component.nodes)
+        ]
+        image_batches = [
+            component
+            for component in components
+            if all(isinstance(node.content[0], Comp.Image) for node in component.nodes)
+        ]
+        self.assertTrue(text_batches)
+        self.assertEqual(len(image_batches), 3)
+        self.assertTrue(all(len(component.nodes) <= 2 for component in image_batches))
+        self.assertEqual(
+            "".join(
+                node.content[0].text
+                for component in text_batches
+                for node in component.nodes
+            ),
+            text,
+        )
 
     def test_forward_mode_batches_excess_nodes_without_losing_content(self):
         plugin = KirbyCatalogPlugin.__new__(KirbyCatalogPlugin)
@@ -854,6 +903,15 @@ class WikirbyCommandTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreater(len(components), 1)
         self.assertTrue(all(isinstance(component, Comp.Nodes) for component in components))
         self.assertTrue(all(len(component.nodes) <= 5 for component in components))
+        self.assertTrue(
+            all(
+                not (
+                    any(isinstance(node.content[0], Comp.Plain) for node in component.nodes)
+                    and any(isinstance(node.content[0], Comp.Image) for node in component.nodes)
+                )
+                for component in components
+            )
+        )
         nodes = [node for component in components for node in component.nodes]
         self.assertIsInstance(nodes[-1].content[0], Comp.Image)
         text_nodes = nodes[:-1]
