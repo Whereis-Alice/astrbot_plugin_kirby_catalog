@@ -740,7 +740,7 @@ class WikirbyCommandTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(plugin._wikirby_output_mode(), "card_forward")
 
-    async def test_forward_mode_wraps_text_in_one_forward_node(self):
+    async def test_short_forward_text_uses_one_node(self):
         plugin = KirbyCatalogPlugin.__new__(KirbyCatalogPlugin)
         plugin.config = {
             "wikirby_enabled": True,
@@ -758,6 +758,81 @@ class WikirbyCommandTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIsInstance(results[0][0], Comp.Nodes)
         self.assertEqual(len(results[0][0].nodes), 1)
+
+    def test_forward_mode_splits_long_text_and_separates_image_node(self):
+        plugin = KirbyCatalogPlugin.__new__(KirbyCatalogPlugin)
+        plugin.config = {"forward_node_max_chars": 1000}
+        text = "".join(
+            f"第{index}段：" + ("卡比百科正文。" * 90) + "\n\n"
+            for index in range(12)
+        )
+
+        components = plugin._wiki_response_components(
+            text, b"image-bytes", "forward", None
+        )
+
+        self.assertEqual(len(components), 1)
+        self.assertIsInstance(components[0], Comp.Nodes)
+        nodes = components[0].nodes
+        self.assertGreater(len(nodes), 2)
+        self.assertIsInstance(nodes[-1].content[0], Comp.Image)
+        text_nodes = nodes[:-1]
+        self.assertTrue(
+            all(isinstance(node.content[0], Comp.Plain) for node in text_nodes)
+        )
+        self.assertTrue(all(len(node.content[0].text) <= 1000 for node in text_nodes))
+        self.assertEqual("".join(node.content[0].text for node in text_nodes), text)
+
+    def test_forward_mode_batches_excess_nodes_without_losing_content(self):
+        plugin = KirbyCatalogPlugin.__new__(KirbyCatalogPlugin)
+        plugin.config = {
+            "forward_node_max_chars": 500,
+            "forward_max_nodes_per_message": 5,
+        }
+        text = "\n\n".join(
+            f"第 {index} 段：" + ("完整百科正文。" * 80) for index in range(18)
+        )
+
+        components = plugin._wiki_response_components(
+            text, b"image-bytes", "forward", None
+        )
+
+        self.assertGreater(len(components), 1)
+        self.assertTrue(all(isinstance(component, Comp.Nodes) for component in components))
+        self.assertTrue(all(len(component.nodes) <= 5 for component in components))
+        nodes = [node for component in components for node in component.nodes]
+        self.assertIsInstance(nodes[-1].content[0], Comp.Image)
+        text_nodes = nodes[:-1]
+        self.assertEqual("".join(node.content[0].text for node in text_nodes), text)
+
+    async def test_translation_cache_avoids_repeating_the_same_llm_request(self):
+        plugin = KirbyCatalogPlugin.__new__(KirbyCatalogPlugin)
+        plugin.config = {
+            "wikirby_translate_provider_id": "native-provider",
+            "wikirby_cache_ttl_seconds": 3600,
+        }
+        plugin.context = FakeTranslationContext()
+        event = FakeEvent("卡比百科 Driblee")
+
+        first = await plugin._wiki_translate_text(
+            event,
+            "The same source text.",
+            enabled=True,
+            provider_key="wikirby_translate_provider_id",
+            source_name="WiKirby",
+        )
+        second = await plugin._wiki_translate_text(
+            event,
+            "The same source text.",
+            enabled=True,
+            provider_key="wikirby_translate_provider_id",
+            source_name="WiKirby",
+        )
+
+        self.assertEqual(first, "这是一段中文简介。")
+        self.assertEqual(second, first)
+        generate_calls = [call for call in plugin.context.calls if call[0] == "generate"]
+        self.assertEqual(len(generate_calls), 1)
 
     async def test_card_mode_uses_astrbot_html_renderer(self):
         plugin = KirbyCatalogPlugin.__new__(KirbyCatalogPlugin)

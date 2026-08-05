@@ -80,6 +80,22 @@
           "default": "{base}{description_block}{wiki_hint_block}",
           "hint": "支持 {base}、{description}、{description_block}、{wiki_hint}、{wiki_hint_block}。带 block 的变量会自动包含换行和“简介：”标题；素材图片始终放在文字之后。"
         },
+        "forward_node_max_chars": {
+          "description": "合并转发单个文字节点最大字符数",
+          "type": "int",
+          "default": 3000,
+          "min": 500,
+          "max": 10000,
+          "hint": "百科使用合并转发时会按段落拆分文字，避免单个节点过大导致 NapCat 上传失败。建议保持默认值；数值过小会制造过多节点。"
+        },
+        "forward_max_nodes_per_message": {
+          "description": "每条合并转发最多节点数",
+          "type": "int",
+          "default": 20,
+          "min": 2,
+          "max": 30,
+          "hint": "超过后会自动拆成多条合并转发并保留全文。NapCat 在节点过多时可能无法取得 resId，建议保持默认值。"
+        },
         "draw_cooldown_seconds": {
         "description": "连续抽取冷却时间（秒）",
         "type": "float",

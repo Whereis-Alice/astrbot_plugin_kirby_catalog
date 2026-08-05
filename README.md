@@ -352,6 +352,8 @@ WiKirby 与 Kirby Fandom 都支持以下回复形式：
 
 百科卡片由 AstrBot T2I 服务渲染为一张完整 PNG。卡片使用 `1600px` 逻辑视口、设备像素截图和 `ultra` 清晰度，实测输出宽度约为 `2880px`。简介和首图位于顶部，资料与名称表横向排列，长正文使用双栏布局。WiKirby 与 Kirby Fandom 均不设置正文字符数或条目数上限，卡片会随完整内容自动增长。
 
+使用合并转发时，插件会按段落把长文字拆成多个节点，图片或百科卡片放在独立节点。单个文字节点默认最多 3000 个字符，单条合并转发默认最多 20 个节点；超出后会继续发送下一条合并转发，正文不会被截断。这两个限制用于规避 NapCat/QQ 对超大转发载荷的不稳定处理，不是百科内容长度限制。
+
 Kirby Fandom 的特殊栏目会保留网页结构：`Related Quotes` 中每条语录独立显示正文、出处和作品；`Techniques` 按作品及 Type A / Type B 分组，以“招式、操作、说明、伤害”四列表格显示。网页里的手柄按钮图片会转换为可读操作文字，例如 `Pro 手柄：冲刺 + B`、`Joy-Con：下方向键`。所有语录、招式分组、操作说明和表格行都会完整保留。
 
 内置模板：
@@ -586,8 +588,18 @@ Kirby： Squeak Squad.怪侠洛切团（Squeaks）.jpg
 - 可以指定 Provider；
 - Provider 留空时使用当前聊天会话的模型；
 - 翻译失败会自动保留原文；
+- 相同来源、相同 Provider 和相同原文的译文会在插件进程内缓存，缓存时间复用对应百科的 TTL 配置；重载插件后缓存会清空；
 - Fandom 语录和招式使用结构化 JSON 翻译，LLM 可以翻译操作中的自然语言，但按键、方向、加号、平台对应关系和换行由插件校验；布局和伤害数字不交给 LLM 决定；
 - LLM 工具调用本身不会再次触发嵌套翻译。
+
+### 合并转发稳定性
+
+| 配置项 | 默认值 | 说明 |
+| --- | ---: | --- |
+| `forward_node_max_chars` | `3000` | 单个合并转发文字节点的最大字符数，按段落优先拆分 |
+| `forward_max_nodes_per_message` | `20` | 单条合并转发的最大节点数，超过后自动分成下一条合并转发 |
+
+这两项由 WiKirby、Kirby Fandom 和 `查看简介` 的合并转发共用。通常应保持默认值：把字符数调得过大会重新形成超大节点，调得过小则会制造过多节点，同样可能触发 QQ 或 NapCat 的限制。
 
 ### WiKirby Cloudflare Worker
 
@@ -641,7 +653,26 @@ Kirby Fandom 使用独立 API，不读取 WiKirby Worker 配置。
 
 ### 为什么合并转发发送失败？
 
-QQ 或适配器可能拒绝过长的文字或合并转发消息。插件不会为适配平台限制而截断百科内容；这类情况下建议将百科回复形式切换为“仅百科卡片”。
+如果日志同时出现 `send_group_forward_msg`、`UploadForwardMsgV2`、`retcode=1200` 和 `Cannot read properties of undefined (reading 'resId')`，失败发生在 NapCat/QQ 上传合并转发的阶段，不是 WiKirby 抓取或 LLM 翻译阶段。NapCat 项目中已有相同错误的报告：[NapCatQQ #885](https://github.com/NapNeko/NapCatQQ/issues/885)；另一个转发超时案例在更新 QQNT 后恢复：[NapCatQQ #1147](https://github.com/NapNeko/NapCatQQ/issues/1147)。
+
+插件从 v3.3.2 起会自动拆分超大文字节点、分离图片，并限制单条转发的节点数。如果仍然失败，请依次检查：
+
+1. 将 NapCat 和 QQNT 更新到彼此兼容的当前版本；
+2. 保持 `forward_node_max_chars=3000`、`forward_max_nodes_per_message=20` 先测试；
+3. 将百科回复形式改为“仅百科卡片”，绕开超长合并转发；
+4. 若普通短合并转发也失败，检查 NapCat 网络、QQ 风控和账号发送状态。
+
+百科全文不会因为这些兼容处理而被截断；极长页面可能拆成多条合并转发。
+
+### 为什么百科查询有时比较慢？
+
+完整查询可能依次包含百科请求、LLM 翻译、首图下载和 HTML 卡片渲染。v3.3.2 会记录类似下面的日志：
+
+```text
+[astrbot_plugin_kirby_catalog] WiKirby 查询内容已生成: query='Kirby', mode=forward, chars=34864, forward_nodes=13, elapsed=12.34s
+```
+
+如果这条“查询内容已生成”日志本身很晚才出现，耗时在抓取、翻译或卡片渲染；同一页面的重复翻译会使用进程内缓存。如果该日志很快出现，但随后长时间没有消息，或 `respond.stage` 才报告错误，耗时在 AstrBot 到 NapCat/QQ 的发送阶段。只追求稳定和较少消息时优先使用“仅百科卡片”；只追求首次响应速度时，关闭 LLM 翻译和卡片渲染会更快。
 
 ### 为什么 WiKirby 查询返回 403？
 

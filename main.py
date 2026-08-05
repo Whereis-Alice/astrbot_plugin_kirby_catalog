@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import json
 import random
 import re
@@ -53,6 +54,9 @@ DEFAULT_ALLY_DETAIL_TEMPLATE = "{base}{description_block}{wiki_hint_block}"
 DEFAULT_ALLY_WIKI_HINT = "详细信息引用本条消息并回复卡比百科即可查看（查百科会比较慢）"
 DEFAULT_ALLY_DESCRIPTION_MAX_CHARS = 600
 DESCRIPTION_TRUNCATION_SUFFIX = "... ..."
+DEFAULT_FORWARD_NODE_MAX_CHARS = 3000
+DEFAULT_FORWARD_MAX_NODES = 20
+MAX_WIKI_TRANSLATION_CACHE_ITEMS = 128
 CATALOG_PROFILES_PATH = Path(__file__).parent / "resources" / "catalog_profiles.json"
 
 
@@ -60,7 +64,7 @@ CATALOG_PROFILES_PATH = Path(__file__).parent / "resources" / "catalog_profiles.
     PLUGIN_ID,
     "Whereis-Alice",
     "星之卡比盟友抽取、收藏图鉴与双百科查询插件",
-    "3.3.1",
+    "3.3.2",
     "https://github.com/Whereis-Alice/astrbot_plugin_kirby_catalog",
 )
 class KirbyCatalogPlugin(Star):
@@ -81,6 +85,9 @@ class KirbyCatalogPlugin(Star):
         self._cooldowns: Dict[str, Dict[str, float]] = {}
         self._guess_sessions: Dict[str, Dict[str, Any]] = {}
         self._guess_timeout_tasks: Dict[str, asyncio.Task[None]] = {}
+        self._wiki_translation_cache: Dict[
+            Tuple[str, str, str], Tuple[float, str]
+        ] = {}
         self.wikirby = WikirbyClient(
             api_url=str(self._config_value("wikirby_api_url", DEFAULT_API_URL)),
             timeout_seconds=float(self._config_value("wikirby_timeout_seconds", 12)),
@@ -160,6 +167,7 @@ class KirbyCatalogPlugin(Star):
         tasks = list(self._guess_timeout_tasks.values())
         self._guess_timeout_tasks.clear()
         self._guess_sessions.clear()
+        getattr(self, "_wiki_translation_cache", {}).clear()
         for task in tasks:
             if not task.done():
                 task.cancel()
@@ -762,8 +770,79 @@ class KirbyCatalogPlugin(Star):
             reference_label="ALLY INTRODUCTION",
         )
 
+    def _forward_node_max_chars(self) -> int:
+        try:
+            value = int(
+                self._config_value(
+                    "forward_node_max_chars", DEFAULT_FORWARD_NODE_MAX_CHARS
+                )
+            )
+        except (TypeError, ValueError):
+            value = DEFAULT_FORWARD_NODE_MAX_CHARS
+        return max(500, min(10000, value))
+
+    def _forward_max_nodes(self) -> int:
+        try:
+            value = int(
+                self._config_value(
+                    "forward_max_nodes_per_message", DEFAULT_FORWARD_MAX_NODES
+                )
+            )
+        except (TypeError, ValueError):
+            value = DEFAULT_FORWARD_MAX_NODES
+        return max(2, min(30, value))
+
     @staticmethod
+    def _split_forward_text(text: str, max_chars: int) -> List[str]:
+        text = str(text or "")
+        if not text:
+            return []
+        max_chars = max(1, int(max_chars))
+        if len(text) <= max_chars:
+            return [text]
+
+        chunks: List[str] = []
+        cursor = 0
+        minimum_break = max_chars // 2
+        break_pattern = re.compile(r"\n{2,}|\n|[。！？；.!?;][”’」』】）)]*")
+        while cursor < len(text):
+            remaining = text[cursor:]
+            if len(remaining) <= max_chars:
+                chunks.append(remaining)
+                break
+            window = remaining[:max_chars]
+            candidates = [
+                match.end()
+                for match in break_pattern.finditer(window)
+                if match.end() >= minimum_break
+            ]
+            cut = candidates[-1] if candidates else max_chars
+            chunks.append(remaining[:cut])
+            cursor += cut
+        return chunks
+
+    def _forward_nodes(
+        self, text: str, trailing_components: Optional[List[Any]] = None
+    ) -> List[Comp.Nodes]:
+        nodes = [
+            Comp.Node(name="星之卡比图鉴", content=[Comp.Plain(chunk)])
+            for chunk in self._split_forward_text(
+                text, self._forward_node_max_chars()
+            )
+        ]
+        for component in trailing_components or []:
+            if component is not None:
+                nodes.append(
+                    Comp.Node(name="星之卡比图鉴", content=[component])
+                )
+        max_nodes = self._forward_max_nodes()
+        return [
+            Comp.Nodes(nodes=nodes[index : index + max_nodes])
+            for index in range(0, len(nodes), max_nodes)
+        ]
+
     def _wiki_response_components(
+        self,
         text: str,
         image_bytes: bytes | None,
         output_mode: str,
@@ -774,25 +853,42 @@ class KirbyCatalogPlugin(Star):
         if output_mode == "card_and_text" and card_component is not None:
             return [Comp.Plain(text), card_component]
         if output_mode == "card_forward" and card_component is not None:
-            return [
-                Comp.Nodes(
-                    nodes=[
-                        Comp.Node(
-                            name="星之卡比图鉴",
-                            content=[Comp.Plain(text), card_component],
-                        )
-                    ]
-                )
-            ]
+            return self._forward_nodes(text, [card_component])
         if output_mode == "forward":
-            content: List[Any] = [Comp.Plain(text)]
+            trailing: List[Any] = []
             if image_bytes:
-                content.append(Comp.Image.fromBytes(image_bytes))
-            return [Comp.Nodes(nodes=[Comp.Node(name="星之卡比图鉴", content=content)])]
+                trailing.append(Comp.Image.fromBytes(image_bytes))
+            return self._forward_nodes(text, trailing)
         chain: List[Any] = [Comp.Plain(text)]
         if image_bytes:
             chain.append(Comp.Image.fromBytes(image_bytes))
         return chain
+
+    @staticmethod
+    def _log_wiki_response_ready(
+        source_name: str,
+        query: str,
+        output_mode: str,
+        text: str,
+        components: List[Any],
+        started_at: float,
+    ) -> None:
+        forward_nodes = sum(
+            len(component.nodes)
+            for component in components
+            if isinstance(component, Comp.Nodes)
+        )
+        logger.info(
+            "[%s] %s 查询内容已生成: query=%r, mode=%s, chars=%d, "
+            "forward_nodes=%d, elapsed=%.2fs",
+            PLUGIN_ID,
+            source_name,
+            query,
+            output_mode,
+            len(text),
+            forward_nodes,
+            time.monotonic() - started_at,
+        )
 
     async def _wiki_translate_text(
         self,
@@ -814,6 +910,31 @@ class KirbyCatalogPlugin(Star):
         if not provider_id:
             raise RuntimeError("没有找到可用的 AstrBot 文本模型")
 
+        ttl_key = (
+            "fandom_cache_ttl_seconds"
+            if source_name.casefold() == "kirby fandom"
+            else "wikirby_cache_ttl_seconds"
+        )
+        try:
+            cache_ttl = max(0, int(self._config_value(ttl_key, 3600)))
+        except (TypeError, ValueError):
+            cache_ttl = 3600
+        cache_key = (
+            source_name.casefold(),
+            provider_id,
+            hashlib.sha256(text.encode("utf-8")).hexdigest(),
+        )
+        cache = getattr(self, "_wiki_translation_cache", None)
+        if cache is None:
+            cache = {}
+            self._wiki_translation_cache = cache
+        now = time.monotonic()
+        cached = cache.get(cache_key)
+        if cached and cached[0] > now:
+            return cached[1]
+        if cached:
+            cache.pop(cache_key, None)
+
         response = await self.context.llm_generate(
             chat_provider_id=provider_id,
             prompt=(
@@ -829,7 +950,15 @@ class KirbyCatalogPlugin(Star):
             ),
         )
         translated = str(getattr(response, "completion_text", "") or "").strip()
-        return translated or text
+        result = translated or text
+        if cache_ttl > 0:
+            expired = [key for key, item in cache.items() if item[0] <= now]
+            for key in expired:
+                cache.pop(key, None)
+            while len(cache) >= MAX_WIKI_TRANSLATION_CACHE_ITEMS:
+                cache.pop(next(iter(cache)))
+            cache[cache_key] = (now + cache_ttl, result)
+        return result
 
     async def _wikirby_translate_text(
         self, event: AstrMessageEvent, summary: str
@@ -1309,6 +1438,7 @@ class KirbyCatalogPlugin(Star):
                 "只查官方译名可用：卡比百科名称 <角色名>。"
             )
             return
+        started_at = time.monotonic()
         try:
             resolved = await client.resolve(query)
             if resolved.get("kind") == "candidates":
@@ -1353,11 +1483,13 @@ class KirbyCatalogPlugin(Star):
                 )
                 if card_component is None:
                     output_mode = "forward" if output_mode == "card_forward" else "text"
-            yield event.chain_result(
-                self._wiki_response_components(
-                    text, image_bytes, output_mode, card_component
-                )
+            components = self._wiki_response_components(
+                text, image_bytes, output_mode, card_component
             )
+            self._log_wiki_response_ready(
+                "WiKirby", query, output_mode, text, components, started_at
+            )
+            yield event.chain_result(components)
         except WikirbyError as exc:
             logger.warning("[%s] WiKirby 查询失败: %s", PLUGIN_ID, exc)
             yield event.plain_result(f"WiKirby 查询失败：{exc}")
@@ -1665,6 +1797,7 @@ class KirbyCatalogPlugin(Star):
                 "指定章节：卡比F <页面名> | <章节名>。"
             )
             return
+        started_at = time.monotonic()
         try:
             resolved = await client.resolve(query)
             if resolved.get("kind") == "candidates":
@@ -1708,11 +1841,18 @@ class KirbyCatalogPlugin(Star):
                 )
                 if card_component is None:
                     output_mode = "forward" if output_mode == "card_forward" else "text"
-            yield event.chain_result(
-                self._wiki_response_components(
-                    text, image_bytes, output_mode, card_component
-                )
+            components = self._wiki_response_components(
+                text, image_bytes, output_mode, card_component
             )
+            self._log_wiki_response_ready(
+                "Kirby Fandom",
+                query,
+                output_mode,
+                text,
+                components,
+                started_at,
+            )
+            yield event.chain_result(components)
         except KirbyFandomError as exc:
             logger.warning("[%s] Kirby Fandom 查询失败: %s", PLUGIN_ID, exc)
             yield event.plain_result(f"Kirby Fandom 查询失败：{exc}")
@@ -2173,16 +2313,7 @@ class KirbyCatalogPlugin(Star):
         output_mode = self._ally_description_view_mode()
         if output_mode == "forward":
             yield event.chain_result(
-                [
-                    Comp.Nodes(
-                        nodes=[
-                            Comp.Node(
-                                name="星之卡比图鉴",
-                                content=[Comp.Plain(text)],
-                            )
-                        ]
-                    )
-                ]
+                self._wiki_response_components(text, None, "forward", None)
             )
             return
         if output_mode == "card":
