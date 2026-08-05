@@ -7,6 +7,7 @@ import json
 import random
 import re
 import time
+from dataclasses import dataclass
 from copy import deepcopy
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
@@ -29,11 +30,21 @@ from .kirby_fandom import (
     KirbyFandomClient,
     KirbyFandomError,
 )
+from .media_delivery import (
+    cleanup_staged_media,
+    image_limit_reasons,
+    inspect_image,
+    local_path_from_image_file,
+    normalise_jpeg,
+    prepare_image_for_delivery,
+    stage_local_image,
+)
 from .wikirby import DEFAULT_API_URL, WikirbyClient, WikirbyError
 from .wikirby_card import (
     DEFAULT_CARD_TEMPLATE,
     WIKIRBY_CARD_TEMPLATE,
     build_card_layout,
+    build_card_pages,
     resolve_card_template,
 )
 from .webui import KirbyCatalogWebUI
@@ -57,15 +68,34 @@ DEFAULT_ALLY_DESCRIPTION_MAX_CHARS = 600
 DESCRIPTION_TRUNCATION_SUFFIX = "... ..."
 DEFAULT_FORWARD_NODE_MAX_CHARS = 3000
 DEFAULT_FORWARD_MAX_NODES = 20
+DEFAULT_WIKI_CARD_PAGE_LINE_BUDGET = 110
+DEFAULT_WIKI_CARD_MAX_WIDTH_PX = 2160
+DEFAULT_WIKI_CARD_MAX_HEIGHT_PX = 8000
+DEFAULT_WIKI_CARD_MAX_MEGAPIXELS = 18.0
+DEFAULT_WIKI_CARD_MAX_BYTES_MB = 8.0
+DEFAULT_WIKI_CARD_JPEG_QUALITY = 92
+DEFAULT_GALLERY_MAX_HEIGHT_PX = 7600
+DEFAULT_BOT_DRAW_MESSAGE_TEMPLATE = (
+    "{nickname}今天的盟友是 {name}，图鉴编号 #{id}{source_text}。{status_text}"
+)
 MAX_WIKI_TRANSLATION_CACHE_ITEMS = 128
 CATALOG_PROFILES_PATH = Path(__file__).parent / "resources" / "catalog_profiles.json"
+
+
+@dataclass(frozen=True)
+class AllyDrawOutcome:
+    entry: Dict[str, Any]
+    remaining: int
+    repeated: bool
+    pity: bool
+    existing_today: bool = False
 
 
 @register(
     PLUGIN_ID,
     "Whereis-Alice",
     "星之卡比盟友抽取、收藏图鉴与双百科查询插件",
-    "3.4.0",
+    "3.5.0",
     "https://github.com/Whereis-Alice/astrbot_plugin_kirby_catalog",
 )
 class KirbyCatalogPlugin(Star):
@@ -228,6 +258,7 @@ class KirbyCatalogPlugin(Star):
         if value == default and hasattr(self.config, "get"):
             for section_name in (
                 "draw_settings",
+                "delivery_settings",
                 "data_settings",
                 "wikirby_settings",
                 "fandom_settings",
@@ -419,14 +450,326 @@ class KirbyCatalogPlugin(Star):
             },
         )
 
+    @staticmethod
+    def _bounded_int(value: Any, default: int, minimum: int, maximum: int) -> int:
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            parsed = default
+        return max(minimum, min(maximum, parsed))
+
+    @staticmethod
+    def _bounded_float(
+        value: Any, default: float, minimum: float, maximum: float
+    ) -> float:
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            parsed = default
+        return max(minimum, min(maximum, parsed))
+
+    def _media_send_mode(self) -> str:
+        normalized = str(
+            self._config_value("media_send_mode", "自动（推荐）") or ""
+        ).strip().casefold()
+        return {
+            "自动（推荐）": "auto",
+            "自动": "auto",
+            "auto": "auto",
+            "astrbot标准发送": "standard",
+            "标准发送": "standard",
+            "standard": "standard",
+            "napcat本地文件直发": "direct",
+            "本地文件直发": "direct",
+            "direct": "direct",
+        }.get(normalized, "auto")
+
+    def _media_cache_dir(self) -> Path:
+        root = getattr(getattr(self, "store", None), "root", None)
+        if root is None:
+            try:
+                root = Path(StarTools.get_data_dir(PLUGIN_ID))
+            except Exception:
+                root = Path.cwd()
+        path = Path(root) / "media_cache"
+        path.mkdir(parents=True, exist_ok=True)
+        retention_minutes = self._bounded_float(
+            self._config_value("media_stage_retention_minutes", 30),
+            30,
+            1,
+            1440,
+        )
+        cleanup_staged_media(path, retention_seconds=retention_minutes * 60)
+        return path
+
+    async def _direct_image_value(self, component: Any) -> str | None:
+        file_value = str(getattr(component, "file", "") or "").strip()
+        if file_value.startswith(("http://", "https://")):
+            return file_value
+        if file_value.startswith("base64://"):
+            return None
+
+        source = local_path_from_image_file(
+            file_value,
+            str(getattr(component, "path", "") or ""),
+        )
+        if source is None:
+            return None
+
+        metrics = await asyncio.to_thread(inspect_image, source)
+        if metrics:
+            logger.info(
+                "[%s] 待发送图片: file=%s, size=%dx%d, megapixels=%.2f, "
+                "bytes=%d, format=%s",
+                PLUGIN_ID,
+                source.name,
+                metrics.width,
+                metrics.height,
+                metrics.megapixels,
+                metrics.byte_size,
+                metrics.image_format,
+            )
+
+        shared_directory = str(
+            self._config_value("media_shared_directory", "") or ""
+        ).strip()
+        if not shared_directory:
+            return source.as_uri()
+
+        napcat_directory = str(
+            self._config_value("media_napcat_directory", "") or ""
+        ).strip()
+        normalize_enabled = self._bool_value(
+            self._config_value("media_normalize_jpeg", True)
+        ) and not source.name.startswith(("kirby-delivery-", "kirby-card-"))
+        jpeg_quality = self._bounded_int(
+            self._config_value(
+                "wiki_card_jpeg_quality", DEFAULT_WIKI_CARD_JPEG_QUALITY
+            ),
+            DEFAULT_WIKI_CARD_JPEG_QUALITY,
+            60,
+            98,
+        )
+        retention_minutes = self._bounded_float(
+            self._config_value("media_stage_retention_minutes", 30),
+            30,
+            1,
+            1440,
+        )
+        _, onebot_value = await asyncio.to_thread(
+            stage_local_image,
+            source,
+            shared_directory,
+            napcat_directory=napcat_directory,
+            normalize_jpeg_enabled=normalize_enabled,
+            jpeg_quality=jpeg_quality,
+            retention_seconds=retention_minutes * 60,
+        )
+        return onebot_value
+
+    async def _prepare_media_components(
+        self, components: List[Any]
+    ) -> List[Any]:
+        prepared_components: List[Any] = []
+        cache_dir = self._media_cache_dir()
+        max_width = self._bounded_int(
+            self._config_value("media_max_width_px", 2160), 2160, 0, 20000
+        )
+        max_height = self._bounded_int(
+            self._config_value("media_max_height_px", 8000), 8000, 0, 50000
+        )
+        max_megapixels = self._bounded_float(
+            self._config_value("media_max_megapixels", 18), 18, 0, 200
+        )
+        max_bytes = int(
+            self._bounded_float(
+                self._config_value("media_max_bytes_mb", 8), 8, 0, 100
+            )
+            * 1024
+            * 1024
+        )
+        normalize_enabled = self._bool_value(
+            self._config_value("media_normalize_jpeg", True)
+        )
+        jpeg_quality = self._bounded_int(
+            self._config_value(
+                "wiki_card_jpeg_quality", DEFAULT_WIKI_CARD_JPEG_QUALITY
+            ),
+            DEFAULT_WIKI_CARD_JPEG_QUALITY,
+            60,
+            98,
+        )
+        for component in components:
+            if not isinstance(component, Comp.Image):
+                prepared_components.append(component)
+                continue
+            source = local_path_from_image_file(
+                str(getattr(component, "file", "") or ""),
+                str(getattr(component, "path", "") or ""),
+            )
+            if source is None:
+                prepared_components.append(component)
+                continue
+            try:
+                source_normalize = normalize_enabled and not source.name.startswith(
+                    ("kirby-delivery-", "kirby-card-")
+                )
+                prepared = await asyncio.to_thread(
+                    prepare_image_for_delivery,
+                    source,
+                    cache_dir,
+                    max_width=max_width,
+                    max_height=max_height,
+                    max_megapixels=max_megapixels,
+                    max_bytes=max_bytes,
+                    normalize_jpeg_enabled=source_normalize,
+                    jpeg_quality=jpeg_quality,
+                )
+                if prepared != source:
+                    before = await asyncio.to_thread(inspect_image, source)
+                    after = await asyncio.to_thread(inspect_image, prepared)
+                    logger.info(
+                        "[%s] 图片发送副本已准备: source=%s, before=%s, after=%s",
+                        PLUGIN_ID,
+                        source.name,
+                        (
+                            f"{before.width}x{before.height}/{before.byte_size}B"
+                            if before
+                            else "unknown"
+                        ),
+                        (
+                            f"{after.width}x{after.height}/{after.byte_size}B"
+                            if after
+                            else "unknown"
+                        ),
+                    )
+                prepared_components.append(Comp.Image.fromFileSystem(str(prepared)))
+            except Exception as exc:
+                logger.warning(
+                    "[%s] 图片发送副本生成失败，保留原图片: %s", PLUGIN_ID, exc
+                )
+                prepared_components.append(component)
+        return prepared_components
+
+    async def _try_direct_media_send(
+        self, event: AstrMessageEvent, components: List[Any]
+    ) -> bool:
+        if self._media_send_mode() == "standard":
+            return False
+        umo = str(getattr(event, "unified_msg_origin", "") or "").casefold()
+        if not umo.startswith("aiocqhttp:"):
+            return False
+        bot = getattr(event, "bot", None)
+        if bot is None:
+            return False
+
+        segments: List[Dict[str, Any]] = []
+        image_count = 0
+        for component in components:
+            if isinstance(component, Comp.Plain):
+                if component.text:
+                    segments.append(
+                        {"type": "text", "data": {"text": component.text}}
+                    )
+                continue
+            if isinstance(component, Comp.Image):
+                image_value = await self._direct_image_value(component)
+                if not image_value:
+                    return False
+                segments.append(
+                    {"type": "image", "data": {"file": image_value}}
+                )
+                image_count += 1
+                continue
+            return False
+        if not segments or image_count == 0:
+            return False
+
+        group_id = self._group_id(event)
+        user_id = self._sender_id(event)
+        if group_id and group_id.isdigit():
+            send = getattr(bot, "send_group_msg", None)
+            routing = {"group_id": int(group_id), "message": segments}
+        elif user_id and user_id.isdigit():
+            send = getattr(bot, "send_private_msg", None)
+            routing = {"user_id": int(user_id), "message": segments}
+        else:
+            return False
+        if not callable(send):
+            return False
+
+        raw_event = getattr(getattr(event, "message_obj", None), "raw_message", None)
+        try:
+            self_id = raw_event.get("self_id") if hasattr(raw_event, "get") else None
+        except Exception:
+            self_id = None
+        if self_id:
+            routing["self_id"] = self_id
+
+        retries = self._bounded_int(
+            self._config_value("media_direct_retry_count", 1), 1, 0, 3
+        )
+        retry_delay = self._bounded_float(
+            self._config_value("media_direct_retry_delay_seconds", 0.8),
+            0.8,
+            0,
+            10,
+        )
+        for attempt in range(retries + 1):
+            try:
+                await send(**routing)
+                logger.info(
+                    "[%s] NapCat 本地文件直发成功: images=%d, attempt=%d",
+                    PLUGIN_ID,
+                    image_count,
+                    attempt + 1,
+                )
+                return True
+            except Exception as exc:
+                if attempt >= retries:
+                    logger.warning(
+                        "[%s] NapCat 本地文件直发失败，回退 AstrBot 标准发送: %s",
+                        PLUGIN_ID,
+                        exc,
+                    )
+                    return False
+                logger.warning(
+                    "[%s] NapCat 本地文件直发失败，准备重试 %d/%d: %s",
+                    PLUGIN_ID,
+                    attempt + 1,
+                    retries,
+                    exc,
+                )
+                if retry_delay:
+                    await asyncio.sleep(retry_delay)
+        return False
+
+    async def _chain_result_with_media(
+        self, event: AstrMessageEvent, components: List[Any]
+    ) -> Any | None:
+        components = await self._prepare_media_components(components)
+        if await self._try_direct_media_send(event, components):
+            return None
+        return event.chain_result(components)
+
     async def _ally_chain(
         self, entry: Dict[str, Any], text: str, download: bool = True
     ) -> List[Any]:
-        data = await asyncio.to_thread(self.store.asset_bytes, entry, download)
         chain: List[Any] = [Comp.Plain(text)]
-        if data:
-            chain.append(Comp.Image.fromBytes(data))
-        else:
+        asset_path = None
+        asset_path_getter = getattr(self.store, "asset_path", None)
+        if callable(asset_path_getter):
+            asset_path = await asyncio.to_thread(asset_path_getter, entry)
+        if asset_path is None and download:
+            data = await asyncio.to_thread(self.store.asset_bytes, entry, True)
+            if callable(asset_path_getter):
+                asset_path = await asyncio.to_thread(asset_path_getter, entry)
+            if asset_path is None and data:
+                chain.append(Comp.Image.fromBytes(data))
+                return chain
+        if asset_path is not None:
+            chain.append(Comp.Image.fromFileSystem(str(asset_path)))
+        elif len(chain) == 1:
             chain[0] = Comp.Plain(f"{text}\n图片暂时不可用，请管理员检查素材。")
         return chain
 
@@ -674,9 +1017,77 @@ class KirbyCatalogPlugin(Star):
         wiki_name: str,
         reference_label: str,
     ) -> Any | None:
-        theme = resolve_card_template(template_name)
-        layout = build_card_layout(summary, detail_text, rich_sections)
-        image_data_uri = self._wikirby_image_data_uri(image_bytes)
+        components = await self._wiki_card_components(
+            page,
+            summary,
+            detail_text,
+            image_bytes,
+            rich_sections=rich_sections,
+            template_name=template_name,
+            wiki_name=wiki_name,
+            reference_label=reference_label,
+            paginate=False,
+        )
+        return components[0] if components else None
+
+    def _wiki_card_resolution_level(self) -> str:
+        resolution = str(
+            self._config_value("wiki_card_resolution", "高清（推荐）") or ""
+        ).strip().casefold()
+        return {
+            "标准": "standard",
+            "standard": "standard",
+            "高清（推荐）": "high",
+            "高清": "high",
+            "high": "high",
+            "超清": "ultra",
+            "ultra": "ultra",
+        }.get(resolution, "high")
+
+    def _wiki_card_render_options(
+        self, resolution_level: str | None = None
+    ) -> Dict[str, Any]:
+        resolution_level = resolution_level or self._wiki_card_resolution_level()
+        image_format = str(
+            self._config_value("wiki_card_image_format", "JPEG") or "JPEG"
+        ).strip().casefold()
+        render_type = "png" if image_format == "png" else "jpeg"
+        options: Dict[str, Any] = {
+            "viewport_width": 1600,
+            "viewport_height": 600,
+            "selector": "#kirby-card",
+            "full_page": True,
+            "type": render_type,
+            "scale": "device",
+            "device_scale_factor_level": resolution_level,
+            "animations": "disabled",
+            "wait_until": "load",
+        }
+        if render_type == "jpeg":
+            options["quality"] = self._bounded_int(
+                self._config_value(
+                    "wiki_card_jpeg_quality", DEFAULT_WIKI_CARD_JPEG_QUALITY
+                ),
+                DEFAULT_WIKI_CARD_JPEG_QUALITY,
+                60,
+                98,
+            )
+        return options
+
+    async def _render_wiki_card_layout(
+        self,
+        page: Dict[str, Any],
+        layout: Dict[str, Any],
+        image_bytes: bytes | None,
+        *,
+        theme: Dict[str, str],
+        wiki_name: str,
+        reference_label: str,
+        resolution_level: str | None = None,
+    ) -> Tuple[Any | None, Any | None]:
+        image_data_uri = self._wikirby_image_data_uri(
+            image_bytes if layout.get("show_summary", True) else None
+        )
         try:
             rendered = await self.html_render(
                 WIKIRBY_CARD_TEMPLATE,
@@ -690,27 +1101,204 @@ class KirbyCatalogPlugin(Star):
                     "image_data_uri": image_data_uri,
                 },
                 return_url=False,
-                options={
-                    "viewport_width": 1600,
-                    "viewport_height": 600,
-                    "selector": "#kirby-card",
-                    "full_page": True,
-                    "type": "png",
-                    "scale": "device",
-                    "device_scale_factor_level": "ultra",
-                    "animations": "disabled",
-                    "wait_until": "load",
-                },
+                options=self._wiki_card_render_options(resolution_level),
             )
         except Exception as exc:
             logger.warning("[%s] HTML 卡片渲染失败: %s", PLUGIN_ID, exc)
-            return None
+            return None, None
         if not rendered:
-            return None
+            return None, None
         rendered = str(rendered)
         if rendered.startswith(("http://", "https://")):
-            return Comp.Image.fromURL(rendered)
-        return Comp.Image.fromFileSystem(rendered)
+            return Comp.Image.fromURL(rendered), None
+
+        rendered_path = Path(rendered)
+        metrics = await asyncio.to_thread(inspect_image, rendered_path)
+        normalize_enabled = self._bool_value(
+            self._config_value("media_normalize_jpeg", True)
+        )
+        if (
+            normalize_enabled
+            and metrics is not None
+            and metrics.image_format in {"JPEG", "JPG"}
+        ):
+            try:
+                rendered_path = await asyncio.to_thread(
+                    normalise_jpeg,
+                    rendered_path,
+                    self._media_cache_dir(),
+                    quality=self._bounded_int(
+                        self._config_value(
+                            "wiki_card_jpeg_quality",
+                            DEFAULT_WIKI_CARD_JPEG_QUALITY,
+                        ),
+                        DEFAULT_WIKI_CARD_JPEG_QUALITY,
+                        60,
+                        98,
+                    ),
+                    prefix="kirby-card",
+                )
+                metrics = await asyncio.to_thread(inspect_image, rendered_path)
+            except Exception as exc:
+                logger.warning("[%s] 百科卡片 JPEG 标准化失败: %s", PLUGIN_ID, exc)
+        return Comp.Image.fromFileSystem(str(rendered_path)), metrics
+
+    async def _wiki_card_components(
+        self,
+        page: Dict[str, Any],
+        summary: str,
+        detail_text: str,
+        image_bytes: bytes | None,
+        *,
+        rich_sections: Optional[List[Dict[str, Any]]] = None,
+        template_name: Any,
+        wiki_name: str,
+        reference_label: str,
+        paginate: bool = True,
+    ) -> List[Any]:
+        theme = resolve_card_template(template_name)
+        auto_paginate = paginate and self._bool_value(
+            self._config_value("wiki_card_auto_paginate", True)
+        )
+        budget = self._bounded_int(
+            self._config_value(
+                "wiki_card_page_line_budget", DEFAULT_WIKI_CARD_PAGE_LINE_BUDGET
+            ),
+            DEFAULT_WIKI_CARD_PAGE_LINE_BUDGET,
+            60,
+            300,
+        )
+        max_width = self._bounded_int(
+            self._config_value(
+                "wiki_card_max_width_px", DEFAULT_WIKI_CARD_MAX_WIDTH_PX
+            ),
+            DEFAULT_WIKI_CARD_MAX_WIDTH_PX,
+            0,
+            20000,
+        )
+        max_height = self._bounded_int(
+            self._config_value(
+                "wiki_card_max_height_px", DEFAULT_WIKI_CARD_MAX_HEIGHT_PX
+            ),
+            DEFAULT_WIKI_CARD_MAX_HEIGHT_PX,
+            0,
+            50000,
+        )
+        max_megapixels = self._bounded_float(
+            self._config_value(
+                "wiki_card_max_megapixels", DEFAULT_WIKI_CARD_MAX_MEGAPIXELS
+            ),
+            DEFAULT_WIKI_CARD_MAX_MEGAPIXELS,
+            0,
+            200,
+        )
+        max_bytes = int(
+            self._bounded_float(
+                self._config_value(
+                    "wiki_card_max_bytes_mb", DEFAULT_WIKI_CARD_MAX_BYTES_MB
+                ),
+                DEFAULT_WIKI_CARD_MAX_BYTES_MB,
+                0,
+                100,
+            )
+            * 1024
+            * 1024
+        )
+
+        force_paginate = False
+        resolution_level = self._wiki_card_resolution_level()
+        last_components: List[Any] = []
+        max_attempts = 6 if auto_paginate else 3
+        for attempt in range(max_attempts):
+            if auto_paginate:
+                layouts = build_card_pages(
+                    summary,
+                    detail_text,
+                    rich_sections,
+                    page_line_budget=budget,
+                    has_image=bool(image_bytes),
+                    force_paginate=force_paginate,
+                )
+            else:
+                layouts = [build_card_layout(summary, detail_text, rich_sections)]
+
+            components: List[Any] = []
+            pageable_violations: List[str] = []
+            width_violations: List[str] = []
+            for layout in layouts:
+                component, metrics = await self._render_wiki_card_layout(
+                    page,
+                    layout,
+                    image_bytes,
+                    theme=theme,
+                    wiki_name=wiki_name,
+                    reference_label=reference_label,
+                    resolution_level=resolution_level,
+                )
+                if component is None:
+                    return []
+                components.append(component)
+                if metrics is None:
+                    continue
+                reasons = image_limit_reasons(
+                    metrics,
+                    max_width=max_width,
+                    max_height=max_height,
+                    max_megapixels=max_megapixels,
+                    max_bytes=max_bytes,
+                )
+                logger.info(
+                    "[%s] 百科卡片页已渲染: wiki=%s, page=%s/%s, "
+                    "size=%dx%d, megapixels=%.2f, bytes=%d, limits=%s",
+                    PLUGIN_ID,
+                    wiki_name,
+                    layout.get("page_number", 1),
+                    layout.get("page_total", len(layouts)),
+                    metrics.width,
+                    metrics.height,
+                    metrics.megapixels,
+                    metrics.byte_size,
+                    ",".join(reasons) or "ok",
+                )
+                pageable_violations.extend(
+                    reason for reason in reasons if not reason.startswith("width=")
+                )
+                width_violations.extend(
+                    reason for reason in reasons if reason.startswith("width=")
+                )
+
+            last_components = components
+            if width_violations and resolution_level != "standard":
+                next_resolution = "high" if resolution_level == "ultra" else "standard"
+                logger.warning(
+                    "[%s] 百科卡片宽度超过安全阈值，降低清晰度后重新渲染: "
+                    "wiki=%s, resolution=%s->%s, reasons=%s",
+                    PLUGIN_ID,
+                    wiki_name,
+                    resolution_level,
+                    next_resolution,
+                    ",".join(width_violations),
+                )
+                resolution_level = next_resolution
+                continue
+            if not pageable_violations or not auto_paginate:
+                return components
+            next_budget = max(60, int(budget * 0.72))
+            if next_budget >= budget:
+                break
+            logger.warning(
+                "[%s] 百科卡片超过安全阈值，降低分页预算后重新渲染: "
+                "wiki=%s, pages=%d, budget=%d->%d, reasons=%s",
+                PLUGIN_ID,
+                wiki_name,
+                len(layouts),
+                budget,
+                next_budget,
+                ",".join(pageable_violations),
+            )
+            budget = next_budget
+            force_paginate = True
+        return last_components
 
     async def _wikirby_card_component(
         self,
@@ -731,6 +1319,25 @@ class KirbyCatalogPlugin(Star):
             reference_label="WIKIRBY REFERENCE",
         )
 
+    async def _wikirby_card_components(
+        self,
+        page: Dict[str, Any],
+        summary: str,
+        detail_text: str,
+        image_bytes: bytes | None,
+    ) -> List[Any]:
+        return await self._wiki_card_components(
+            page,
+            summary,
+            detail_text,
+            image_bytes,
+            template_name=self._config_value(
+                "wikirby_card_template", DEFAULT_CARD_TEMPLATE
+            ),
+            wiki_name="WiKirby",
+            reference_label="WIKIRBY REFERENCE",
+        )
+
     async def _fandom_card_component(
         self,
         page: Dict[str, Any],
@@ -740,6 +1347,27 @@ class KirbyCatalogPlugin(Star):
         rich_sections: Optional[List[Dict[str, Any]]] = None,
     ) -> Any | None:
         return await self._wiki_card_component(
+            page,
+            summary,
+            detail_text,
+            image_bytes,
+            rich_sections=rich_sections,
+            template_name=self._config_value(
+                "fandom_card_template", DEFAULT_CARD_TEMPLATE
+            ),
+            wiki_name="Kirby Fandom",
+            reference_label="FANDOM REFERENCE",
+        )
+
+    async def _fandom_card_components(
+        self,
+        page: Dict[str, Any],
+        summary: str,
+        detail_text: str,
+        image_bytes: bytes | None,
+        rich_sections: Optional[List[Dict[str, Any]]] = None,
+    ) -> List[Any]:
+        return await self._wiki_card_components(
             page,
             summary,
             detail_text,
@@ -852,14 +1480,21 @@ class KirbyCatalogPlugin(Star):
         text: str,
         image_bytes: bytes | None,
         output_mode: str,
-        card_component: Any | None,
+        card_component: Any | List[Any] | None,
     ) -> List[Any]:
-        if output_mode == "card" and card_component is not None:
-            return [card_component]
-        if output_mode == "card_and_text" and card_component is not None:
-            return [Comp.Plain(text), card_component]
-        if output_mode == "card_forward" and card_component is not None:
-            return self._forward_nodes(text, [card_component])
+        card_components = (
+            list(card_component)
+            if isinstance(card_component, (list, tuple))
+            else [card_component]
+            if card_component is not None
+            else []
+        )
+        if output_mode == "card" and card_components:
+            return card_components
+        if output_mode == "card_and_text" and card_components:
+            return [Comp.Plain(text), *card_components]
+        if output_mode == "card_forward" and card_components:
+            return self._forward_nodes(text, card_components)
         if output_mode == "forward":
             trailing: List[Any] = []
             if image_bytes:
@@ -1482,20 +2117,22 @@ class KirbyCatalogPlugin(Star):
                 image_bytes = await self.wikirby.get_image_bytes(page["image_url"])
 
             output_mode = self._wikirby_output_mode()
-            card_component: Any | None = None
+            card_components: List[Any] = []
             if output_mode in {"card", "card_and_text", "card_forward"}:
-                card_component = await self._wikirby_card_component(
+                card_components = await self._wikirby_card_components(
                     page, summary, detail_text, image_bytes
                 )
-                if card_component is None:
+                if not card_components:
                     output_mode = "forward" if output_mode == "card_forward" else "text"
             components = self._wiki_response_components(
-                text, image_bytes, output_mode, card_component
+                text, image_bytes, output_mode, card_components
             )
             self._log_wiki_response_ready(
                 "WiKirby", query, output_mode, text, components, started_at
             )
-            yield event.chain_result(components)
+            result = await self._chain_result_with_media(event, components)
+            if result is not None:
+                yield result
         except WikirbyError as exc:
             logger.warning("[%s] WiKirby 查询失败: %s", PLUGIN_ID, exc)
             yield event.plain_result(f"WiKirby 查询失败：{exc}")
@@ -1840,15 +2477,15 @@ class KirbyCatalogPlugin(Star):
             if show_image and page.get("image_url"):
                 image_bytes = await client.get_image_bytes(page["image_url"])
             output_mode = self._fandom_output_mode()
-            card_component: Any | None = None
+            card_components: List[Any] = []
             if output_mode in {"card", "card_and_text", "card_forward"}:
-                card_component = await self._fandom_card_component(
+                card_components = await self._fandom_card_components(
                     page, summary, detail_text, image_bytes, rich_sections
                 )
-                if card_component is None:
+                if not card_components:
                     output_mode = "forward" if output_mode == "card_forward" else "text"
             components = self._wiki_response_components(
-                text, image_bytes, output_mode, card_component
+                text, image_bytes, output_mode, card_components
             )
             self._log_wiki_response_ready(
                 "Kirby Fandom",
@@ -1858,7 +2495,9 @@ class KirbyCatalogPlugin(Star):
                 components,
                 started_at,
             )
-            yield event.chain_result(components)
+            result = await self._chain_result_with_media(event, components)
+            if result is not None:
+                yield result
         except KirbyFandomError as exc:
             logger.warning("[%s] Kirby Fandom 查询失败: %s", PLUGIN_ID, exc)
             yield event.plain_result(f"Kirby Fandom 查询失败：{exc}")
@@ -2067,47 +2706,62 @@ class KirbyCatalogPlugin(Star):
             )
             return default_template.format_map(values)
 
-    async def _draw_ally_impl(self, event: AstrMessageEvent):
-        """每天抽取盟友，重复时使用连续未出新保底。"""
-        group_id = self._group_id(event)
-        if not group_id:
-            yield event.plain_result("该功能仅支持群聊。")
-            return
-        user_id = self._sender_id(event)
-        nickname = self._sender_name(event)
-        if not user_id:
-            yield event.plain_result("无法获取用户信息，请稍后再试。")
-            return
-
-        base_limit = max(1, int(self._config_value("daily_draw_limit", 3)))
-        cooldown = max(0.0, float(self._config_value("draw_cooldown_seconds", 3)))
+    async def _draw_for_identity(
+        self,
+        *,
+        group_id: str,
+        user_id: str,
+        nickname: str,
+        base_limit: int,
+        cooldown: float = 0,
+        include_bonus: bool = True,
+        reuse_today: bool = False,
+    ) -> Tuple[AllyDrawOutcome | None, str | None]:
         now = time.monotonic()
         last_draw = self._cooldowns.get(group_id, {}).get(user_id, 0.0)
         if now - last_draw < cooldown:
-            yield event.plain_result(
+            return None, (
                 f"{nickname}，抽卡太快啦，请稍等 "
                 f"{cooldown - (now - last_draw):.1f} 秒。"
             )
-            return
 
         async with self._draw_lock:
             self.store.refresh()
             today = get_today()
+            config = self.store.load_group(group_id)
+            user = self._user_data(config, user_id, nickname)
             count = self.store.draw_count(group_id, user_id, today)
-            bonus = self.store.draw_bonus(group_id, user_id, today)
-            limit = base_limit + bonus
+            bonus = (
+                self.store.draw_bonus(group_id, user_id, today)
+                if include_bonus
+                else 0
+            )
+            limit = max(1, int(base_limit)) + bonus
+            if reuse_today:
+                current = user.get("current", {})
+                if str(current.get("date") or "") == today:
+                    current_entry = self.store.resolve_entry(
+                        str(current.get("ally_filename") or "")
+                    )
+                    if current_entry is not None:
+                        return (
+                            AllyDrawOutcome(
+                                entry=current_entry,
+                                remaining=max(0, limit - count),
+                                repeated=False,
+                                pity=False,
+                                existing_today=True,
+                            ),
+                            None,
+                        )
             if count >= limit:
-                yield event.plain_result(
+                return None, (
                     f"{nickname}，你今天已经抽了 {count} 次，"
                     f"今日可用次数为 {limit} 次，明天再来吧。"
                 )
-                return
             pool = self.store.get_draw_pool()
             if not pool:
-                yield event.plain_result("当前没有可用盟友素材，请管理员先添加图片。")
-                return
-            config = self.store.load_group(group_id)
-            user = self._user_data(config, user_id, nickname)
+                return None, "当前没有可用盟友素材，请管理员先添加图片。"
             unlocked = set(self.store.unlocked_filenames(user))
             new_pool = [entry for entry in pool if entry["filename"] not in unlocked]
             no_new_count = int(user.get("no_new_count", 0) or 0)
@@ -2121,14 +2775,55 @@ class KirbyCatalogPlugin(Star):
             config[user_id] = user
             self.store.save_group(group_id, config)
             self.store.increment_draw(group_id, user_id, today)
-            self._cooldowns.setdefault(group_id, {})[user_id] = time.monotonic()
+            if cooldown > 0:
+                self._cooldowns.setdefault(group_id, {})[user_id] = time.monotonic()
 
-        remaining = limit - count - 1
-        flags = ("（重复）" if repeated else "") + ("（保底）" if pity else "")
-        text = self._ally_detail_message(
-            entry, self._draw_message(entry, nickname, remaining, flags)
+        return (
+            AllyDrawOutcome(
+                entry=entry,
+                remaining=limit - count - 1,
+                repeated=repeated,
+                pity=pity,
+            ),
+            None,
         )
-        yield event.chain_result(await self._ally_chain(entry, text))
+
+    async def _draw_ally_impl(self, event: AstrMessageEvent):
+        """每天抽取盟友，重复时使用连续未出新保底。"""
+        group_id = self._group_id(event)
+        if not group_id:
+            yield event.plain_result("该功能仅支持群聊。")
+            return
+        user_id = self._sender_id(event)
+        nickname = self._sender_name(event)
+        if not user_id:
+            yield event.plain_result("无法获取用户信息，请稍后再试。")
+            return
+
+        outcome, error = await self._draw_for_identity(
+            group_id=group_id,
+            user_id=user_id,
+            nickname=nickname,
+            base_limit=max(1, int(self._config_value("daily_draw_limit", 3))),
+            cooldown=max(
+                0.0, float(self._config_value("draw_cooldown_seconds", 3))
+            ),
+        )
+        if error or outcome is None:
+            yield event.plain_result(error or "盟友抽取失败，请稍后再试。")
+            return
+
+        entry = outcome.entry
+        flags = ("（重复）" if outcome.repeated else "") + (
+            "（保底）" if outcome.pity else ""
+        )
+        text = self._ally_detail_message(
+            entry, self._draw_message(entry, nickname, outcome.remaining, flags)
+        )
+        chain = await self._ally_chain(entry, text)
+        result = await self._chain_result_with_media(event, chain)
+        if result is not None:
+            yield result
 
     @filter.regex(r"^/?(?:今日盟友|抽盟友|抽取盟友)$")
     @filter.event_message_type(EventMessageType.GROUP_MESSAGE)
@@ -2136,6 +2831,97 @@ class KirbyCatalogPlugin(Star):
         """统一处理带斜杠和纯文本的盟友抽取，避免双 Handler 重复抽取。"""
         async for result in self._draw_ally_impl(event):
             yield result
+
+    @staticmethod
+    def _bot_identity(event: AstrMessageEvent) -> str:
+        message_obj = getattr(event, "message_obj", None)
+        raw_event = getattr(message_obj, "raw_message", None)
+        candidates = [getattr(message_obj, "self_id", "")]
+        if hasattr(raw_event, "get"):
+            try:
+                candidates.append(raw_event.get("self_id"))
+            except Exception:
+                pass
+        for candidate in candidates:
+            normalized = re.sub(r"[^A-Za-z0-9_-]+", "_", str(candidate or ""))
+            if normalized:
+                return f"bot_{normalized}"[:128]
+        return "bot_astrbot"
+
+    def _bot_draw_message(self, outcome: AllyDrawOutcome) -> str:
+        nickname = str(
+            self._config_value("bot_draw_nickname", "星之卡比图鉴")
+            or "星之卡比图鉴"
+        ).strip()
+        values = self._ally_message_values(outcome.entry)
+        values.update(
+            {
+                "nickname": nickname,
+                "status_text": (
+                    "\n今天已经抽过，本次展示当天结果。"
+                    if outcome.existing_today
+                    else ""
+                ),
+            }
+        )
+        return self._formatted_ally_message(
+            "bot_draw_message_template",
+            DEFAULT_BOT_DRAW_MESSAGE_TEMPLATE,
+            values,
+        )
+
+    async def _draw_bot_ally(
+        self, event: AstrMessageEvent
+    ) -> Tuple[AllyDrawOutcome | None, str | None]:
+        if not self._bool_value(self._config_value("bot_draw_enabled", True)):
+            return None, "Bot 抽盟友功能当前已关闭。"
+        group_id = self._group_id(event)
+        if not group_id:
+            return None, "Bot 抽盟友只支持群聊。"
+        nickname = str(
+            self._config_value("bot_draw_nickname", "星之卡比图鉴")
+            or "星之卡比图鉴"
+        ).strip()
+        return await self._draw_for_identity(
+            group_id=group_id,
+            user_id=self._bot_identity(event),
+            nickname=nickname,
+            base_limit=1,
+            include_bonus=False,
+            reuse_today=True,
+        )
+
+    @filter.regex(r"(?i)^/?(?:bot今日盟友|机器人今日盟友|bot抽盟友)$")
+    @filter.event_message_type(EventMessageType.GROUP_MESSAGE)
+    async def draw_bot_ally(self, event: AstrMessageEvent):
+        """让 Bot 使用独立身份抽取并展示当天盟友。"""
+        outcome, error = await self._draw_bot_ally(event)
+        if error or outcome is None:
+            yield event.plain_result(error or "Bot 抽取盟友失败，请稍后再试。")
+            return
+        text = self._ally_detail_message(
+            outcome.entry, self._bot_draw_message(outcome)
+        )
+        chain = await self._ally_chain(outcome.entry, text)
+        result = await self._chain_result_with_media(event, chain)
+        if result is not None:
+            yield result
+
+    @filter.llm_tool(name="kirby_catalog_draw_bot_ally")
+    async def draw_bot_ally_tool(self, event: AstrMessageEvent) -> str:
+        """让 Bot 为自己抽取当前群今天的星之卡比盟友。
+
+        使用独立且持久化的 Bot 身份，不占用提问者的次数或图鉴。当天重复
+        调用只返回同一结果，不会再次抽取。该工具会修改 Bot 自己的群图鉴数据。
+        """
+        outcome, error = await self._draw_bot_ally(event)
+        if error or outcome is None:
+            return error or "Bot 抽取盟友失败，请稍后再试。"
+        text = self._bot_draw_message(outcome)
+        description = self._ally_description_text(outcome.entry)
+        if description:
+            text = f"{text}\n简介：\n{description}"
+        return text
 
     @filter.command("重置今日群抽取次数", alias={"重置今日抽取次数", "重置群抽取次数"})
     @filter.permission_type(filter.PermissionType.ADMIN)
@@ -2232,7 +3018,10 @@ class KirbyCatalogPlugin(Star):
             "random_message_template", DEFAULT_RANDOM_MESSAGE_TEMPLATE, values
         )
         text = self._ally_detail_message(entry, text)
-        yield event.chain_result(await self._ally_chain(entry, text))
+        chain = await self._ally_chain(entry, text)
+        result = await self._chain_result_with_media(event, chain)
+        if result is not None:
+            yield result
 
     @filter.command("查盟友", alias={"我的盟友"})
     @filter.event_message_type(EventMessageType.GROUP_MESSAGE)
@@ -2288,7 +3077,10 @@ class KirbyCatalogPlugin(Star):
             "query_message_template", DEFAULT_QUERY_MESSAGE_TEMPLATE, values
         )
         text = self._ally_detail_message(entry, text)
-        yield event.chain_result(await self._ally_chain(entry, text))
+        chain = await self._ally_chain(entry, text)
+        result = await self._chain_result_with_media(event, chain)
+        if result is not None:
+            yield result
 
     @filter.regex(r"^/?(?:查看简介|查看盟友简介)(?:\s+.+)?$")
     @filter.event_message_type(EventMessageType.GROUP_MESSAGE)
@@ -2327,7 +3119,11 @@ class KirbyCatalogPlugin(Star):
                 entry, description
             )
             if card_component is not None:
-                yield event.chain_result([card_component])
+                result = await self._chain_result_with_media(
+                    event, [card_component]
+                )
+                if result is not None:
+                    yield result
                 return
         yield event.plain_result(text)
 
@@ -2369,17 +3165,29 @@ class KirbyCatalogPlugin(Star):
         output = self.store.gallery_dir / f"group_{Path(group_id).name}.png"
         title = f"星之卡比盟友图鉴  已解锁 {len(unlocked)}/{len(self.store.entries())}"
         try:
-            await asyncio.to_thread(
-                self.store.render_gallery,
+            outputs = await asyncio.to_thread(
+                self.store.render_gallery_pages,
                 output,
                 unlocked,
                 title,
                 int(self._config_value("gallery_columns", 10)),
                 False,
+                self._bounded_int(
+                    self._config_value(
+                        "gallery_max_height_px", DEFAULT_GALLERY_MAX_HEIGHT_PX
+                    ),
+                    DEFAULT_GALLERY_MAX_HEIGHT_PX,
+                    0,
+                    30000,
+                ),
             )
-            yield event.chain_result(
-                [Comp.Plain(title), Comp.Image.fromFileSystem(str(output))]
-            )
+            components = [
+                Comp.Plain(title),
+                *(Comp.Image.fromFileSystem(str(path)) for path in outputs),
+            ]
+            result = await self._chain_result_with_media(event, components)
+            if result is not None:
+                yield result
         except Exception as exc:
             logger.exception("[%s] 生成群图鉴失败: %s", PLUGIN_ID, exc)
             yield event.plain_result("图鉴生成失败，请稍后再试。")
@@ -2406,17 +3214,29 @@ class KirbyCatalogPlugin(Star):
             f"已解锁 {progress['unlocked']}/{progress['total']}"
         )
         try:
-            await asyncio.to_thread(
-                self.store.render_gallery,
+            outputs = await asyncio.to_thread(
+                self.store.render_gallery_pages,
                 output,
                 unlocked,
                 title,
                 int(self._config_value("gallery_columns", 10)),
                 True,
+                self._bounded_int(
+                    self._config_value(
+                        "gallery_max_height_px", DEFAULT_GALLERY_MAX_HEIGHT_PX
+                    ),
+                    DEFAULT_GALLERY_MAX_HEIGHT_PX,
+                    0,
+                    30000,
+                ),
             )
-            yield event.chain_result(
-                [Comp.Plain(title), Comp.Image.fromFileSystem(str(output))]
-            )
+            components = [
+                Comp.Plain(title),
+                *(Comp.Image.fromFileSystem(str(path)) for path in outputs),
+            ]
+            result = await self._chain_result_with_media(event, components)
+            if result is not None:
+                yield result
         except Exception as exc:
             logger.exception("[%s] 生成个人图鉴失败: %s", PLUGIN_ID, exc)
             yield event.plain_result("个人图鉴生成失败，请稍后再试。")
@@ -2507,7 +3327,10 @@ class KirbyCatalogPlugin(Star):
             f"猜盟友开始！{clue}\n请回复：猜盟友 <名字>\n"
             f"题目编号不会显示，{timeout} 秒后失效。"
         )
-        yield event.chain_result(await self._ally_chain(entry, text))
+        chain = await self._ally_chain(entry, text)
+        result = await self._chain_result_with_media(event, chain)
+        if result is not None:
+            yield result
 
     @filter.event_message_type(EventMessageType.GROUP_MESSAGE)
     async def guess_ally_by_quoted_image(self, event: AstrMessageEvent):
@@ -2530,7 +3353,14 @@ class KirbyCatalogPlugin(Star):
     async def leaderboard(self, event: AstrMessageEvent):
         """查看本群盟友解锁数量排行榜。"""
         group_id = self._group_id(event)
-        rows = self.store.leaderboard(group_id, limit=10)
+        excluded = ()
+        if not self._bool_value(
+            self._config_value("bot_show_in_leaderboard", False)
+        ):
+            excluded = (self._bot_identity(event),)
+        rows = self.store.leaderboard(
+            group_id, limit=10, exclude_user_ids=excluded
+        )
         if not rows:
             yield event.plain_result("本群还没有收藏记录。")
             return
@@ -2579,6 +3409,7 @@ class KirbyCatalogPlugin(Star):
             "我的图鉴进度：查看有效解锁数、完成率和剩余数量\n"
             "星之卡比图鉴：查看本群图鉴（编号和名字）\n"
             "随机盟友：随机查看一位盟友，不计入抽取记录\n"
+            "Bot今日盟友：让 Bot 使用独立身份抽取当天盟友\n"
             "猜盟友：发起猜名，中文名或英文名都可作答，不改变图鉴\n"
             "盟友排行榜：查看本群收藏排行\n"
             "盟友名单 [关键词]：检索图鉴编号和名字\n"

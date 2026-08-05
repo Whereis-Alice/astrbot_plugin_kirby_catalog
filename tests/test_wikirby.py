@@ -22,6 +22,7 @@ from astrbot_plugin_kirby_catalog.wikirby_card import (
     CARD_TEMPLATE_NAMES,
     WIKIRBY_CARD_TEMPLATE,
     build_card_layout,
+    build_card_pages,
     estimate_text_lines,
     resolve_card_template,
 )
@@ -505,6 +506,59 @@ class WikirbyCardTests(unittest.TestCase):
             100,
         )
 
+    def test_short_card_stays_on_one_page(self):
+        pages = build_card_pages(
+            "简短简介。",
+            "种类：敌人\n提供能力：水",
+            page_line_budget=110,
+            has_image=True,
+        )
+
+        self.assertEqual(len(pages), 1)
+        self.assertEqual(pages[0]["page_number"], 1)
+        self.assertEqual(pages[0]["page_total"], 1)
+        self.assertTrue(pages[0]["show_summary"])
+
+    def test_oversized_card_paginates_without_losing_technique_rows(self):
+        rows = [
+            {
+                "move": f"招式 {index}",
+                "controls": "Pro 手柄：B",
+                "description": f"第 {index} 行说明。" * 12,
+                "damage": str(index),
+            }
+            for index in range(1, 31)
+        ]
+        pages = build_card_pages(
+            "简介。" * 20,
+            "游戏登场：\n" + "完整正文。" * 500,
+            [
+                {
+                    "kind": "techniques",
+                    "context": "Kirby Fighters 2",
+                    "intro": "完整招式表。",
+                    "groups": [{"label": "Type A", "rows": rows}],
+                }
+            ],
+            page_line_budget=90,
+            has_image=True,
+        )
+
+        self.assertGreater(len(pages), 1)
+        self.assertTrue(pages[0]["show_summary"])
+        self.assertTrue(all(not page["show_summary"] for page in pages[1:]))
+        self.assertTrue(
+            all(page["page_total"] == len(pages) for page in pages)
+        )
+        rendered_moves = [
+            row["move"].removesuffix("（续）")
+            for page in pages
+            for section in page["rich_sections"]
+            for group in section.get("groups", [])
+            for row in group.get("rows", [])
+        ]
+        self.assertEqual(set(rendered_moves), {f"招式 {index}" for index in range(1, 31)})
+
     def test_all_card_templates_resolve_to_distinct_variants(self):
         themes = [resolve_card_template(name) for name in CARD_TEMPLATE_NAMES]
 
@@ -860,8 +914,10 @@ class WikirbyCommandTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(render_call.kwargs["options"]["viewport_height"], 600)
         self.assertEqual(render_call.kwargs["options"]["scale"], "device")
         self.assertEqual(
-            render_call.kwargs["options"]["device_scale_factor_level"], "ultra"
+            render_call.kwargs["options"]["device_scale_factor_level"], "high"
         )
+        self.assertEqual(render_call.kwargs["options"]["type"], "jpeg")
+        self.assertEqual(render_call.kwargs["options"]["quality"], 92)
         self.assertNotIn("viewport", render_call.kwargs["options"])
 
     async def test_card_renders_one_image_with_selected_template(self):
@@ -887,6 +943,38 @@ class WikirbyCommandTests(unittest.IsolatedAsyncioTestCase):
         first_payload = plugin.html_render.await_args_list[0].args[1]
         self.assertEqual(first_payload["theme"]["slug"], "waddle")
         self.assertEqual(len(first_payload["right_columns"]), 2)
+
+    async def test_oversized_wiki_card_renders_multiple_numbered_pages(self):
+        plugin = KirbyCatalogPlugin.__new__(KirbyCatalogPlugin)
+        plugin.config = {
+            "wiki_card_auto_paginate": True,
+            "wiki_card_page_line_budget": 80,
+        }
+        plugin.html_render = AsyncMock(return_value="card.png")
+        page = {
+            "title": "Kirby",
+            "url": "https://wikirby.com/wiki/Kirby",
+        }
+
+        components = await plugin._wikirby_card_components(
+            page,
+            "卡比简介。" * 30,
+            "游戏登场：\n"
+            + "\n".join(
+                f"第 {index} 部作品：" + "完整经历。" * 30
+                for index in range(1, 25)
+            ),
+            None,
+        )
+
+        self.assertGreater(len(components), 1)
+        self.assertEqual(plugin.html_render.await_count, len(components))
+        payloads = [call.args[1] for call in plugin.html_render.await_args_list]
+        self.assertEqual(
+            [payload["page_number"] for payload in payloads],
+            list(range(1, len(payloads) + 1)),
+        )
+        self.assertTrue(all(payload["page_total"] == len(payloads) for payload in payloads))
 
     async def test_summary_can_use_native_provider_for_translation(self):
         plugin = KirbyCatalogPlugin.__new__(KirbyCatalogPlugin)

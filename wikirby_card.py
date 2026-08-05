@@ -916,14 +916,18 @@ WIKIRBY_CARD_TEMPLATE = r"""
       <div>
         <div class="eyebrow">{{ theme.eyebrow | e }}</div>
         <h1 class="title">{{ title | e }}</h1>
-        <div class="subtitle">{{ wiki_name | default('WiKirby', true) | e }} 百科阅读卡片 · {{ theme.label | e }}</div>
+        <div class="subtitle">
+          {{ wiki_name | default('WiKirby', true) | e }} 百科阅读卡片 · {{ theme.label | e }}
+          {% if page_total > 1 %} · 第 {{ page_number }} / {{ page_total }} 页{% endif %}
+        </div>
       </div>
       <div class="page-chip">
-        <strong>百科档案</strong>
+        <strong>{% if page_total > 1 %}第 {{ page_number }} / {{ page_total }} 页{% else %}百科档案{% endif %}</strong>
         <span>{{ reference_label | default('WIKIRBY REFERENCE', true) | e }}</span>
       </div>
     </header>
 
+    {% if show_summary %}
     <section class="hero{% if not image_data_uri %} hero--text{% endif %}">
       <div class="hero-copy">
         <div class="index">页面简介</div>
@@ -936,6 +940,7 @@ WIKIRBY_CARD_TEMPLATE = r"""
       </div>
       {% endif %}
     </section>
+    {% endif %}
 
     <div class="content">
       {% if left_blocks %}
@@ -1135,7 +1140,271 @@ def build_card_layout(
         "right_block_count": sum(len(column) for column in columns),
         "rich_sections": prepared_rich_sections,
         "rich_section_count": len(prepared_rich_sections),
+        "show_summary": True,
+        "page_number": 1,
+        "page_total": 1,
     }
+
+
+def build_card_pages(
+    summary: str,
+    detail_text: str,
+    rich_sections: list[dict[str, Any]] | None = None,
+    *,
+    page_line_budget: int = 110,
+    has_image: bool = False,
+    force_paginate: bool = False,
+) -> list[dict[str, Any]]:
+    """Split only oversized cards while preserving semantic content boundaries."""
+
+    budget = max(60, int(page_line_budget))
+    complete_layout = build_card_layout(summary, detail_text, rich_sections)
+    if not force_paginate and _layout_vertical_lines(
+        complete_layout, has_image=has_image
+    ) <= budget:
+        return [complete_layout]
+
+    summary_parts = _chunk_body(
+        summary.strip() or "该页面暂时没有可显示的正文摘要。",
+        max(24, budget - 35),
+    )
+    first_summary = summary_parts[0]
+    units: list[tuple[str, dict[str, Any]]] = []
+    for index, part in enumerate(summary_parts[1:], start=1):
+        units.append(
+            (
+                "detail",
+                {
+                    "title": "简介（续）" if index == 1 else f"简介（续 {index}）",
+                    "body": part,
+                    "tone": "section",
+                },
+            )
+        )
+
+    detail_chunk_lines = max(24, min(54, budget // 2))
+    for block in _detail_blocks(detail_text):
+        for part in _split_for_column(block, max_lines=detail_chunk_lines):
+            units.append(("detail", part))
+
+    rich_chunk_lines = max(28, budget - 24)
+    for section in _prepare_rich_sections(rich_sections or []):
+        for part in _split_prepared_rich_section(section, rich_chunk_lines):
+            units.append(("rich", part))
+
+    def make_layout(
+        page_units: list[tuple[str, dict[str, Any]]], first_page: bool
+    ) -> dict[str, Any]:
+        detail_blocks = [
+            payload for kind, payload in page_units if kind == "detail"
+        ]
+        page_rich = [payload for kind, payload in page_units if kind == "rich"]
+        layout = build_card_layout(
+            first_summary if first_page else "",
+            _detail_blocks_to_text(detail_blocks),
+            page_rich,
+        )
+        layout["show_summary"] = first_page
+        return layout
+
+    pages: list[dict[str, Any]] = []
+    current: list[tuple[str, dict[str, Any]]] = []
+    first_page = True
+    for unit in units:
+        candidate = [*current, unit]
+        candidate_layout = make_layout(candidate, first_page)
+        candidate_lines = _layout_vertical_lines(
+            candidate_layout,
+            has_image=has_image and first_page,
+        )
+        if current and candidate_lines > budget:
+            pages.append(make_layout(current, first_page))
+            first_page = False
+            current = [unit]
+        else:
+            current = candidate
+
+    if current or not pages:
+        pages.append(make_layout(current, first_page))
+
+    page_total = len(pages)
+    for index, layout in enumerate(pages, start=1):
+        layout["page_number"] = index
+        layout["page_total"] = page_total
+    return pages
+
+
+def _layout_vertical_lines(layout: dict[str, Any], *, has_image: bool) -> int:
+    fixed_lines = 18
+    hero_lines = 0
+    if layout.get("show_summary", True):
+        hero_lines = estimate_text_lines(str(layout.get("summary", ""))) + 10
+        if has_image:
+            hero_lines = max(hero_lines, 26)
+
+    facts_lines = sum(
+        estimate_text_lines(str(block.get("body", ""))) + 5
+        for block in layout.get("left_blocks", [])
+    )
+    column_lines = [
+        sum(
+            estimate_text_lines(str(block.get("body", ""))) + 5
+            for block in column
+        )
+        for column in layout.get("right_columns", [])
+    ]
+    detail_lines = max(column_lines, default=0)
+    rich_lines = sum(
+        _rich_section_lines(section)
+        for section in layout.get("rich_sections", [])
+    )
+    return fixed_lines + hero_lines + facts_lines + detail_lines + rich_lines
+
+
+def _rich_section_lines(section: dict[str, Any]) -> int:
+    if section.get("kind") == "quotes":
+        return 5 + sum(
+            estimate_text_lines(str(quote.get("text", "")))
+            + estimate_text_lines(
+                " ".join(
+                    part
+                    for part in (
+                        str(quote.get("attribution", "")),
+                        str(quote.get("source", "")),
+                    )
+                    if part
+                )
+            )
+            + 5
+            for quote in section.get("quotes", [])
+        )
+    if section.get("kind") != "techniques":
+        return 0
+    lines = 6 + estimate_text_lines(str(section.get("intro", "")))
+    for group in section.get("groups", []):
+        lines += 3 if group.get("label") else 1
+        for row in group.get("rows", []):
+            lines += max(
+                3,
+                estimate_text_lines(str(row.get("move", ""))),
+                estimate_text_lines(str(row.get("controls", ""))),
+                estimate_text_lines(str(row.get("description", ""))),
+                estimate_text_lines(str(row.get("damage", ""))),
+            ) + 2
+    return lines
+
+
+def _split_prepared_rich_section(
+    section: dict[str, Any], max_lines: int
+) -> list[dict[str, Any]]:
+    if section.get("kind") == "quotes":
+        expanded_quotes: list[dict[str, str]] = []
+        for quote in section.get("quotes", []):
+            text_parts = _chunk_body(
+                str(quote.get("text", "")), max(12, max_lines - 10)
+            )
+            for index, text_part in enumerate(text_parts):
+                expanded_quotes.append(
+                    {
+                        **quote,
+                        "text": text_part,
+                        "attribution": (
+                            str(quote.get("attribution", ""))
+                            if index == len(text_parts) - 1
+                            else ""
+                        ),
+                        "source": (
+                            str(quote.get("source", ""))
+                            if index == len(text_parts) - 1
+                            else ""
+                        ),
+                    }
+                )
+        chunks: list[dict[str, Any]] = []
+        current: list[dict[str, str]] = []
+        for quote in expanded_quotes:
+            candidate = {
+                **section,
+                "quotes": [*current, quote],
+                "incomplete": False,
+            }
+            if current and _rich_section_lines(candidate) > max_lines:
+                chunks.append({**section, "quotes": current, "incomplete": False})
+                current = [quote]
+            else:
+                current.append(quote)
+        if current:
+            chunks.append({**section, "quotes": current, "incomplete": False})
+        if chunks:
+            chunks[-1]["incomplete"] = bool(section.get("incomplete"))
+        return chunks
+
+    if section.get("kind") != "techniques":
+        return [section]
+
+    chunks: list[dict[str, Any]] = []
+    intro = str(section.get("intro", ""))
+    for group in section.get("groups", []):
+        expanded_rows: list[dict[str, str]] = []
+        for row in group.get("rows", []):
+            descriptions = _chunk_body(
+                str(row.get("description", "")), max(10, max_lines - 12)
+            )
+            for index, description in enumerate(descriptions):
+                expanded_rows.append(
+                    {
+                        **row,
+                        "move": (
+                            str(row.get("move", ""))
+                            if index == 0
+                            else f"{row.get('move', '招式')}（续）"
+                        ),
+                        "controls": str(row.get("controls", "")) if index == 0 else "—",
+                        "description": description,
+                        "damage": str(row.get("damage", "")) if index == 0 else "—",
+                    }
+                )
+        current_rows: list[dict[str, str]] = []
+        for row in expanded_rows:
+            candidate = {
+                **section,
+                "intro": intro if not chunks else "",
+                "groups": [{**group, "rows": [*current_rows, row]}],
+                "incomplete": False,
+            }
+            if current_rows and _rich_section_lines(candidate) > max_lines:
+                chunks.append(
+                    {
+                        **section,
+                        "intro": intro if not chunks else "",
+                        "groups": [{**group, "rows": current_rows}],
+                        "incomplete": False,
+                    }
+                )
+                current_rows = [row]
+            else:
+                current_rows.append(row)
+        if current_rows:
+            chunks.append(
+                {
+                    **section,
+                    "intro": intro if not chunks else "",
+                    "groups": [{**group, "rows": current_rows}],
+                    "incomplete": False,
+                }
+            )
+    if chunks:
+        chunks[-1]["incomplete"] = bool(section.get("incomplete"))
+    return chunks or [section]
+
+
+def _detail_blocks_to_text(blocks: list[dict[str, Any]]) -> str:
+    return "\n".join(
+        f"{str(block.get('title', '页面资料')).rstrip('：:')}：\n"
+        f"{str(block.get('body', '')).strip()}"
+        for block in blocks
+        if str(block.get("body", "")).strip()
+    )
 
 
 def _prepare_rich_sections(

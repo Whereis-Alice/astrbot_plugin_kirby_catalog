@@ -1,15 +1,19 @@
 import asyncio
+import tempfile
 import time
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 from astrbot.api import message_components as Comp
 from astrbot.core.star.filter.regex import RegexFilter
 from astrbot.core.star.star_handler import star_handlers_registry
+from PIL import Image
 
 from astrbot_plugin_kirby_catalog.catalog_core import get_today
 from astrbot_plugin_kirby_catalog.main import KirbyCatalogPlugin
+from astrbot_plugin_kirby_catalog.media_delivery import stage_local_image
 
 
 class FakeStore:
@@ -455,6 +459,148 @@ class DrawManagementTests(unittest.IsolatedAsyncioTestCase):
             "首次登场于《Kirby: Meta Knight and the Knight of Yomi》。\n"
             "今日剩余次数：2",
         )
+
+    async def test_bot_draw_is_persistent_and_idempotent_for_the_day(self):
+        plugin = make_plugin(self.entry)
+        plugin.store.asset_bytes = lambda _entry, _download=False: b"image-bytes"
+        event = FakeEvent("Bot今日盟友", group_id="100")
+
+        first = [result async for result in plugin.draw_bot_ally(event)]
+        second = [result async for result in plugin.draw_bot_ally(event)]
+        tool_text = await plugin.draw_bot_ally_tool(event)
+
+        today = get_today()
+        self.assertEqual(plugin.store.draw_count("100", "bot_astrbot", today), 1)
+        self.assertIn("bot_astrbot", plugin.store.group)
+        self.assertIn("Papi", first[0][0].text)
+        self.assertIn("今天已经抽过", second[0][0].text)
+        self.assertIn("今天已经抽过", tool_text)
+
+    async def test_napcat_direct_send_uses_file_uri_instead_of_base64(self):
+        class FakeBot:
+            def __init__(self):
+                self.calls = []
+
+            async def send_group_msg(self, **kwargs):
+                self.calls.append(kwargs)
+
+        plugin = make_plugin(self.entry)
+        plugin.config = {
+            "media_send_mode": "NapCat本地文件直发",
+            "media_normalize_jpeg": False,
+            "media_direct_retry_count": 0,
+        }
+        event = FakeEvent("测试", group_id="123456")
+        event.unified_msg_origin = "aiocqhttp:group:123456"
+        event.bot = FakeBot()
+        with tempfile.TemporaryDirectory() as temp:
+            image_path = Path(temp) / "ally.jpg"
+            Image.new("RGB", (64, 64), "pink").save(image_path, format="JPEG")
+
+            sent = await plugin._try_direct_media_send(
+                event,
+                [
+                    Comp.Plain("测试图片"),
+                    Comp.Image.fromFileSystem(str(image_path)),
+                ],
+            )
+
+        self.assertTrue(sent)
+        self.assertEqual(len(event.bot.calls), 1)
+        payload = event.bot.calls[0]["message"]
+        self.assertEqual(payload[0]["data"]["text"], "测试图片")
+        self.assertTrue(payload[1]["data"]["file"].startswith("file:///"))
+        self.assertNotIn("base64://", payload[1]["data"]["file"])
+
+    async def test_napcat_direct_send_failure_returns_to_standard_path(self):
+        class FailingBot:
+            def __init__(self):
+                self.calls = 0
+
+            async def send_group_msg(self, **_kwargs):
+                self.calls += 1
+                raise RuntimeError("rich media transfer failed")
+
+        plugin = make_plugin(self.entry)
+        plugin.config = {
+            "media_send_mode": "自动（推荐）",
+            "media_normalize_jpeg": False,
+            "media_direct_retry_count": 1,
+            "media_direct_retry_delay_seconds": 0,
+        }
+        event = FakeEvent("测试", group_id="123456")
+        event.unified_msg_origin = "aiocqhttp:group:123456"
+        event.bot = FailingBot()
+        with tempfile.TemporaryDirectory() as temp:
+            image_path = Path(temp) / "ally.png"
+            Image.new("RGB", (32, 32), "pink").save(image_path, format="PNG")
+            sent = await plugin._try_direct_media_send(
+                event, [Comp.Image.fromFileSystem(str(image_path))]
+            )
+
+        self.assertFalse(sent)
+        self.assertEqual(event.bot.calls, 2)
+
+    async def test_direct_send_ignores_non_aiocqhttp_events(self):
+        class FakeBot:
+            def __init__(self):
+                self.calls = 0
+
+            async def send_group_msg(self, **_kwargs):
+                self.calls += 1
+
+        plugin = make_plugin(self.entry)
+        plugin.config = {"media_send_mode": "NapCat本地文件直发"}
+        event = FakeEvent("测试", group_id="123456")
+        event.bot = FakeBot()
+
+        sent = await plugin._try_direct_media_send(event, [Comp.Plain("测试")])
+
+        self.assertFalse(sent)
+        self.assertEqual(event.bot.calls, 0)
+
+    def test_shared_media_stage_reuses_unchanged_file(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "ally.png"
+            shared = root / "shared"
+            Image.new("RGB", (64, 64), "pink").save(source, format="PNG")
+
+            first_path, first_uri = stage_local_image(
+                source, shared, normalize_jpeg_enabled=False
+            )
+            second_path, second_uri = stage_local_image(
+                source, shared, normalize_jpeg_enabled=False
+            )
+
+            self.assertEqual(first_path, second_path)
+            self.assertEqual(first_uri, second_uri)
+            self.assertTrue(first_path.is_file())
+
+    async def test_standard_fallback_uses_safe_delivery_copy_for_oversized_image(self):
+        plugin = make_plugin(self.entry)
+        plugin.config = {
+            "media_send_mode": "AstrBot标准发送",
+            "media_normalize_jpeg": False,
+            "media_max_width_px": 1000,
+            "media_max_height_px": 8000,
+            "media_max_megapixels": 18,
+            "media_max_bytes_mb": 8,
+        }
+        with tempfile.TemporaryDirectory() as temp:
+            plugin.store.root = Path(temp) / "plugin-data"
+            image_path = Path(temp) / "wide.png"
+            Image.new("RGB", (2400, 120), "pink").save(image_path, format="PNG")
+
+            result = await plugin._chain_result_with_media(
+                FakeEvent("测试"), [Comp.Image.fromFileSystem(str(image_path))]
+            )
+            delivered_path = Path(result[0].path)
+            with Image.open(delivered_path) as delivered:
+                self.assertLessEqual(delivered.width, 1000)
+                self.assertEqual(delivered.height, 50)
+
+        self.assertNotEqual(delivered_path, image_path)
 
     def test_ally_detail_template_and_visibility_switches(self):
         plugin = make_plugin(self.entry)

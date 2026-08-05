@@ -2117,8 +2117,14 @@ class CatalogStore:
             if folded in _as_text(user.get("nickname"), "用户").casefold()
         ]
 
-    def leaderboard(self, group_id: str, limit: int = 10) -> List[Tuple[str, str, int]]:
+    def leaderboard(
+        self,
+        group_id: str,
+        limit: int = 10,
+        exclude_user_ids: Iterable[str] = (),
+    ) -> List[Tuple[str, str, int]]:
         config = self.load_group(group_id)
+        excluded = {str(user_id) for user_id in exclude_user_ids}
         rows = [
             (
                 user_id,
@@ -2126,6 +2132,7 @@ class CatalogStore:
                 int(self.user_progress(user)["unlocked"]),
             )
             for user_id, user in config.items()
+            if user_id not in excluded
         ]
         rows.sort(key=lambda row: (-row[2], row[1].casefold(), row[0]))
         return rows[:limit]
@@ -2206,6 +2213,24 @@ class CatalogStore:
         columns: int = 10,
         personal: bool = False,
     ) -> Path:
+        return self.render_gallery_pages(
+            output_path,
+            unlocked,
+            title,
+            columns=columns,
+            personal=personal,
+            max_height_px=0,
+        )[0]
+
+    def render_gallery_pages(
+        self,
+        output_path: Path,
+        unlocked: Set[str],
+        title: str,
+        columns: int = 10,
+        personal: bool = False,
+        max_height_px: int = 7600,
+    ) -> List[Path]:
         entries = self.entries()
         if personal:
             entries = [entry for entry in entries if entry["filename"] in unlocked]
@@ -2216,6 +2241,124 @@ class CatalogStore:
         cell_width, thumb_size, label_height = 142, (126, 112), 32
         cell_height = thumb_size[1] + label_height + 8
         header_height = 58
+        if max_height_px > 0:
+            max_rows = max(1, (int(max_height_px) - header_height) // cell_height)
+            entries_per_page = max_rows * columns
+        else:
+            entries_per_page = len(entries)
+        page_entries = [
+            entries[index : index + entries_per_page]
+            for index in range(0, len(entries), entries_per_page)
+        ]
+        page_total = len(page_entries)
+        manifest_path = output_path.with_suffix(f"{output_path.suffix}.cache.json")
+        signature_payload = {
+            "title": title,
+            "columns": columns,
+            "personal": bool(personal),
+            "max_height_px": int(max_height_px),
+            "entries": [
+                {
+                    "id": int(entry.get("id", 0) or 0),
+                    "filename": _as_text(entry.get("filename")),
+                    "name": _as_text(entry.get("name")),
+                    "unlocked": personal
+                    or _as_text(entry.get("filename")) in unlocked,
+                    "asset": self._gallery_asset_fingerprint(entry),
+                }
+                for entry in entries
+            ],
+        }
+        signature = hashlib.sha256(
+            json.dumps(
+                signature_payload,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        cached = _read_json(manifest_path, {})
+        if isinstance(cached, dict) and cached.get("signature") == signature:
+            cached_outputs = [
+                output_path.parent / Path(str(name)).name
+                for name in cached.get("outputs", [])
+                if str(name).strip()
+            ]
+            if cached_outputs and all(path.is_file() for path in cached_outputs):
+                return cached_outputs
+
+        outputs: List[Path] = []
+        for page_number, current_entries in enumerate(page_entries, start=1):
+            page_output = (
+                output_path
+                if page_total == 1
+                else output_path.with_name(
+                    f"{output_path.stem}_p{page_number:02d}-of-{page_total:02d}"
+                    f"{output_path.suffix}"
+                )
+            )
+            page_title = (
+                title
+                if page_total == 1
+                else f"{title}  第 {page_number}/{page_total} 页"
+            )
+            self._render_gallery_page(
+                page_output,
+                current_entries,
+                unlocked,
+                page_title,
+                columns,
+                personal,
+                cell_width,
+                thumb_size,
+                cell_height,
+                header_height,
+            )
+            outputs.append(page_output)
+        old_output_names = cached.get("outputs", []) if isinstance(cached, dict) else []
+        old_outputs = [
+            output_path.parent / Path(str(name)).name
+            for name in old_output_names
+            if str(name).strip()
+        ]
+        for stale_path in old_outputs:
+            if stale_path not in outputs:
+                try:
+                    stale_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+        _atomic_write_json(
+            manifest_path,
+            {
+                "signature": signature,
+                "outputs": [path.name for path in outputs],
+            },
+        )
+        return outputs
+
+    def _gallery_asset_fingerprint(self, entry: Mapping[str, Any]) -> str:
+        path = self.asset_path(dict(entry))
+        if path is None:
+            return "missing"
+        try:
+            stat = path.stat()
+            return f"{stat.st_size}:{stat.st_mtime_ns}"
+        except OSError:
+            return "unreadable"
+
+    def _render_gallery_page(
+        self,
+        output_path: Path,
+        entries: Sequence[Dict[str, Any]],
+        unlocked: Set[str],
+        title: str,
+        columns: int,
+        personal: bool,
+        cell_width: int,
+        thumb_size: Tuple[int, int],
+        cell_height: int,
+        header_height: int,
+    ) -> Path:
         rows = (len(entries) + columns - 1) // columns
         canvas = Image.new(
             "RGB",

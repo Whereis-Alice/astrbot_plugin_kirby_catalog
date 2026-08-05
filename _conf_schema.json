@@ -80,6 +80,28 @@
           "default": "{base}{description_block}{wiki_hint_block}",
           "hint": "支持 {base}、{description}、{description_block}、{wiki_hint}、{wiki_hint_block}。带 block 的变量会自动包含换行和“简介：”标题；素材图片始终放在文字之后。"
         },
+        "bot_draw_enabled": {
+          "description": "允许 Bot 使用独立身份抽取盟友",
+          "type": "bool",
+          "default": true,
+          "hint": "启用 Bot今日盟友 命令和 kirby_catalog_draw_bot_ally LLM 工具。Bot 数据按群独立保存，不占用群友次数；当天重复调用只展示同一结果。"
+        },
+        "bot_draw_nickname": {
+          "description": "Bot 抽取身份显示名称",
+          "type": "string",
+          "default": "星之卡比图鉴"
+        },
+        "bot_draw_message_template": {
+          "description": "Bot 今日盟友文案模板",
+          "type": "text",
+          "default": "{nickname}今天的盟友是 {name}，图鉴编号 #{id}{source_text}。{status_text}",
+          "hint": "支持 {nickname}、{name}、{id}、{source}、{source_text}、{status_text}。当天已抽过时 status_text 会说明本次仅展示原结果。"
+        },
+        "bot_show_in_leaderboard": {
+          "description": "在群图鉴排行榜显示 Bot",
+          "type": "bool",
+          "default": false
+        },
         "forward_node_max_chars": {
           "description": "合并转发单个文字节点最大字符数",
           "type": "int",
@@ -116,6 +138,170 @@
         "default": 10,
         "min": 4,
         "max": 12
+      }
+    }
+  },
+  "delivery_settings": {
+    "description": "图片发送与长卡片安全设置",
+    "type": "object",
+    "items": {
+      "media_send_mode": {
+        "description": "图片发送方式",
+        "type": "string",
+        "options": [
+          "自动（推荐）",
+          "AstrBot标准发送",
+          "NapCat本地文件直发"
+        ],
+        "default": "自动（推荐）",
+        "hint": "自动模式会在 aiocqhttp/NapCat 上优先发送 file:// 本地文件，失败后重试并回退 AstrBot 标准发送；其他平台始终自动回退。"
+      },
+      "media_shared_directory": {
+        "description": "AstrBot 与 NapCat 共享素材目录",
+        "type": "string",
+        "default": "",
+        "hint": "同机且 NapCat 能直接读取 AstrBot 路径时可留空。容器部署请填写 AstrBot 可写、NapCat 可读的共享挂载目录；插件会在其中建立独立子目录。"
+      },
+      "media_napcat_directory": {
+        "description": "NapCat 侧共享目录路径",
+        "type": "string",
+        "default": "",
+        "hint": "仅当同一共享卷在 NapCat 容器内的挂载路径不同于 AstrBot 时填写；相同时留空。"
+      },
+      "media_direct_retry_count": {
+        "description": "本地文件直发失败重试次数",
+        "type": "int",
+        "default": 1,
+        "min": 0,
+        "max": 3
+      },
+      "media_direct_retry_delay_seconds": {
+        "description": "本地文件直发重试间隔（秒）",
+        "type": "float",
+        "default": 0.8,
+        "min": 0,
+        "max": 10
+      },
+      "media_stage_retention_minutes": {
+        "description": "共享暂存图片保留时间（分钟）",
+        "type": "float",
+        "default": 30,
+        "min": 1,
+        "max": 1440
+      },
+      "media_normalize_jpeg": {
+        "description": "发送前标准化 JPEG",
+        "type": "bool",
+        "default": true,
+        "hint": "将 JPEG 统一保存为 RGB/JFIF，规避部分非标准 JPEG 被 QQNT 判定为 rich media transfer failed。"
+      },
+      "media_max_width_px": {
+        "description": "通用发送图片最大宽度（像素）",
+        "type": "int",
+        "default": 2160,
+        "min": 0,
+        "max": 20000
+      },
+      "media_max_height_px": {
+        "description": "通用发送图片最大高度（像素）",
+        "type": "int",
+        "default": 8000,
+        "min": 0,
+        "max": 50000
+      },
+      "media_max_megapixels": {
+        "description": "通用发送图片最大总像素（百万像素）",
+        "type": "float",
+        "default": 18,
+        "min": 0,
+        "max": 200
+      },
+      "media_max_bytes_mb": {
+        "description": "通用发送图片最大文件大小（MiB）",
+        "type": "float",
+        "default": 8,
+        "min": 0,
+        "max": 100,
+        "hint": "今日盟友、随机盟友、查盟友、猜盟友、百科卡片和图鉴共用最后一道发送保护。超过阈值时只生成发送缓存副本，不修改原素材；设为 0 可关闭对应限制。"
+      },
+      "gallery_max_height_px": {
+        "description": "单张图鉴最大高度（像素）",
+        "type": "int",
+        "default": 7600,
+        "min": 0,
+        "max": 30000,
+        "hint": "群总图鉴只有超过此高度才自动分页；设为 0 可关闭图鉴分页。个人图鉴较短时仍只生成一张。"
+      },
+      "wiki_card_auto_paginate": {
+        "description": "超长百科卡片自动分页",
+        "type": "bool",
+        "default": true,
+        "hint": "普通页面保持单张；只有预计或实测超过安全阈值时，才按简介、栏目、语录和招式行分页，内容不会截断。"
+      },
+      "wiki_card_page_line_budget": {
+        "description": "百科卡片分页行预算",
+        "type": "int",
+        "default": 110,
+        "min": 60,
+        "max": 300,
+        "hint": "数值越大，每页内容越多、图片越长。建议先保持默认值。"
+      },
+      "wiki_card_max_width_px": {
+        "description": "百科卡片安全宽度（像素）",
+        "type": "int",
+        "default": 2160,
+        "min": 0,
+        "max": 20000
+      },
+      "wiki_card_max_height_px": {
+        "description": "百科卡片安全高度（像素）",
+        "type": "int",
+        "default": 8000,
+        "min": 0,
+        "max": 50000
+      },
+      "wiki_card_max_megapixels": {
+        "description": "百科卡片安全总像素（百万像素）",
+        "type": "float",
+        "default": 18,
+        "min": 0,
+        "max": 200
+      },
+      "wiki_card_max_bytes_mb": {
+        "description": "百科卡片安全文件大小（MiB）",
+        "type": "float",
+        "default": 8,
+        "min": 0,
+        "max": 100,
+        "hint": "这些阈值是针对 NapCat/QQNT 的保守兜底，不是 QQ 官方公布的硬限制；设为 0 可关闭对应检查。"
+      },
+      "wiki_card_resolution": {
+        "description": "百科卡片渲染清晰度",
+        "type": "string",
+        "options": [
+          "标准",
+          "高清（推荐）",
+          "超清"
+        ],
+        "default": "高清（推荐）",
+        "hint": "高清通常可在文字清晰度和 QQ 上传稳定性之间取得平衡；超清会显著增加像素和文件大小。渲染宽度超过 wiki_card_max_width_px 时会自动降低一级清晰度后重试。"
+      },
+      "wiki_card_image_format": {
+        "description": "百科卡片图片格式",
+        "type": "string",
+        "options": [
+          "JPEG",
+          "PNG"
+        ],
+        "default": "JPEG",
+        "hint": "JPEG 体积更小、发送更稳；PNG 更适合需要无损文字边缘的环境。"
+      },
+      "wiki_card_jpeg_quality": {
+        "description": "百科卡片 JPEG 质量",
+        "type": "int",
+        "default": 92,
+        "min": 60,
+        "max": 98
       }
     }
   },

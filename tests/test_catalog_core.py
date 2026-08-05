@@ -209,6 +209,52 @@ class CatalogStoreTests(unittest.TestCase):
                 self.assertGreater(image.width, 0)
                 self.assertGreater(image.height, 0)
 
+    def test_gallery_only_paginates_when_height_limit_is_exceeded(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = CatalogStore(root / "new", image_base_url="")
+            unlocked = set()
+            for index in range(20):
+                entry = store.add_asset(
+                    f"测试盟友 {index}", self.make_image((index, 80, 160))
+                )
+                unlocked.add(entry["filename"])
+
+            single = store.render_gallery_pages(
+                root / "gallery" / "single.png",
+                unlocked,
+                "测试图鉴",
+                columns=4,
+                max_height_px=0,
+            )
+            paged = store.render_gallery_pages(
+                root / "gallery" / "paged.png",
+                unlocked,
+                "测试图鉴",
+                columns=4,
+                max_height_px=400,
+            )
+
+            self.assertEqual(len(single), 1)
+            self.assertGreater(len(paged), 1)
+            for path in paged:
+                with Image.open(path) as image:
+                    self.assertLessEqual(image.height, 400)
+            with patch.object(
+                store,
+                "_render_gallery_page",
+                wraps=store._render_gallery_page,
+            ) as render_page:
+                cached = store.render_gallery_pages(
+                    root / "gallery" / "paged.png",
+                    unlocked,
+                    "测试图鉴",
+                    columns=4,
+                    max_height_px=400,
+                )
+            self.assertEqual(cached, paged)
+            render_page.assert_not_called()
+
     def test_repairs_duplicate_legacy_ids_without_losing_entries(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
