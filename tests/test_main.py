@@ -17,6 +17,8 @@ class FakeStore:
         self.group = {}
         self.draws = {}
         self.bonuses = {}
+        self.description = "这是一段简体中文盟友简介。"
+        self.description_is_override = False
 
     def resolve_entry(self, filename):
         return self.entry if filename == self.entry["filename"] else None
@@ -76,7 +78,9 @@ class FakeStore:
     def reset_group_draws(self, group_id, today=None):
         group_id = str(group_id)
         today = str(today)
-        draw_keys = [key for key in self.draws if key[0] == group_id and key[2] == today]
+        draw_keys = [
+            key for key in self.draws if key[0] == group_id and key[2] == today
+        ]
         bonus_keys = [
             key for key in self.bonuses if key[0] == group_id and key[2] == today
         ]
@@ -93,6 +97,32 @@ class FakeStore:
 
     def asset_bytes(self, entry, download=False):
         return None
+
+    def profile_for(self, entry):
+        return {
+            "name_zh": "测试中文名",
+            "name_en": str(entry.get("page_title") or entry.get("name") or ""),
+            "display_name": str(entry.get("name") or ""),
+            "description_zh": self.description,
+            "description_origin": (
+                "override" if self.description_is_override else "bundled"
+            ),
+            "source_url": "https://wikirby.com/wiki/Test",
+        }
+
+    def description_for(self, entry):
+        return self.description
+
+    def set_description(self, entry, description, updated_by=""):
+        self.description = description.strip()
+        self.description_is_override = True
+        return self.profile_for(entry)
+
+    def restore_description(self, entry):
+        removed = self.description_is_override
+        self.description_is_override = False
+        self.description = "这是一段简体中文盟友简介。"
+        return removed, self.profile_for(entry)
 
     def user_progress(self, _user):
         return {
@@ -265,7 +295,10 @@ class GuessFlowTests(unittest.IsolatedAsyncioTestCase):
 
         results = [result async for result in plugin.random_ally(FakeEvent("随机盟友"))]
 
-        self.assertTrue(results[0][0].text.startswith("随机盟友：#12 星之卡比"))
+        self.assertTrue(
+            results[0][0].text.startswith("随机查看的盟友是 星之卡比，图鉴编号 #12")
+        )
+        self.assertIn("简介：\n这是一段简体中文盟友简介。", results[0][0].text)
         self.assertFalse(plugin.store.group)
 
     async def test_personal_progress_reports_percentage_and_remaining_count(self):
@@ -299,9 +332,7 @@ class GuessFlowTests(unittest.IsolatedAsyncioTestCase):
                 }
                 results = [
                     result
-                    async for result in plugin.guess_ally(
-                        FakeEvent(f"猜盟友 {answer}")
-                    )
+                    async for result in plugin.guess_ally(FakeEvent(f"猜盟友 {answer}"))
                 ]
                 self.assertEqual(
                     results,
@@ -423,6 +454,98 @@ class DrawManagementTests(unittest.IsolatedAsyncioTestCase):
             "首次登场于《Kirby: Meta Knight and the Knight of Yomi》。\n"
             "今日剩余次数：2",
         )
+
+    def test_ally_detail_template_and_visibility_switches(self):
+        plugin = make_plugin(self.entry)
+
+        self.assertEqual(
+            plugin._ally_detail_message(self.entry, "基础文案"),
+            "基础文案\n"
+            "简介：\n"
+            "这是一段简体中文盟友简介。\n"
+            "详细信息引用本条消息并回复卡比百科即可查看（查百科会比较慢）",
+        )
+
+        plugin.config = {
+            "ally_description_enabled": False,
+            "ally_wiki_hint_enabled": False,
+        }
+        self.assertEqual(
+            plugin._ally_detail_message(self.entry, "基础文案"), "基础文案"
+        )
+
+        plugin.config = {
+            "ally_detail_template": "{base}\n资料：{description}\n{wiki_hint}",
+            "ally_wiki_hint_text": "引用后发送卡比百科",
+        }
+        self.assertEqual(
+            plugin._ally_detail_message(self.entry, "基础文案"),
+            "基础文案\n资料：这是一段简体中文盟友简介。\n引用后发送卡比百科",
+        )
+
+    async def test_draw_message_places_description_before_hint(self):
+        plugin = make_plugin(self.entry)
+        plugin.config = {"draw_cooldown_seconds": 0}
+        plugin.store.asset_bytes = lambda _entry, _download=False: b"image-bytes"
+
+        results = [result async for result in plugin.draw_ally(FakeEvent("今日盟友"))]
+
+        text = results[0][0].text
+        self.assertLess(text.index("简介："), text.index("详细信息引用本条消息"))
+        self.assertIn("这是一段简体中文盟友简介。", text)
+        self.assertIsInstance(results[0][-1], Comp.Image)
+
+    async def test_query_ally_uses_query_template_and_description(self):
+        plugin = make_plugin(self.entry)
+        plugin.store.group = {
+            "user-1": {
+                "current": {"ally_filename": "Papi.png", "date": get_today()},
+                "unlocked": [
+                    {"ally_filename": "Papi.png", "unlock_date": "2026-08-01"}
+                ],
+                "nickname": "爱丽丝",
+            }
+        }
+
+        results = [result async for result in plugin.query_ally(FakeEvent("查盟友"))]
+
+        text = results[0][0].text
+        self.assertIn("爱丽丝 今天的盟友是 Papi，图鉴编号 #1202", text)
+        self.assertIn("解锁于 2026-08-01", text)
+        self.assertIn("简介：\n这是一段简体中文盟友简介。", text)
+
+    async def test_admin_can_edit_and_restore_description_from_quote(self):
+        plugin = make_plugin(self.entry)
+        quoted = Comp.Reply(
+            id="reply-description",
+            message_str="随机查看的盟友是 Papi，图鉴编号 #1202。",
+        )
+
+        updated = [
+            result
+            async for result in plugin.edit_ally_description(
+                FakeEvent("星之卡比图鉴简介 新的人工简介。", [quoted])
+            )
+        ]
+        self.assertIn("已保存 #1202 Papi 的人工简介", updated[0])
+        self.assertEqual(plugin.store.description, "新的人工简介。")
+
+        viewed = [
+            result
+            async for result in plugin.edit_ally_description(
+                FakeEvent("星之卡比图鉴简介 1202")
+            )
+        ]
+        self.assertIn("管理员人工简介", viewed[0])
+        self.assertIn("新的人工简介。", viewed[0])
+
+        restored = [
+            result
+            async for result in plugin.restore_ally_description(
+                FakeEvent("星之卡比图鉴恢复简介", [quoted])
+            )
+        ]
+        self.assertIn("已恢复 #1202 Papi 的内置简介", restored[0])
 
     async def test_granted_opportunity_extends_effective_draw_limit(self):
         plugin = make_plugin(self.entry)

@@ -30,7 +30,10 @@ CATALOG_METADATA_KEYS = (
     "debut_year",
     "kind",
 )
-NON_GROUP_CONFIG_FILENAMES = frozenset({"draw_limits.json", "draw_bonuses.json"})
+DESCRIPTION_OVERRIDES_FILENAME = "description_overrides.json"
+NON_GROUP_CONFIG_FILENAMES = frozenset(
+    {"draw_limits.json", "draw_bonuses.json", DESCRIPTION_OVERRIDES_FILENAME}
+)
 
 
 def get_today() -> str:
@@ -220,6 +223,7 @@ class CatalogStore:
         data_dir: Path,
         legacy_dirs: Sequence[Path] = (),
         image_base_url: str = "",
+        profiles_path: Optional[Path] = None,
     ) -> None:
         self.root = Path(data_dir)
         self.config_dir = self.root / "config"
@@ -228,11 +232,17 @@ class CatalogStore:
         self.catalog_path = self.root / "catalog.json"
         self.draw_limits_path = self.config_dir / "draw_limits.json"
         self.draw_bonuses_path = self.config_dir / "draw_bonuses.json"
+        self.description_overrides_path = (
+            self.config_dir / DESCRIPTION_OVERRIDES_FILENAME
+        )
+        self.profiles_path = Path(profiles_path) if profiles_path else None
         self.legacy_dirs = [Path(path) for path in legacy_dirs]
         self.image_base_url = image_base_url.strip()
         self._catalog: Dict[str, Dict[str, Any]] = {}
         self._draw_limits: Dict[str, Any] = {}
         self._draw_bonuses: Dict[str, Any] = {}
+        self._profiles: Dict[str, Dict[str, Any]] = {}
+        self._description_overrides: Dict[str, Dict[str, Any]] = {}
         self._lock = threading.RLock()
         self._prepare()
 
@@ -244,6 +254,8 @@ class CatalogStore:
         self._migrate_legacy_data()
         self._load_draw_limits()
         self._load_draw_bonuses()
+        self._load_profiles()
+        self._load_description_overrides()
         self._refresh_catalog()
 
     @property
@@ -422,8 +434,7 @@ class CatalogStore:
         existing_digests = {
             digest
             for path in self.assets_dir.iterdir()
-            if path.is_file()
-            and path.suffix.lower() in IMAGE_EXTENSIONS
+            if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS
             for digest in [self._asset_digest(path)]
             if digest
         }
@@ -463,6 +474,95 @@ class CatalogStore:
 
     def _save_draw_bonuses(self) -> None:
         _atomic_write_json(self.draw_bonuses_path, self._draw_bonuses)
+
+    def _load_profiles(self) -> None:
+        raw = _read_json(self.profiles_path, {}) if self.profiles_path else {}
+        items = raw.get("items", {}) if isinstance(raw, dict) else {}
+        if not isinstance(items, dict):
+            items = {}
+        self._profiles = {
+            _as_text(key): dict(value)
+            for key, value in items.items()
+            if _as_text(key) and isinstance(value, dict)
+        }
+
+    def _load_description_overrides(self) -> None:
+        raw = _read_json(self.description_overrides_path, {})
+        items = raw.get("items", {}) if isinstance(raw, dict) else {}
+        if not isinstance(items, dict):
+            items = {}
+        self._description_overrides = {
+            _as_text(key): dict(value)
+            for key, value in items.items()
+            if _as_text(key) and isinstance(value, dict)
+        }
+
+    def _save_description_overrides(self) -> None:
+        _atomic_write_json(
+            self.description_overrides_path,
+            {"version": 1, "items": self._description_overrides},
+        )
+
+    @staticmethod
+    def _description_key(entry: Mapping[str, Any]) -> str:
+        entry_key = _as_text(entry.get("entry_key"))
+        if entry_key:
+            return f"entry_key:{entry_key}"
+        filename = Path(_as_text(entry.get("filename"))).name.casefold()
+        return f"filename:{filename}"
+
+    def profile_for(self, entry: Mapping[str, Any]) -> Dict[str, Any]:
+        """Return bundled metadata with an administrator override applied."""
+        entry_key = _as_text(entry.get("entry_key"))
+        profile = dict(self._profiles.get(entry_key, {}))
+        override = self._description_overrides.get(self._description_key(entry))
+        if override is not None:
+            profile["description_zh"] = _as_text(override.get("description_zh"))
+            profile["description_origin"] = "override"
+            profile["description_updated_at"] = _as_text(override.get("updated_at"))
+            profile["description_updated_by"] = _as_text(override.get("updated_by"))
+        elif profile.get("description_zh"):
+            profile["description_origin"] = "bundled"
+        else:
+            profile["description_origin"] = "missing"
+        return profile
+
+    def description_for(self, entry: Mapping[str, Any]) -> str:
+        return _as_text(self.profile_for(entry).get("description_zh"))
+
+    def set_description(
+        self,
+        entry: Mapping[str, Any],
+        description: str,
+        updated_by: str = "",
+    ) -> Dict[str, Any]:
+        description = str(description or "").strip()
+        if not description:
+            raise ValueError("简介不能为空")
+        with self._lock:
+            key = self._description_key(entry)
+            self._description_overrides[key] = {
+                "description_zh": description,
+                "updated_at": datetime.now(SHANGHAI).isoformat(timespec="seconds"),
+                "updated_by": _as_text(updated_by),
+                "entry_key": _as_text(entry.get("entry_key")),
+                "filename": Path(_as_text(entry.get("filename"))).name,
+                "catalog_id": int(entry.get("id", 0) or 0),
+                "name": _as_text(entry.get("name")),
+            }
+            self._save_description_overrides()
+            return self.profile_for(entry)
+
+    def restore_description(
+        self, entry: Mapping[str, Any]
+    ) -> Tuple[bool, Dict[str, Any]]:
+        with self._lock:
+            removed = self._description_overrides.pop(
+                self._description_key(entry), None
+            )
+            if removed is not None:
+                self._save_description_overrides()
+            return removed is not None, self.profile_for(entry)
 
     def _is_retired_asset(self, filename: str) -> bool:
         return any(
@@ -613,9 +713,7 @@ class CatalogStore:
         restore it as a real entry and fill the first missing catalogue id.
         Explicit merges remove their old files, so they remain unaffected.
         """
-        used_ids = {
-            int(entry.get("id", 0) or 0) for entry in self._catalog.values()
-        }
+        used_ids = {int(entry.get("id", 0) or 0) for entry in self._catalog.values()}
         max_id = max(used_ids, default=0)
         for path in list(self.assets_dir.iterdir()):
             if not path.is_file() or path.suffix.lower() not in IMAGE_EXTENSIONS:
@@ -726,9 +824,13 @@ class CatalogStore:
         exact: List[Dict[str, Any]] = []
         partial: List[Dict[str, Any]] = []
         for item in self._catalog.values():
+            profile = self._profiles.get(_as_text(item.get("entry_key")), {})
             candidates = {
                 _as_text(item.get("filename")).casefold(),
                 _as_text(item.get("name")).casefold(),
+                _as_text(profile.get("name_zh")).casefold(),
+                _as_text(profile.get("name_en")).casefold(),
+                _as_text(profile.get("display_name")).casefold(),
                 *[_as_text(alias).casefold() for alias in item.get("aliases", [])],
             }
             if folded in candidates:
@@ -916,6 +1018,7 @@ class CatalogStore:
         new_source: Optional[str] = None,
     ) -> Dict[str, Any]:
         with self._lock:
+            old_description_key = self._description_key(entry)
             old_filename = Path(_as_text(entry["filename"])).name
             old_path = self.asset_path(entry)
             suffix = old_path.suffix if old_path else ".png"
@@ -953,6 +1056,16 @@ class CatalogStore:
                 }
             )
             self._catalog[new_filename] = updated
+            new_description_key = self._description_key(updated)
+            if (
+                old_description_key != new_description_key
+                and old_description_key in self._description_overrides
+            ):
+                override = self._description_overrides.pop(old_description_key)
+                override["filename"] = new_filename
+                override["name"] = _as_text(updated.get("name"))
+                self._description_overrides[new_description_key] = override
+                self._save_description_overrides()
             self._save_catalog()
             return dict(updated)
 
@@ -981,13 +1094,12 @@ class CatalogStore:
                 old_name = _as_text(entry.get("name"))
                 if not old_name.startswith(old_prefix) or old_name in keep:
                     continue
-                target_name = f"{new_prefix}{old_name[len(old_prefix):]}"
+                target_name = f"{new_prefix}{old_name[len(old_prefix) :]}"
                 matches = [
                     item
                     for item in self._catalog.values()
                     if _as_text(item.get("name")) == target_name
-                    and _as_text(item.get("source"))
-                    == _as_text(entry.get("source"))
+                    and _as_text(item.get("source")) == _as_text(entry.get("source"))
                 ]
                 if len(matches) != 1:
                     unresolved.append(old_name)
@@ -1026,9 +1138,7 @@ class CatalogStore:
                 target_filename = Path(_as_text(target["filename"])).name
                 aliases = set(target.get("aliases", []))
                 for duplicate in matching[1:]:
-                    duplicate_filename = Path(
-                        _as_text(duplicate["filename"])
-                    ).name
+                    duplicate_filename = Path(_as_text(duplicate["filename"])).name
                     aliases.add(duplicate_filename)
                     aliases.update(duplicate.get("aliases", []))
                     self._replace_references(duplicate_filename, target_filename)
@@ -1141,7 +1251,18 @@ class CatalogStore:
             )
             filename = f"ally_{entry_id:04d}_{_safe_filename(name)}{extension}"
             _atomic_write_bytes(self.assets_dir / filename, data)
-            entry = self._set_entry(filename, entry_id, name, source)
+            digest = hashlib.sha256(data).hexdigest()[:24]
+            entry = self._set_entry(
+                filename,
+                entry_id,
+                name,
+                source,
+                metadata={
+                    "entry_key": f"manual:{entry_id}:{digest}",
+                    "catalog_kind": "manual",
+                    "asset_set": "manual",
+                },
+            )
             self._save_catalog()
             return dict(entry)
 

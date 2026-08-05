@@ -653,16 +653,13 @@ def load_new_assets(
             )
             page_override = page_overrides.get(page_title, {})
             debut_work = str(
-                page_override.get("debut_work")
-                or raw.get("earliest_work", "")
-                or ""
+                page_override.get("debut_work") or raw.get("earliest_work", "") or ""
             ).strip()
             work_order = release_order.get(debut_work, {})
             year = int(page_override.get("year") or work_order.get("year", 0) or 0)
             if not year:
                 year = (
-                    _extract_year(str(raw.get("earliest_work_raw", "") or ""))
-                    or 9999
+                    _extract_year(str(raw.get("earliest_work_raw", "") or "")) or 9999
                 )
             source = str(
                 page_override.get("source")
@@ -1397,9 +1394,11 @@ def migrate_groups(
         config_dir.glob("*.json"), key=lambda path: path.name.casefold()
     ):
         raw = _read_json(config_path, {})
-        if config_path.name in {"draw_limits.json", "draw_bonuses.json"} or not (
-            _safe_group_filename(config_path)
-        ):
+        if config_path.name in {
+            "draw_limits.json",
+            "draw_bonuses.json",
+            "description_overrides.json",
+        } or not (_safe_group_filename(config_path)):
             copied[config_path.name] = raw
             continue
         if not isinstance(raw, dict):
@@ -1538,11 +1537,7 @@ def _sorted_unlocks(
         date = _unlock_date(item)
         previous = by_filename.get(filename)
         if previous is None or (
-            date
-            and (
-                not previous["unlock_date"]
-                or date < previous["unlock_date"]
-            )
+            date and (not previous["unlock_date"] or date < previous["unlock_date"])
         ):
             by_filename[filename] = {
                 "ally_filename": filename,
@@ -1600,7 +1595,9 @@ def _remap_baseline_groups(
             old_current = _old_reference(current)
             current_targets = filename_targets.get(old_current, ())
             current_dict = copy.deepcopy(current) if isinstance(current, dict) else {}
-            current_dict["ally_filename"] = current_targets[0] if current_targets else ""
+            current_dict["ally_filename"] = (
+                current_targets[0] if current_targets else ""
+            )
             current_dict.pop("wife_name", None)
             current_dict.pop("filename", None)
             user["current"] = current_dict
@@ -1626,10 +1623,14 @@ def load_active_migration_baseline(
     state_path = active_root / "migration_state.json"
     state = _read_json(state_path, {})
     if not isinstance(state, dict) or not isinstance(state.get("summary"), dict):
-        return None, None, {
-            "status": "not_available",
-            "reason": "活动数据没有规范迁移状态，历史源按普通增量数据合并",
-        }
+        return (
+            None,
+            None,
+            {
+                "status": "not_available",
+                "reason": "活动数据没有规范迁移状态，历史源按普通增量数据合并",
+            },
+        )
 
     generated_at = str(state["summary"].get("generated_at", "") or "")
     report_candidates: List[Tuple[Path, Dict[str, Any]]] = []
@@ -1640,9 +1641,10 @@ def load_active_migration_baseline(
             if not isinstance(raw, dict):
                 continue
             summary = raw.get("summary", {})
-            if isinstance(summary, dict) and str(
-                summary.get("generated_at", "") or ""
-            ) == generated_at:
+            if (
+                isinstance(summary, dict)
+                and str(summary.get("generated_at", "") or "") == generated_at
+            ):
                 report_candidates.append((report_path, raw))
     if not report_candidates:
         raise RuntimeError(
@@ -1668,12 +1670,9 @@ def load_active_migration_baseline(
     backup_name = _portable_basename(state.get("backup_path", ""))
     ranked_history_roots: List[Tuple[int, float, Path]] = []
     for history_root in history_roots:
-        history_filenames = {
-            entry.filename for entry in load_old_entries(history_root)
-        }
+        history_filenames = {entry.filename for entry in load_old_entries(history_root)}
         coverage = (
-            len(report_old_filenames & history_filenames)
-            / len(report_old_filenames)
+            len(report_old_filenames & history_filenames) / len(report_old_filenames)
             if report_old_filenames
             else 0.0
         )
@@ -1751,20 +1750,24 @@ def load_active_migration_baseline(
         for user in users.values()
         if isinstance(user, dict)
     )
-    return baseline_groups, baseline_history_root, {
-        "status": "reconstructed",
-        "migration_state": str(state_path),
-        "migration_report": str(report_path),
-        "history_source": str(baseline_history_root),
-        "backup_path_matched": bool(backup_matched),
-        "history_catalog_coverage": round(history_coverage * 100, 2),
-        "prior_catalog_entries": len(prior_catalog_items),
-        "prior_catalog_entries_mapped": mapped_prior_items,
-        "prior_unique_unlocks": prior_unique_unlocks,
-        "mapped_baseline_unique_unlocks": mapped_unique_unlocks,
-        "previous_migration_generated_at": generated_at,
-        "previous_migration_applied_at": str(state.get("applied_at", "") or ""),
-    }
+    return (
+        baseline_groups,
+        baseline_history_root,
+        {
+            "status": "reconstructed",
+            "migration_state": str(state_path),
+            "migration_report": str(report_path),
+            "history_source": str(baseline_history_root),
+            "backup_path_matched": bool(backup_matched),
+            "history_catalog_coverage": round(history_coverage * 100, 2),
+            "prior_catalog_entries": len(prior_catalog_items),
+            "prior_catalog_entries_mapped": mapped_prior_items,
+            "prior_unique_unlocks": prior_unique_unlocks,
+            "mapped_baseline_unique_unlocks": mapped_unique_unlocks,
+            "previous_migration_generated_at": generated_at,
+            "previous_migration_applied_at": str(state.get("applied_at", "") or ""),
+        },
+    )
 
 
 def merge_history_groups(
@@ -1797,7 +1800,10 @@ def merge_history_groups(
     if baseline_groups is not None:
         corrected_history_groups: Mapping[str, Mapping[str, Any]] = {}
         for history_root, groups in history_groups:
-            if baseline_history_root is not None and history_root == baseline_history_root:
+            if (
+                baseline_history_root is not None
+                and history_root == baseline_history_root
+            ):
                 corrected_history_groups = groups
                 break
         if not corrected_history_groups:
@@ -1958,12 +1964,9 @@ def merge_history_groups(
                         user_key, 0
                     ),
                     "history_unlocks_added": additions.get(user_key, 0),
-                    "history_unlock_dates_recovered": recovered_dates.get(
-                        user_key, 0
-                    ),
+                    "history_unlock_dates_recovered": recovered_dates.get(user_key, 0),
                     "final_unique_unlocks": final_count,
-                    "net_unlock_change": final_count
-                    - active_counts.get(user_key, 0),
+                    "net_unlock_change": final_count - active_counts.get(user_key, 0),
                     "contributing_history_sources": " | ".join(
                         sorted(contributing_sources.get(user_key, set()))
                     ),
@@ -1973,9 +1976,7 @@ def merge_history_groups(
         "enabled": baseline_groups is not None,
         "baseline_users_reconciled": baseline_users_reconciled,
         "active_baseline_unlocks_removed": sum(baseline_removed.values()),
-        "active_post_migration_unlocks_preserved": sum(
-            post_migration_counts.values()
-        ),
+        "active_post_migration_unlocks_preserved": sum(post_migration_counts.values()),
         "baseline_current_rows_identified": baseline_current_rows_identified,
         "baseline_current_rows_changed": baseline_current_rows_changed,
         "active_current_rows_preserved": active_current_rows_preserved,
@@ -2048,8 +2049,7 @@ def create_plan(
         if any(_paths_overlap(history_root, root) for root in asset_roots):
             raise RuntimeError("历史数据源与新素材目录必须彼此独立")
         if any(
-            _paths_overlap(history_root, other)
-            for other in history_roots[index + 1 :]
+            _paths_overlap(history_root, other) for other in history_roots[index + 1 :]
         ):
             raise RuntimeError("多个历史数据源必须彼此独立且不能重复")
     protected_roots = [old_root, *asset_roots, *history_roots]
@@ -2095,11 +2095,7 @@ def create_plan(
 
     all_matches = [
         *active_matches,
-        *[
-            match
-            for history_run in history_runs
-            for match in history_run["matches"]
-        ],
+        *[match for history_run in history_runs for match in history_run["matches"]],
     ]
     catalog_items = build_catalog(assets, all_matches)
     catalog_ids = {item["filename"]: int(item["id"]) for item in catalog_items}
@@ -2125,9 +2121,7 @@ def create_plan(
             catalog_ids,
             source_role="history",
         )
-        history_group_sets.append(
-            (history_run["root"], history_run["groups"])
-        )
+        history_group_sets.append((history_run["root"], history_run["groups"]))
 
     (
         baseline_groups,
@@ -2171,20 +2165,14 @@ def create_plan(
     ]
     user_rows = [
         *active_user_rows,
-        *[
-            row
-            for history_run in history_runs
-            for row in history_run["user_rows"]
-        ],
+        *[row for history_run in history_runs for row in history_run["user_rows"]],
     ]
 
     history_summaries: List[Dict[str, Any]] = []
     for history_run, merge_stats in zip(history_runs, merge_source_stats):
         history_user_rows = history_run["user_rows"]
         history_matches = history_run["matches"]
-        history_old_unlock_rows = _sum_user_rows(
-            history_user_rows, "old_unlock_rows"
-        )
+        history_old_unlock_rows = _sum_user_rows(history_user_rows, "old_unlock_rows")
         history_mapped_unlock_rows = _sum_user_rows(
             history_user_rows, "mapped_unlock_rows"
         )
@@ -2201,9 +2189,7 @@ def create_plan(
             "old_asset_files": sum(
                 entry.path is not None for entry in history_run["entries"]
             ),
-            "matched_old_entries": sum(
-                match.matched for match in history_matches
-            ),
+            "matched_old_entries": sum(match.matched for match in history_matches),
             "unmatched_old_entries": sum(
                 not match.matched for match in history_matches
             ),
@@ -2241,9 +2227,7 @@ def create_plan(
 
     referenced_unresolved = {row["old_filename"] for row in unresolved_rows}
     active_old_unlock_rows = _sum_user_rows(active_user_rows, "old_unlock_rows")
-    active_mapped_unlock_rows = _sum_user_rows(
-        active_user_rows, "mapped_unlock_rows"
-    )
+    active_mapped_unlock_rows = _sum_user_rows(active_user_rows, "mapped_unlock_rows")
     active_old_current_rows = sum(bool(row["old_current"]) for row in active_user_rows)
     active_mapped_current_rows = sum(
         bool(row["old_current"]) and bool(row["new_current"])
@@ -2285,22 +2269,17 @@ def create_plan(
         "expanded_unlock_targets": sum(
             int(row["expanded_unlock_targets"]) for row in active_user_rows
         ),
-        "new_unique_unlocks": _sum_user_rows(
-            active_user_rows, "new_unique_unlocks"
-        ),
+        "new_unique_unlocks": _sum_user_rows(active_user_rows, "new_unique_unlocks"),
         "history_unlocks_added": sum(
             int(row["history_unlocks_added"]) for row in history_merge_rows
         ),
         "history_unlock_dates_recovered": sum(
-            int(row["history_unlock_dates_recovered"])
-            for row in history_merge_rows
+            int(row["history_unlock_dates_recovered"]) for row in history_merge_rows
         ),
         "final_unique_unlocks": sum(
             int(row["final_unique_unlocks"]) for row in history_merge_rows
         ),
-        "merged_unlock_rows": _sum_user_rows(
-            active_user_rows, "merged_unlock_rows"
-        ),
+        "merged_unlock_rows": _sum_user_rows(active_user_rows, "merged_unlock_rows"),
         "deduplicated_unlock_targets": sum(
             int(row["deduplicated_unlock_targets"]) for row in active_user_rows
         ),

@@ -16,6 +16,39 @@
           "default": "{nickname}，你今天的盟友是 {name}{flags}，图鉴编号 #{id}{source_text}。\n今日剩余次数：{remaining}",
           "hint": "支持 {nickname}、{name}、{id}、{source}、{source_text}、{flags}、{remaining}。source_text 会在有出处时自动生成“，首次登场于《作品》”；模板无效时自动使用默认文案。"
         },
+        "random_message_template": {
+          "description": "随机盟友基础文案模板",
+          "type": "text",
+          "default": "随机查看的盟友是 {name}，图鉴编号 #{id}{source_text}。",
+          "hint": "支持 {name}、{id}、{source}、{source_text}。简介、百科提示和图片会在此基础上继续编排。"
+        },
+        "query_message_template": {
+          "description": "查盟友基础文案模板",
+          "type": "text",
+          "default": "{nickname} 今天的盟友是 {name}，图鉴编号 #{id}{source_text}{unlock_text}。",
+          "hint": "支持 {nickname}、{name}、{id}、{source}、{source_text}、{unlock_date}、{unlock_text}。"
+        },
+        "ally_description_enabled": {
+          "description": "今日盟友、随机盟友和查盟友显示简介",
+          "type": "bool",
+          "default": true
+        },
+        "ally_wiki_hint_enabled": {
+          "description": "盟友消息显示引用查询百科的提示",
+          "type": "bool",
+          "default": true
+        },
+        "ally_wiki_hint_text": {
+          "description": "引用查询百科的提示文案",
+          "type": "text",
+          "default": "详细信息引用本条消息并回复卡比百科即可查看（查百科会比较慢）"
+        },
+        "ally_detail_template": {
+          "description": "盟友详情内容编排模板",
+          "type": "text",
+          "default": "{base}{description_block}{wiki_hint_block}",
+          "hint": "支持 {base}、{description}、{description_block}、{wiki_hint}、{wiki_hint_block}。带 block 的变量会自动包含换行和“简介：”标题；素材图片始终放在文字之后。"
+        },
         "draw_cooldown_seconds": {
         "description": "连续抽取冷却时间（秒）",
         "type": "float",

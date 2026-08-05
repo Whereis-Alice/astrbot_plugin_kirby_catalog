@@ -43,13 +43,22 @@ DEFAULT_DRAW_MESSAGE_TEMPLATE = (
     "{nickname}，你今天的盟友是 {name}{flags}，图鉴编号 #{id}{source_text}。\n"
     "今日剩余次数：{remaining}"
 )
+DEFAULT_RANDOM_MESSAGE_TEMPLATE = (
+    "随机查看的盟友是 {name}，图鉴编号 #{id}{source_text}。"
+)
+DEFAULT_QUERY_MESSAGE_TEMPLATE = (
+    "{nickname} 今天的盟友是 {name}，图鉴编号 #{id}{source_text}{unlock_text}。"
+)
+DEFAULT_ALLY_DETAIL_TEMPLATE = "{base}{description_block}{wiki_hint_block}"
+DEFAULT_ALLY_WIKI_HINT = "详细信息引用本条消息并回复卡比百科即可查看（查百科会比较慢）"
+CATALOG_PROFILES_PATH = Path(__file__).parent / "resources" / "catalog_profiles.json"
 
 
 @register(
     PLUGIN_ID,
     "Whereis-Alice",
     "星之卡比盟友抽取、收藏图鉴与双百科查询插件",
-    "3.2.0",
+    "3.3.0",
     "https://github.com/Whereis-Alice/astrbot_plugin_kirby_catalog",
 )
 class KirbyCatalogPlugin(Star):
@@ -64,6 +73,7 @@ class KirbyCatalogPlugin(Star):
             data_dir,
             legacy_dirs=legacy_dirs,
             image_base_url=self._config_value("image_base_url", IMAGE_BASE_URL),
+            profiles_path=CATALOG_PROFILES_PATH,
         )
         self._draw_lock = asyncio.Lock()
         self._cooldowns: Dict[str, Dict[str, float]] = {}
@@ -79,15 +89,9 @@ class KirbyCatalogPlugin(Star):
             proxy_token=str(self._config_value("wikirby_proxy_token", "")),
         )
         self.fandom = KirbyFandomClient(
-            api_url=str(
-                self._config_value("fandom_api_url", DEFAULT_FANDOM_API_URL)
-            ),
-            timeout_seconds=float(
-                self._config_value("fandom_timeout_seconds", 15)
-            ),
-            cache_ttl_seconds=int(
-                self._config_value("fandom_cache_ttl_seconds", 3600)
-            ),
+            api_url=str(self._config_value("fandom_api_url", DEFAULT_FANDOM_API_URL)),
+            timeout_seconds=float(self._config_value("fandom_timeout_seconds", 15)),
+            cache_ttl_seconds=int(self._config_value("fandom_cache_ttl_seconds", 3600)),
         )
 
     def _cancel_guess_timeout(self, group_id: str) -> None:
@@ -238,7 +242,7 @@ class KirbyCatalogPlugin(Star):
         for name in sorted(names, key=len, reverse=True):
             if text == name:
                 return ""
-            if text.startswith(f"{name} "):
+            if text.startswith(name) and text[len(name) : len(name) + 1].isspace():
                 return text[len(name) :].strip()
         return ""
 
@@ -280,7 +284,9 @@ class KirbyCatalogPlugin(Star):
             if isinstance(value, dict) and not text:
                 data = value.get("data")
                 if isinstance(data, dict):
-                    text = str(data.get("text") or data.get("message_str") or "").strip()
+                    text = str(
+                        data.get("text") or data.get("message_str") or ""
+                    ).strip()
             if text and text not in seen:
                 seen.add(text)
                 parts.append(text)
@@ -299,9 +305,10 @@ class KirbyCatalogPlugin(Star):
             if isinstance(component, Comp.Reply):
                 append_text(component)
                 append_chain(component.chain)
-            elif isinstance(component, dict) and str(
-                component.get("type", "")
-            ).casefold() == "reply":
+            elif (
+                isinstance(component, dict)
+                and str(component.get("type", "")).casefold() == "reply"
+            ):
                 append_text(component)
                 append_chain(component.get("chain") or component.get("message"))
 
@@ -401,6 +408,32 @@ class KirbyCatalogPlugin(Star):
             chain[0] = Comp.Plain(f"{text}\n图片暂时不可用，请管理员检查素材。")
         return chain
 
+    def _ally_detail_message(self, entry: Dict[str, Any], base: str) -> str:
+        description = ""
+        if self._bool_value(self._config_value("ally_description_enabled", True)):
+            description = self.store.description_for(entry)
+        wiki_hint = ""
+        if self._bool_value(self._config_value("ally_wiki_hint_enabled", True)):
+            wiki_hint = str(
+                self._config_value("ally_wiki_hint_text", DEFAULT_ALLY_WIKI_HINT) or ""
+            ).strip()
+        values = {
+            "base": str(base or "").strip(),
+            "description": description,
+            "description_block": f"\n简介：\n{description}" if description else "",
+            "wiki_hint": wiki_hint,
+            "wiki_hint_block": f"\n{wiki_hint}" if wiki_hint else "",
+        }
+        template = str(
+            self._config_value("ally_detail_template", DEFAULT_ALLY_DETAIL_TEMPLATE)
+            or DEFAULT_ALLY_DETAIL_TEMPLATE
+        )
+        try:
+            return template.format_map(values).strip()
+        except (KeyError, ValueError) as exc:
+            logger.warning("[%s] 盟友详情模板无效，已使用默认模板: %s", PLUGIN_ID, exc)
+            return DEFAULT_ALLY_DETAIL_TEMPLATE.format_map(values).strip()
+
     @staticmethod
     def _display_name(entry: Dict[str, Any]) -> str:
         return str(entry.get("name") or "未命名盟友")
@@ -410,7 +443,9 @@ class KirbyCatalogPlugin(Star):
         text = str(value or "").strip()
         for match in re.finditer(r"[（(]([^（）()\n]*[A-Za-z][^（）()\n]*)[）)]", text):
             candidate = match.group(1).strip(" \t,，。；;：:")
-            if candidate and not candidate.casefold().startswith(("http://", "https://")):
+            if candidate and not candidate.casefold().startswith(
+                ("http://", "https://")
+            ):
                 return candidate
         return ""
 
@@ -483,9 +518,7 @@ class KirbyCatalogPlugin(Star):
             line
             for line in text.splitlines()
             if line.strip()
-            and not re.match(
-                r"^\s*(?:来源|来自|作品|今日剩余次数|提示)\s*[:：]", line
-            )
+            and not re.match(r"^\s*(?:来源|来自|作品|今日剩余次数|提示)\s*[:：]", line)
         )
 
         fallback = ""
@@ -514,17 +547,13 @@ class KirbyCatalogPlugin(Star):
         return self._bool_value(self._config_value("wikirby_enabled", True))
 
     def _wikirby_translate_enabled(self) -> bool:
-        return self._bool_value(
-            self._config_value("wikirby_translate_enabled", False)
-        )
+        return self._bool_value(self._config_value("wikirby_translate_enabled", False))
 
     def _fandom_enabled(self) -> bool:
         return self._bool_value(self._config_value("fandom_enabled", True))
 
     def _fandom_translate_enabled(self) -> bool:
-        return self._bool_value(
-            self._config_value("fandom_translate_enabled", False)
-        )
+        return self._bool_value(self._config_value("fandom_translate_enabled", False))
 
     @staticmethod
     def _wiki_output_mode(value: Any) -> str:
@@ -684,11 +713,7 @@ class KirbyCatalogPlugin(Star):
             content: List[Any] = [Comp.Plain(text)]
             if image_bytes:
                 content.append(Comp.Image.fromBytes(image_bytes))
-            return [
-                Comp.Nodes(
-                    nodes=[Comp.Node(name="星之卡比图鉴", content=content)]
-                )
-            ]
+            return [Comp.Nodes(nodes=[Comp.Node(name="星之卡比图鉴", content=content)])]
         chain: List[Any] = [Comp.Plain(text)]
         if image_bytes:
             chain.append(Comp.Image.fromBytes(image_bytes))
@@ -742,9 +767,7 @@ class KirbyCatalogPlugin(Star):
             source_name="WiKirby",
         )
 
-    async def _fandom_translate_text(
-        self, event: AstrMessageEvent, text: str
-    ) -> str:
+    async def _fandom_translate_text(self, event: AstrMessageEvent, text: str) -> str:
         return await self._wiki_translate_text(
             event,
             text,
@@ -768,11 +791,26 @@ class KirbyCatalogPlugin(Star):
             (r"\b(?:CONTROL\s+STICK|STICK)\s+DOWN\b|摇杆(?:向)?下|摇杆↓", "STICK_DOWN"),
             (r"\b(?:CONTROL\s+STICK|STICK)\s+UP\b|摇杆(?:向)?上|摇杆↑", "STICK_UP"),
             (r"\b(?:CONTROL\s+STICK|STICK)\s+LEFT\b|摇杆(?:向)?左|摇杆←", "STICK_LEFT"),
-            (r"\b(?:CONTROL\s+STICK|STICK)\s+RIGHT\b|摇杆(?:向)?右|摇杆→", "STICK_RIGHT"),
-            (r"\b(?:D-?PAD\s+)?DOWN\s+BUTTON\b|(?:下方向键|方向键下|十字键下|向下键|下键|↓键)", "DPAD_DOWN"),
-            (r"\b(?:D-?PAD\s+)?UP\s+BUTTON\b|(?:上方向键|方向键上|十字键上|向上键|上键|↑键)", "DPAD_UP"),
-            (r"\b(?:D-?PAD\s+)?LEFT\s+BUTTON\b|(?:左方向键|方向键左|十字键左|向左键|左键|←键)", "DPAD_LEFT"),
-            (r"\b(?:D-?PAD\s+)?RIGHT\s+BUTTON\b|(?:右方向键|方向键右|十字键右|向右键|右键|→键)", "DPAD_RIGHT"),
+            (
+                r"\b(?:CONTROL\s+STICK|STICK)\s+RIGHT\b|摇杆(?:向)?右|摇杆→",
+                "STICK_RIGHT",
+            ),
+            (
+                r"\b(?:D-?PAD\s+)?DOWN\s+BUTTON\b|(?:下方向键|方向键下|十字键下|向下键|下键|↓键)",
+                "DPAD_DOWN",
+            ),
+            (
+                r"\b(?:D-?PAD\s+)?UP\s+BUTTON\b|(?:上方向键|方向键上|十字键上|向上键|上键|↑键)",
+                "DPAD_UP",
+            ),
+            (
+                r"\b(?:D-?PAD\s+)?LEFT\s+BUTTON\b|(?:左方向键|方向键左|十字键左|向左键|左键|←键)",
+                "DPAD_LEFT",
+            ),
+            (
+                r"\b(?:D-?PAD\s+)?RIGHT\s+BUTTON\b|(?:右方向键|方向键右|十字键右|向右键|右键|→键)",
+                "DPAD_RIGHT",
+            ),
         )
         for pattern, token in direction_patterns:
             normalized = re.sub(pattern, f" {token} ", normalized)
@@ -846,9 +884,9 @@ class KirbyCatalogPlugin(Star):
                     merged["groups"][group_index]["label"] = label.strip()
                 source_rows = list(source_group.get("rows", []) or [])
                 translated_rows = translated_group.get("rows")
-                if not isinstance(translated_rows, list) or len(
-                    translated_rows
-                ) != len(source_rows):
+                if not isinstance(translated_rows, list) or len(translated_rows) != len(
+                    source_rows
+                ):
                     raise ValueError("结构化翻译的招式数量不一致")
                 for row_index, source_row in enumerate(source_rows):
                     translated_row = translated_rows[row_index]
@@ -861,7 +899,10 @@ class KirbyCatalogPlugin(Star):
                                 value.strip()
                             )
                     translated_controls = translated_row.get("controls")
-                    if isinstance(translated_controls, str) and translated_controls.strip():
+                    if (
+                        isinstance(translated_controls, str)
+                        and translated_controls.strip()
+                    ):
                         source_controls = str(source_row.get("controls", "") or "")
                         if cls._translated_controls_are_safe(
                             source_controls, translated_controls
@@ -869,9 +910,9 @@ class KirbyCatalogPlugin(Star):
                             merged["groups"][group_index]["rows"][row_index][
                                 "controls"
                             ] = translated_controls.strip()
-                    merged["groups"][group_index]["rows"][row_index][
-                        "damage"
-                    ] = source_row.get("damage", "")
+                    merged["groups"][group_index]["rows"][row_index]["damage"] = (
+                        source_row.get("damage", "")
+                    )
             result.append(merged)
         return result
 
@@ -892,7 +933,9 @@ class KirbyCatalogPlugin(Star):
         if not provider_id:
             raise RuntimeError("没有找到可用的 AstrBot 文本模型")
 
-        source_json = json.dumps(rich_sections, ensure_ascii=False, separators=(",", ":"))
+        source_json = json.dumps(
+            rich_sections, ensure_ascii=False, separators=(",", ":")
+        )
         response = await self.context.llm_generate(
             chat_provider_id=provider_id,
             prompt=(
@@ -946,9 +989,7 @@ class KirbyCatalogPlugin(Star):
                     lines.append(f"“{quote.get('text', '')}”")
                     attribution = str(quote.get("attribution", "") or "").strip()
                     source = str(quote.get("source", "") or "").strip()
-                    credit = " · ".join(
-                        part for part in (attribution, source) if part
-                    )
+                    credit = " · ".join(part for part in (attribution, source) if part)
                     if credit:
                         lines.append(f"— {credit}")
             elif section.get("kind") == "techniques":
@@ -1029,9 +1070,7 @@ class KirbyCatalogPlugin(Star):
             return "WiKirby 查询功能尚未初始化。"
         resolved = resolved or await client.resolve(query)
         if resolved.get("kind") == "candidates":
-            return self._wikirby_candidate_text(
-                resolved.get("candidates", []), True
-            )
+            return self._wikirby_candidate_text(resolved.get("candidates", []), True)
         if resolved.get("kind") != "page":
             return (
                 f"没有找到 WiKirby 页面：{query}\n"
@@ -1143,9 +1182,7 @@ class KirbyCatalogPlugin(Star):
             return "WiKirby 查询失败，请稍后再试。"
 
     @filter.llm_tool(name="kirby_catalog_lookup_wikirby")
-    async def wikirby_lookup_page(
-        self, event: AstrMessageEvent, query: str
-    ) -> str:
+    async def wikirby_lookup_page(self, event: AstrMessageEvent, query: str) -> str:
         """查询 WiKirby 的角色、敌人、关卡或道具百科资料。
 
         返回页面简介、可读资料栏目、其他语言名称和来源链接；只读取公开资料，
@@ -1253,20 +1290,14 @@ class KirbyCatalogPlugin(Star):
             logger.exception("[%s] WiKirby 查询异常: %s", PLUGIN_ID, exc)
             yield event.plain_result("WiKirby 查询失败，请稍后再试。")
 
-    def _fandom_query_parts(
-        self, event: AstrMessageEvent
-    ) -> Tuple[str, str, str]:
+    def _fandom_query_parts(self, event: AstrMessageEvent) -> Tuple[str, str, str]:
         raw = (event.message_str or "").strip()
         command_text = raw[1:].lstrip() if raw.startswith("/") else raw
         folded = command_text.casefold()
         mode = "page"
-        if folded.startswith(
-            ("卡比f名称", "卡比fandom名称", "卡比社区百科名称")
-        ):
+        if folded.startswith(("卡比f名称", "卡比fandom名称", "卡比社区百科名称")):
             mode = "names"
-        elif folded.startswith(
-            ("卡比f章节", "卡比fandom章节", "卡比社区百科章节")
-        ):
+        elif folded.startswith(("卡比f章节", "卡比fandom章节", "卡比社区百科章节")):
             mode = "sections"
         remainder = self._command_remainder(
             event,
@@ -1325,9 +1356,7 @@ class KirbyCatalogPlugin(Star):
             return "Kirby Fandom 查询功能尚未初始化。"
         resolved = resolved or await client.resolve(query)
         if resolved.get("kind") == "candidates":
-            return self._fandom_candidate_text(
-                resolved.get("candidates", []), "names"
-            )
+            return self._fandom_candidate_text(resolved.get("candidates", []), "names")
         if resolved.get("kind") != "page":
             return (
                 f"没有找到 Kirby Fandom 页面：{query}\n"
@@ -1476,9 +1505,7 @@ class KirbyCatalogPlugin(Star):
         return "\n".join(lines), summary, detail_text, rich_sections
 
     @filter.llm_tool(name="kirby_catalog_lookup_fandom_names")
-    async def fandom_lookup_names(
-        self, event: AstrMessageEvent, query: str
-    ) -> str:
+    async def fandom_lookup_names(self, event: AstrMessageEvent, query: str) -> str:
         """查询 Kirby Fandom 的多语言社区页面名称。
 
         返回英文、日文、中文及其它语言社区的页面标题；这些名称不保证是
@@ -1567,9 +1594,7 @@ class KirbyCatalogPlugin(Star):
             resolved = await client.resolve(query)
             if resolved.get("kind") == "candidates":
                 yield event.plain_result(
-                    self._fandom_candidate_text(
-                        resolved.get("candidates", []), mode
-                    )
+                    self._fandom_candidate_text(resolved.get("candidates", []), mode)
                 )
                 return
             if resolved.get("kind") != "page":
@@ -1596,9 +1621,7 @@ class KirbyCatalogPlugin(Star):
                 yield event.plain_result(f"{text}\n\n{sections_text}")
                 return
 
-            show_image = self._bool_value(
-                self._config_value("fandom_show_image", True)
-            )
+            show_image = self._bool_value(self._config_value("fandom_show_image", True))
             image_bytes = None
             if show_image and page.get("image_url"):
                 image_bytes = await client.get_image_bytes(page["image_url"])
@@ -1609,9 +1632,7 @@ class KirbyCatalogPlugin(Star):
                     page, summary, detail_text, image_bytes, rich_sections
                 )
                 if card_component is None:
-                    output_mode = (
-                        "forward" if output_mode == "card_forward" else "text"
-                    )
+                    output_mode = "forward" if output_mode == "card_forward" else "text"
             yield event.chain_result(
                 self._wiki_response_components(
                     text, image_bytes, output_mode, card_component
@@ -1630,6 +1651,7 @@ class KirbyCatalogPlugin(Star):
 
     def _guess_aliases(self, entry: Dict[str, Any]) -> set[str]:
         name = self._display_name(entry)
+        profile = self.store.profile_for(entry)
         variant_key = str(entry.get("variant_key") or "").strip()
         page_title = str(entry.get("page_title") or "").strip()
         filename = str(entry.get("filename") or "").strip()
@@ -1643,19 +1665,21 @@ class KirbyCatalogPlugin(Star):
             filename,
             filename_name,
             variant_key,
+            str(profile.get("name_zh") or ""),
+            str(profile.get("name_en") or ""),
+            str(profile.get("display_name") or ""),
             *[str(alias) for alias in entry.get("aliases", [])],
         ]
-        if not variant_key or self._normalise_guess(variant_key) == self._normalise_guess(
-            page_title
-        ):
+        if not variant_key or self._normalise_guess(
+            variant_key
+        ) == self._normalise_guess(page_title):
             raw_candidates.append(page_title)
 
         aliases: set[str] = set()
         blocked_base_name = (
             self._normalise_guess(page_title)
             if variant_key
-            and self._normalise_guess(variant_key)
-            != self._normalise_guess(page_title)
+            and self._normalise_guess(variant_key) != self._normalise_guess(page_title)
             else ""
         )
 
@@ -1775,16 +1799,14 @@ class KirbyCatalogPlugin(Star):
         remaining: int,
         flags: str,
     ) -> str:
-        source = str(entry.get("source") or entry.get("debut_work") or "").strip()
-        values = {
-            "nickname": nickname,
-            "name": self._display_name(entry),
-            "id": int(entry.get("id", 0) or 0),
-            "source": source,
-            "source_text": f"，首次登场于《{source}》" if source else "",
-            "flags": flags,
-            "remaining": remaining,
-        }
+        values = self._ally_message_values(entry)
+        values.update(
+            {
+                "nickname": nickname,
+                "flags": flags,
+                "remaining": remaining,
+            }
+        )
         template = str(
             self._config_value("draw_message_template", DEFAULT_DRAW_MESSAGE_TEMPLATE)
             or DEFAULT_DRAW_MESSAGE_TEMPLATE
@@ -1794,6 +1816,35 @@ class KirbyCatalogPlugin(Star):
         except (KeyError, ValueError) as exc:
             logger.warning("[%s] 抽取文案模板无效，已使用默认模板: %s", PLUGIN_ID, exc)
             return DEFAULT_DRAW_MESSAGE_TEMPLATE.format_map(values)
+
+    def _ally_message_values(self, entry: Dict[str, Any]) -> Dict[str, Any]:
+        source = str(entry.get("source") or entry.get("debut_work") or "").strip()
+        return {
+            "name": self._display_name(entry),
+            "id": int(entry.get("id", 0) or 0),
+            "source": source,
+            "source_text": f"，首次登场于《{source}》" if source else "",
+        }
+
+    def _formatted_ally_message(
+        self,
+        template_key: str,
+        default_template: str,
+        values: Dict[str, Any],
+    ) -> str:
+        template = str(
+            self._config_value(template_key, default_template) or default_template
+        )
+        try:
+            return template.format_map(values)
+        except (KeyError, ValueError) as exc:
+            logger.warning(
+                "[%s] %s 模板无效，已使用默认模板: %s",
+                PLUGIN_ID,
+                template_key,
+                exc,
+            )
+            return default_template.format_map(values)
 
     async def _draw_ally_impl(self, event: AstrMessageEvent):
         """每天抽取盟友，重复时使用连续未出新保底。"""
@@ -1853,7 +1904,9 @@ class KirbyCatalogPlugin(Star):
 
         remaining = limit - count - 1
         flags = ("（重复）" if repeated else "") + ("（保底）" if pity else "")
-        text = self._draw_message(entry, nickname, remaining, flags)
+        text = self._ally_detail_message(
+            entry, self._draw_message(entry, nickname, remaining, flags)
+        )
         yield event.chain_result(await self._ally_chain(entry, text))
 
     @filter.regex(r"^/?(?:今日盟友|抽盟友|抽取盟友)$")
@@ -1863,9 +1916,7 @@ class KirbyCatalogPlugin(Star):
         async for result in self._draw_ally_impl(event):
             yield result
 
-    @filter.command(
-        "重置今日群抽取次数", alias={"重置今日抽取次数", "重置群抽取次数"}
-    )
+    @filter.command("重置今日群抽取次数", alias={"重置今日抽取次数", "重置群抽取次数"})
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.event_message_type(EventMessageType.GROUP_MESSAGE)
     async def reset_group_draw_counts(self, event: AstrMessageEvent):
@@ -1887,9 +1938,7 @@ class KirbyCatalogPlugin(Star):
         else:
             yield event.plain_result(f"本群 {today} 暂无抽取次数记录，无需重置。")
 
-    @filter.command(
-        "增加今日抽取次数", alias={"增加今日盟友次数", "增加盟友抽取次数"}
-    )
+    @filter.command("增加今日抽取次数", alias={"增加今日盟友次数", "增加盟友抽取次数"})
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.event_message_type(EventMessageType.GROUP_MESSAGE)
     async def add_member_draw_count(self, event: AstrMessageEvent):
@@ -1957,8 +2006,11 @@ class KirbyCatalogPlugin(Star):
             yield event.plain_result("当前没有可用盟友素材，请管理员先添加图片。")
             return
         entry = random.choice(pool)
-        source = f"，来自《{entry['source']}》" if entry.get("source") else ""
-        text = f"随机盟友：#{entry['id']} {self._display_name(entry)}{source}"
+        values = self._ally_message_values(entry)
+        text = self._formatted_ally_message(
+            "random_message_template", DEFAULT_RANDOM_MESSAGE_TEMPLATE, values
+        )
+        text = self._ally_detail_message(entry, text)
         yield event.chain_result(await self._ally_chain(entry, text))
 
     @filter.command("查盟友", alias={"我的盟友"})
@@ -2003,17 +2055,21 @@ class KirbyCatalogPlugin(Star):
             "",
         )
         owner = user.get("nickname") or "用户"
-        source = f"，来自《{entry['source']}》" if entry.get("source") else ""
-        date_text = f"，解锁于 {unlock_date}" if unlock_date else ""
-        text = (
-            f"{owner} 的盟友是 #{entry['id']} "
-            f"{self._display_name(entry)}{source}{date_text}。"
+        values = self._ally_message_values(entry)
+        values.update(
+            {
+                "nickname": owner,
+                "unlock_date": unlock_date,
+                "unlock_text": f"，解锁于 {unlock_date}" if unlock_date else "",
+            }
         )
+        text = self._formatted_ally_message(
+            "query_message_template", DEFAULT_QUERY_MESSAGE_TEMPLATE, values
+        )
+        text = self._ally_detail_message(entry, text)
         yield event.chain_result(await self._ally_chain(entry, text))
 
-    @filter.regex(
-        r"^/?(?:卡比百科(?:名称|名|译名)?|wikirby|WiKirby)(?:\s+.+)?$"
-    )
+    @filter.regex(r"^/?(?:卡比百科(?:名称|名|译名)?|wikirby|WiKirby)(?:\s+.+)?$")
     @filter.event_message_type(EventMessageType.GROUP_MESSAGE)
     async def wikirby_query_plain(self, event: AstrMessageEvent):
         """统一处理带斜杠和纯文本的 WiKirby 查询，避免双 Handler 重复回复。"""
@@ -2103,9 +2159,7 @@ class KirbyCatalogPlugin(Star):
             logger.exception("[%s] 生成个人图鉴失败: %s", PLUGIN_ID, exc)
             yield event.plain_result("个人图鉴生成失败，请稍后再试。")
 
-    @filter.command(
-        "我的图鉴进度", alias={"图鉴进度", "我的盟友图鉴进度"}
-    )
+    @filter.command("我的图鉴进度", alias={"图鉴进度", "我的盟友图鉴进度"})
     @filter.event_message_type(EventMessageType.GROUP_MESSAGE)
     async def personal_progress(self, event: AstrMessageEvent):
         """查看自己的有效图鉴数量、完成率和剩余数量。"""
@@ -2271,7 +2325,7 @@ class KirbyCatalogPlugin(Star):
             "卡比F章节 [页面名]：查看可查询栏目；用“页面名 | 栏目名”读取指定栏目\n"
             "卡比F名称 [页面名]：查看各语言社区页面名（不等同于官方译名）\n"
             "管理员命令：重置今日群抽取次数、增加今日抽取次数，以及图鉴添加、"
-            "换图、改名、迁移、清理旧名、删除重复"
+            "换图、改名、简介、恢复简介、迁移、清理旧名、删除重复"
         )
 
     @filter.command("星之卡比图鉴换图", alias={"星之卡比图鉴替换图片"})
@@ -2375,6 +2429,110 @@ class KirbyCatalogPlugin(Star):
             "所有用户解锁记录已同步。"
         )
 
+    @filter.command("星之卡比图鉴简介", alias={"盟友简介"})
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.event_message_type(EventMessageType.GROUP_MESSAGE)
+    async def edit_ally_description(self, event: AstrMessageEvent):
+        """查看简介，或为指定盟友新增、修改人工简介。"""
+        command_names = {"星之卡比图鉴简介", "盟友简介"}
+        remainder = self._command_remainder(event, command_names)
+        quoted_target = self._quoted_target(event)
+        target = ""
+        description = ""
+        if quoted_target:
+            parts = remainder.split(maxsplit=1)
+            if len(parts) == 2 and parts[0].lstrip("#").isdigit():
+                target = parts[0]
+                description = parts[1].strip()
+            else:
+                target = quoted_target
+                description = remainder.strip()
+        elif remainder:
+            parts = remainder.split(maxsplit=1)
+            target = parts[0]
+            description = parts[1].strip() if len(parts) == 2 else ""
+
+        if not target:
+            yield event.plain_result(
+                "用法：星之卡比图鉴简介 <编号> [新简介]。\n"
+                "只填写编号会查看当前简介；也可以引用一条盟友消息后直接填写新简介。"
+            )
+            return
+        entry, error = self._entry_or_error(target)
+        if error:
+            yield event.plain_result(error)
+            return
+        assert entry is not None
+
+        if not description:
+            profile = self.store.profile_for(entry)
+            current = str(profile.get("description_zh") or "").strip()
+            if not current:
+                yield event.plain_result(
+                    f"#{entry['id']} {self._display_name(entry)} 暂无简介。\n"
+                    "可在命令后继续填写简介，或引用该盟友消息后修改。"
+                )
+                return
+            origin = (
+                "管理员人工简介"
+                if profile.get("description_origin") == "override"
+                else "内置简介"
+            )
+            source_url = str(profile.get("source_url") or "").strip()
+            source_text = f"\n来源：{source_url}" if source_url else ""
+            yield event.plain_result(
+                f"#{entry['id']} {self._display_name(entry)}（{origin}）\n"
+                f"{current}{source_text}"
+            )
+            return
+
+        try:
+            self.store.set_description(
+                entry, description, updated_by=self._sender_id(event)
+            )
+        except ValueError as exc:
+            yield event.plain_result(str(exc))
+            return
+        yield event.plain_result(
+            f"已保存 #{entry['id']} {self._display_name(entry)} 的人工简介。\n"
+            "今日盟友、随机盟友和查盟友会立即使用新内容。"
+        )
+
+    @filter.command("星之卡比图鉴恢复简介", alias={"盟友简介恢复"})
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.event_message_type(EventMessageType.GROUP_MESSAGE)
+    async def restore_ally_description(self, event: AstrMessageEvent):
+        """删除人工简介覆盖，并恢复随插件发布的内置简介。"""
+        command_names = {"星之卡比图鉴恢复简介", "盟友简介恢复"}
+        target = self._command_remainder(event, command_names) or self._quoted_target(
+            event
+        )
+        if not target:
+            yield event.plain_result(
+                "用法：星之卡比图鉴恢复简介 <编号>，也可以引用盟友消息执行。"
+            )
+            return
+        entry, error = self._entry_or_error(target)
+        if error:
+            yield event.plain_result(error)
+            return
+        assert entry is not None
+        removed, profile = self.store.restore_description(entry)
+        if not removed:
+            yield event.plain_result(
+                f"#{entry['id']} {self._display_name(entry)} 没有人工简介，无需恢复。"
+            )
+            return
+        if profile.get("description_zh"):
+            yield event.plain_result(
+                f"已恢复 #{entry['id']} {self._display_name(entry)} 的内置简介。"
+            )
+        else:
+            yield event.plain_result(
+                f"已删除 #{entry['id']} {self._display_name(entry)} 的人工简介；"
+                "该条目暂无内置简介。"
+            )
+
     @filter.command("星之卡比图鉴迁移")
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.event_message_type(EventMessageType.GROUP_MESSAGE)
@@ -2423,9 +2581,7 @@ class KirbyCatalogPlugin(Star):
             )
         yield event.plain_result("\n".join(lines))
 
-    @filter.command(
-        "星之卡比图鉴删除重复", alias={"星之卡比图鉴合并重复"}
-    )
+    @filter.command("星之卡比图鉴删除重复", alias={"星之卡比图鉴合并重复"})
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.event_message_type(EventMessageType.GROUP_MESSAGE)
     async def remove_duplicate_entries(self, event: AstrMessageEvent):

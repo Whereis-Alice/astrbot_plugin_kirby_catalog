@@ -69,9 +69,7 @@ class CatalogStoreTests(unittest.TestCase):
             store.increment_draw("group-2", "42", today)
             store.increment_draw("group-1", "42", previous_day)
             self.assertEqual(store.add_draw_bonus("group-1", "42", 2, today), 2)
-            self.assertEqual(
-                store.add_draw_bonus("group-1", "42", 1, previous_day), 1
-            )
+            self.assertEqual(store.add_draw_bonus("group-1", "42", 1, previous_day), 1)
 
             result = store.reset_group_draws("group-1", today)
 
@@ -103,6 +101,52 @@ class CatalogStoreTests(unittest.TestCase):
 
             actual = json.loads(store.draw_bonuses_path.read_text(encoding="utf-8"))
             self.assertEqual(actual, expected)
+
+    def test_bundled_description_override_survives_rename_and_can_restore(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "data"
+            initial = CatalogStore(root, image_base_url="")
+            entry = initial.add_asset(
+                "海内司（Hyness）", self.make_image(), "星之卡比 新星同盟"
+            )
+            profiles_path = Path(temp) / "catalog_profiles.json"
+            profiles_path.write_text(
+                json.dumps(
+                    {
+                        "items": {
+                            entry["entry_key"]: {
+                                "name_zh": "海内司",
+                                "name_en": "Hyness",
+                                "display_name": "海内司（Hyness）",
+                                "description_zh": "这是内置简介。",
+                                "source_url": "https://wikirby.com/wiki/Hyness",
+                            }
+                        }
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            store = CatalogStore(root, image_base_url="", profiles_path=profiles_path)
+            entry = store.resolve_entry(str(entry["id"]))
+            self.assertIsNotNone(entry)
+            self.assertEqual(store.description_for(entry), "这是内置简介。")
+            self.assertEqual(store.find_entries("Hyness")[0]["id"], entry["id"])
+
+            store.set_description(entry, "这是管理员修订后的简介。", "admin")
+            renamed = store.rename_entry(entry, "魔神官海内司（Hyness）")
+            reloaded = CatalogStore(
+                root, image_base_url="", profiles_path=profiles_path
+            )
+            self.assertEqual(
+                reloaded.description_for(renamed), "这是管理员修订后的简介。"
+            )
+            self.assertTrue((root / "config" / "description_overrides.json").is_file())
+
+            removed, profile = reloaded.restore_description(renamed)
+            self.assertTrue(removed)
+            self.assertEqual(profile["description_zh"], "这是内置简介。")
 
     def test_rename_updates_all_user_references_and_keeps_id(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -360,9 +404,7 @@ class CatalogStoreTests(unittest.TestCase):
                 },
             )
 
-            result = store.cleanup_renamed_prefix(
-                "水晶", "结晶化", ["水晶针卡比"]
-            )
+            result = store.cleanup_renamed_prefix("水晶", "结晶化", ["水晶针卡比"])
 
             self.assertEqual(result["unresolved"], [])
             names = [entry["name"] for entry in store.entries()]
@@ -435,17 +477,28 @@ class CatalogStoreTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             store = CatalogStore(Path(temp) / "new", image_base_url="")
             first = store.add_asset("Kirby", self.make_image(), "Kirby's Dream Land")
-            store.add_asset("Waddle Dee", self.make_image((0, 255, 0)), "Kirby's Dream Land")
+            store.add_asset(
+                "Waddle Dee", self.make_image((0, 255, 0)), "Kirby's Dream Land"
+            )
             store._catalog[first["filename"]]["aliases"] = ["old-kirby.png"]
             store._save_catalog()
             store.save_group(
                 "100",
                 {
                     "1": {
-                        "current": {"ally_filename": first["filename"], "date": get_today()},
+                        "current": {
+                            "ally_filename": first["filename"],
+                            "date": get_today(),
+                        },
                         "unlocked": [
-                            {"ally_filename": first["filename"], "unlock_date": get_today()},
-                            {"ally_filename": "old-kirby.png", "unlock_date": get_today()},
+                            {
+                                "ally_filename": first["filename"],
+                                "unlock_date": get_today(),
+                            },
+                            {
+                                "ally_filename": "old-kirby.png",
+                                "unlock_date": get_today(),
+                            },
                         ],
                         "nickname": "Tester",
                     }

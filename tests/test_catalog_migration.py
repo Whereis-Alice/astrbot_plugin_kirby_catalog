@@ -188,6 +188,18 @@ class CatalogMigrationTests(unittest.TestCase):
         config.joinpath("draw_bonuses.json").write_text(
             json.dumps({"100": {"42": {"2026-01-04": 1}}}), encoding="utf-8"
         )
+        config.joinpath("description_overrides.json").write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "items": {
+                        "entry_key:wikirby-page:1": {"description_zh": "管理员简介"}
+                    },
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
 
     def test_dry_run_and_atomic_apply_preserve_recoverable_history(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -219,9 +231,7 @@ class CatalogMigrationTests(unittest.TestCase):
                 json.dumps(
                     {
                         "version": 1,
-                        "by_old_filename": {
-                            "火焰卡比.png": "Fire"
-                        },
+                        "by_old_filename": {"火焰卡比.png": "Fire"},
                         "by_old_name": {},
                         "ignored": [],
                     }
@@ -280,6 +290,12 @@ class CatalogMigrationTests(unittest.TestCase):
                 plan.copied_config_files["draw_bonuses.json"],
                 {"100": {"42": {"2026-01-04": 1}}},
             )
+            self.assertEqual(
+                plan.copied_config_files["description_overrides.json"]["items"][
+                    "entry_key:wikirby-page:1"
+                ]["description_zh"],
+                "管理员简介",
+            )
 
             backup = apply_plan(plan, "REPLACE_OLD_KIRBY_DATA")
             self.assertTrue(backup.joinpath("catalog.json").is_file())
@@ -294,13 +310,12 @@ class CatalogMigrationTests(unittest.TestCase):
             self.assertEqual(reloaded["current"]["ally_filename"], "")
             self.assertEqual(store.draw_count("100", "42", "2026-01-04"), 2)
             self.assertEqual(store.draw_bonus("100", "42", "2026-01-04"), 1)
+            self.assertTrue((old / "config" / "description_overrides.json").is_file())
             self.assertEqual(store.user_progress(reloaded)["unlocked"], 2)
             self.assertEqual(store.user_progress(reloaded)["total"], 5)
             self.assertEqual(store.leaderboard("100")[0][2], 2)
             fire_ex = next(
-                item
-                for item in store.entries()
-                if item.get("variant_key") == "Fire EX"
+                item for item in store.entries() if item.get("variant_key") == "Fire EX"
             )
             self.assertTrue(store.unlock(reloaded, fire_ex["filename"], "2026-01-05"))
             self.assertEqual(store.user_progress(reloaded)["unlocked"], 3)
@@ -468,9 +483,7 @@ class CatalogMigrationTests(unittest.TestCase):
                 second_plan.baseline_reconciliation["status"], "reconstructed"
             )
             self.assertEqual(
-                second_plan.baseline_reconciliation[
-                    "active_baseline_unlocks_removed"
-                ],
+                second_plan.baseline_reconciliation["active_baseline_unlocks_removed"],
                 2,
             )
             self.assertEqual(
@@ -482,9 +495,7 @@ class CatalogMigrationTests(unittest.TestCase):
             merge_row = second_plan.history_merge_rows[0]
             self.assertEqual(merge_row["active_unique_unlocks"], 3)
             self.assertEqual(merge_row["active_baseline_unlocks_removed"], 2)
-            self.assertEqual(
-                merge_row["active_post_migration_unlocks_preserved"], 1
-            )
+            self.assertEqual(merge_row["active_post_migration_unlocks_preserved"], 1)
             self.assertEqual(merge_row["history_unlocks_added"], 3)
             self.assertEqual(merge_row["final_unique_unlocks"], 4)
             self.assertTrue(second_report.joinpath("历史数据合并.csv").is_file())
@@ -609,9 +620,7 @@ class CatalogMigrationTests(unittest.TestCase):
                 history_roots=[history],
             )
             migrated = second_plan.migrated_groups["100.json"]["42"]
-            unlocked_names = {
-                item["ally_filename"] for item in migrated["unlocked"]
-            }
+            unlocked_names = {item["ally_filename"] for item in migrated["unlocked"]}
             kirby = next(
                 item
                 for item in second_plan.catalog_items
@@ -625,19 +634,13 @@ class CatalogMigrationTests(unittest.TestCase):
             self.assertNotIn(kirby["filename"], unlocked_names)
             self.assertIn(fire["filename"], unlocked_names)
             self.assertEqual(len(unlocked_names), 2)
+            self.assertEqual(migrated["current"]["ally_filename"], fire["filename"])
             self.assertEqual(
-                migrated["current"]["ally_filename"], fire["filename"]
-            )
-            self.assertEqual(
-                second_plan.baseline_reconciliation[
-                    "active_baseline_unlocks_removed"
-                ],
+                second_plan.baseline_reconciliation["active_baseline_unlocks_removed"],
                 2,
             )
             self.assertEqual(
-                second_plan.baseline_reconciliation[
-                    "baseline_current_rows_changed"
-                ],
+                second_plan.baseline_reconciliation["baseline_current_rows_changed"],
                 1,
             )
             self.assertEqual(second_plan.summary["final_unique_unlocks"], 2)
@@ -723,9 +726,7 @@ class CatalogMigrationTests(unittest.TestCase):
             self.assertEqual(match.method, "entry_key")
             self.assertEqual(match.page_title, "Alpha")
             migrated = plan.migrated_groups["100.json"]["42"]
-            self.assertTrue(
-                migrated["current"]["ally_filename"].endswith("Alpha.png")
-            )
+            self.assertTrue(migrated["current"]["ally_filename"].endswith("Alpha.png"))
             self.assertEqual(len(migrated["unlocked"]), 1)
 
     def test_expansion_override_unlocks_every_verified_character(self):
