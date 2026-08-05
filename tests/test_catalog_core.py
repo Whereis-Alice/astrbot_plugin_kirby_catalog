@@ -3,6 +3,7 @@ import tempfile
 import unittest
 from io import BytesIO
 from pathlib import Path
+from unittest.mock import patch
 
 from PIL import Image
 
@@ -87,6 +88,13 @@ class CatalogStoreTests(unittest.TestCase):
             self.assertEqual(reloaded.draw_bonus("group-1", "42", today), 0)
             self.assertEqual(reloaded.draw_count("group-2", "42", today), 1)
             self.assertEqual(reloaded.draw_bonus("group-1", "42", previous_day), 1)
+
+    def test_reset_group_draws_rejects_unsafe_group_id(self):
+        with tempfile.TemporaryDirectory() as temp:
+            store = CatalogStore(Path(temp) / "new", image_base_url="")
+
+            with self.assertRaisesRegex(ValueError, "群号格式无效"):
+                store.reset_group_draws("../outside")
 
     def test_draw_bonus_file_is_not_rewritten_as_group_data(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -247,6 +255,38 @@ class CatalogStoreTests(unittest.TestCase):
             self.assertEqual(renamed["filename"], "星之卡比 探索发现.结晶化针卡比.png")
             self.assertFalse(path.exists())
             self.assertTrue(store.asset_path(renamed).is_file())
+
+    def test_rename_source_updates_filename_and_all_user_references(self):
+        with tempfile.TemporaryDirectory() as temp:
+            store = CatalogStore(Path(temp) / "new", image_base_url="")
+            entry = store.add_asset(
+                "卡比（Kirby）", self.make_image(), "Kirby's Dream Land"
+            )
+            store.save_group(
+                "100",
+                {
+                    "42": {
+                        "current": {
+                            "ally_filename": entry["filename"],
+                            "date": get_today(),
+                        },
+                        "unlocked": [
+                            {
+                                "ally_filename": entry["filename"],
+                                "unlock_date": get_today(),
+                            }
+                        ],
+                        "nickname": "测试用户",
+                    }
+                },
+            )
+
+            renamed = store.rename_entry(entry, "卡比（Kirby）", "星之卡比 初代")
+
+            self.assertEqual(renamed["filename"], "星之卡比 初代.卡比_Kirby.png")
+            user = store.load_group("100")["42"]
+            self.assertEqual(user["current"]["ally_filename"], renamed["filename"])
+            self.assertEqual(user["unlocked"][0]["ally_filename"], renamed["filename"])
 
     def test_source_filename_keeps_periods_inside_character_name(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -506,6 +546,173 @@ class CatalogStoreTests(unittest.TestCase):
             )
 
             self.assertEqual(store.leaderboard("100")[0][2], 1)
+
+    def test_delete_and_restore_preserve_id_description_and_group_references(self):
+        with tempfile.TemporaryDirectory() as temp:
+            store = CatalogStore(Path(temp) / "new", image_base_url="")
+            entry = store.add_asset(
+                "测试盟友",
+                self.make_image(),
+                "测试作品",
+                description="管理员简介",
+                updated_by="admin",
+            )
+            alias = "旧测试盟友.png"
+            store._catalog[entry["filename"]]["aliases"] = [alias]
+            store._save_catalog()
+            (store.assets_dir / alias).write_bytes(self.make_image((0, 255, 0)))
+            store.save_group(
+                "100",
+                {
+                    "1": {
+                        "current": {
+                            "ally_filename": entry["filename"],
+                            "date": "2026-08-01",
+                        },
+                        "unlocked": [
+                            {
+                                "ally_filename": alias,
+                                "unlock_date": "2026-07-01",
+                            }
+                        ],
+                        "nickname": "甲",
+                    }
+                },
+            )
+            store.save_group(
+                "200",
+                {
+                    "2": {
+                        "current": {"ally_filename": "", "date": ""},
+                        "unlocked": [
+                            {
+                                "ally_filename": entry["filename"],
+                                "unlock_date": "2026-07-02",
+                            }
+                        ],
+                        "nickname": "乙",
+                    }
+                },
+            )
+
+            tombstone = store.delete_entry(entry, deleted_by="admin")
+
+            self.assertIsNone(store.resolve_entry(str(entry["id"])))
+            self.assertIn(alias, tombstone["reference_names"])
+            self.assertEqual(store.load_group("100")["1"]["unlocked"], [])
+            store.refresh()
+            self.assertIsNone(store.resolve_entry(alias))
+
+            later = store.add_asset("后来新增", self.make_image((0, 0, 255)))
+            self.assertGreater(later["id"], entry["id"])
+            restored = store.restore_deleted_entry(tombstone["token"], "admin")
+
+            self.assertEqual(restored["id"], entry["id"])
+            self.assertEqual(store.description_for(restored), "管理员简介")
+            self.assertEqual(
+                store.load_group("100")["1"]["current"]["ally_filename"],
+                entry["filename"],
+            )
+            self.assertEqual(
+                store.load_group("100")["1"]["unlocked"][0]["ally_filename"],
+                alias,
+            )
+            self.assertEqual(
+                store.load_group("200")["2"]["unlocked"][0]["ally_filename"],
+                entry["filename"],
+            )
+            self.assertEqual(store.deleted_entries(), [])
+
+    def test_restore_rolls_back_every_file_when_second_group_save_fails(self):
+        with tempfile.TemporaryDirectory() as temp:
+            store = CatalogStore(Path(temp) / "new", image_base_url="")
+            entry = store.add_asset(
+                "事务测试",
+                self.make_image(),
+                "测试作品",
+                description="事务简介",
+                updated_by="admin",
+            )
+            for group_id, user_id in (("100", "1"), ("200", "2")):
+                store.save_group(
+                    group_id,
+                    {
+                        user_id: {
+                            "current": {
+                                "ally_filename": entry["filename"],
+                                "date": "2026-08-01",
+                            },
+                            "unlocked": [
+                                {
+                                    "ally_filename": entry["filename"],
+                                    "unlock_date": "2026-07-01",
+                                }
+                            ],
+                            "nickname": user_id,
+                        }
+                    },
+                )
+            tombstone = store.delete_entry(entry, deleted_by="admin")
+            record_path = store.trash_dir / tombstone["token"] / "record.json"
+            tracked_paths = [
+                store.catalog_path,
+                store.description_overrides_path,
+                store.tombstones_path,
+                store.config_dir / "100.json",
+                store.config_dir / "200.json",
+                record_path,
+            ]
+            before = {path: path.read_bytes() for path in tracked_paths}
+            original_save_group = store.save_group
+
+            def fail_second_group(group_id, config):
+                if group_id == "200":
+                    raise OSError("simulated group write failure")
+                return original_save_group(group_id, config)
+
+            with patch.object(store, "save_group", side_effect=fail_second_group):
+                with self.assertRaisesRegex(OSError, "simulated group write failure"):
+                    store.restore_deleted_entry(tombstone["token"], "admin")
+
+            self.assertIsNone(store.resolve_entry(str(entry["id"])))
+            self.assertFalse((store.assets_dir / entry["filename"]).exists())
+            self.assertEqual(
+                {path: path.read_bytes() for path in tracked_paths}, before
+            )
+            self.assertEqual(store.deleted_entries()[0]["token"], tombstone["token"])
+
+    def test_add_asset_rolls_back_when_description_save_fails(self):
+        with tempfile.TemporaryDirectory() as temp:
+            store = CatalogStore(Path(temp) / "new", image_base_url="")
+            original_save = store._save_description_overrides
+            failed = False
+
+            def fail_once():
+                nonlocal failed
+                if not failed:
+                    failed = True
+                    raise OSError("simulated description write failure")
+                return original_save()
+
+            with patch.object(
+                store, "_save_description_overrides", side_effect=fail_once
+            ):
+                with self.assertRaisesRegex(
+                    OSError, "simulated description write failure"
+                ):
+                    store.add_asset(
+                        "不能留下",
+                        self.make_image(),
+                        description="这条简介不应留下",
+                    )
+
+            self.assertEqual(store.entries(), [])
+            self.assertEqual(list(store.assets_dir.iterdir()), [])
+            self.assertEqual(store._description_overrides, {})
+            self.assertEqual(
+                json.loads(store.catalog_path.read_text(encoding="utf-8"))["items"],
+                [],
+            )
 
 
 if __name__ == "__main__":

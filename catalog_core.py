@@ -8,6 +8,8 @@ import re
 import shutil
 import tempfile
 import threading
+import uuid
+from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from io import BytesIO
 from pathlib import Path
@@ -31,9 +33,13 @@ CATALOG_METADATA_KEYS = (
     "kind",
 )
 DESCRIPTION_OVERRIDES_FILENAME = "description_overrides.json"
+WEBUI_DATA_DIRNAME = "webui"
+WEBUI_AUDIT_FILENAME = "audit.json"
+WEBUI_TOMBSTONES_FILENAME = "catalog_tombstones.json"
 NON_GROUP_CONFIG_FILENAMES = frozenset(
     {"draw_limits.json", "draw_bonuses.json", DESCRIPTION_OVERRIDES_FILENAME}
 )
+_UNSET = object()
 
 
 def get_today() -> str:
@@ -77,6 +83,18 @@ def _atomic_write_bytes(path: Path, data: bytes) -> None:
             os.unlink(temp_name)
 
 
+def _snapshot_file(path: Path) -> Optional[bytes]:
+    return path.read_bytes() if path.is_file() else None
+
+
+def _restore_file(path: Path, snapshot: Optional[bytes]) -> None:
+    if snapshot is None:
+        if path.exists():
+            path.unlink()
+        return
+    _atomic_write_bytes(path, snapshot)
+
+
 def _as_text(value: Any, default: str = "") -> str:
     if value is None:
         return default
@@ -86,6 +104,13 @@ def _as_text(value: Any, default: str = "") -> str:
 def _safe_filename(value: str) -> str:
     value = re.sub(r"[^0-9A-Za-z\u3400-\u9fff_-]+", "_", value.strip())
     return value.strip("._")[:80] or "ally"
+
+
+def _safe_data_id(value: Any, label: str) -> str:
+    candidate = str(value or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", candidate):
+        raise ValueError(f"{label}格式无效")
+    return candidate
 
 
 def _parse_filename(filename: str) -> Tuple[str, str]:
@@ -229,6 +254,10 @@ class CatalogStore:
         self.config_dir = self.root / "config"
         self.assets_dir = self.root / "img" / "allies"
         self.gallery_dir = self.root / "gallery"
+        self.webui_dir = self.root / WEBUI_DATA_DIRNAME
+        self.trash_dir = self.webui_dir / "trash"
+        self.audit_path = self.webui_dir / WEBUI_AUDIT_FILENAME
+        self.tombstones_path = self.webui_dir / WEBUI_TOMBSTONES_FILENAME
         self.catalog_path = self.root / "catalog.json"
         self.draw_limits_path = self.config_dir / "draw_limits.json"
         self.draw_bonuses_path = self.config_dir / "draw_bonuses.json"
@@ -243,6 +272,8 @@ class CatalogStore:
         self._draw_bonuses: Dict[str, Any] = {}
         self._profiles: Dict[str, Dict[str, Any]] = {}
         self._description_overrides: Dict[str, Dict[str, Any]] = {}
+        self._audit_entries: List[Dict[str, Any]] = []
+        self._tombstones: Dict[str, Dict[str, Any]] = {}
         self._lock = threading.RLock()
         self._prepare()
 
@@ -250,6 +281,9 @@ class CatalogStore:
         self.config_dir.mkdir(parents=True, exist_ok=True)
         self.assets_dir.mkdir(parents=True, exist_ok=True)
         self.gallery_dir.mkdir(parents=True, exist_ok=True)
+        self.trash_dir.mkdir(parents=True, exist_ok=True)
+        self._load_tombstones()
+        self._load_audit_entries()
         self._load_catalog()
         self._migrate_legacy_data()
         self._load_draw_limits()
@@ -336,7 +370,38 @@ class CatalogStore:
 
     def _next_id(self) -> int:
         ids = [int(item.get("id", 0)) for item in self._catalog.values()]
+        ids.extend(int(item.get("id", 0) or 0) for item in self._tombstones.values())
         return max(ids, default=0) + 1
+
+    def _load_tombstones(self) -> None:
+        raw = _read_json(self.tombstones_path, {})
+        items = raw.get("items", {}) if isinstance(raw, dict) else {}
+        if not isinstance(items, dict):
+            items = {}
+        self._tombstones = {
+            _as_text(token): dict(value)
+            for token, value in items.items()
+            if _as_text(token) and isinstance(value, dict)
+        }
+
+    def _save_tombstones(self) -> None:
+        _atomic_write_json(
+            self.tombstones_path,
+            {"version": 1, "items": self._tombstones},
+        )
+
+    def _load_audit_entries(self) -> None:
+        raw = _read_json(self.audit_path, {})
+        items = raw.get("items", []) if isinstance(raw, dict) else []
+        self._audit_entries = [dict(item) for item in items if isinstance(item, dict)][
+            -1000:
+        ]
+
+    def _save_audit_entries(self) -> None:
+        _atomic_write_json(
+            self.audit_path,
+            {"version": 1, "items": self._audit_entries[-1000:]},
+        )
 
     def _deduplicate_ids(self) -> None:
         """Repair legacy catalogues where multiple files share one id."""
@@ -564,10 +629,56 @@ class CatalogStore:
                 self._save_description_overrides()
             return removed is not None, self.profile_for(entry)
 
+    def append_audit(
+        self,
+        action: str,
+        target: str,
+        summary: str,
+        username: str = "",
+    ) -> Dict[str, Any]:
+        with self._lock:
+            item = {
+                "id": uuid.uuid4().hex,
+                "timestamp": datetime.now(SHANGHAI).isoformat(timespec="seconds"),
+                "username": _as_text(username) or "dashboard",
+                "action": _as_text(action)[:80],
+                "target": _as_text(target)[:240],
+                "summary": _as_text(summary)[:1000],
+            }
+            self._audit_entries.append(item)
+            self._audit_entries = self._audit_entries[-1000:]
+            self._save_audit_entries()
+            return dict(item)
+
+    def audit_entries(self, limit: int = 100) -> List[Dict[str, Any]]:
+        limit = max(1, min(500, int(limit)))
+        with self._lock:
+            return [dict(item) for item in reversed(self._audit_entries[-limit:])]
+
     def _is_retired_asset(self, filename: str) -> bool:
-        return any(
-            filename in entry.get("aliases", []) for entry in self._catalog.values()
-        )
+        candidate = Path(filename).name.casefold()
+        if any(
+            candidate
+            in {
+                Path(_as_text(alias)).name.casefold()
+                for alias in entry.get("aliases", [])
+                if _as_text(alias)
+            }
+            for entry in self._catalog.values()
+        ):
+            return True
+        for tombstone in self._tombstones.values():
+            retired_names = {
+                Path(_as_text(tombstone.get("filename"))).name.casefold(),
+                *{
+                    Path(_as_text(value)).name.casefold()
+                    for value in tombstone.get("reference_names", [])
+                    if _as_text(value)
+                },
+            }
+            if candidate in retired_names:
+                return True
+        return False
 
     @staticmethod
     def _asset_digest(path: Path) -> Optional[str]:
@@ -893,12 +1004,188 @@ class CatalogStore:
             image.verify()
 
     def load_group(self, group_id: str) -> Dict[str, Dict[str, Any]]:
-        path = self.config_dir / f"{Path(str(group_id)).name}.json"
-        return normalise_group_config(_read_json(path, {}))
+        group_id = _safe_data_id(group_id, "群号")
+        path = self.config_dir / f"{group_id}.json"
+        with self._lock:
+            return normalise_group_config(_read_json(path, {}))
 
     def save_group(self, group_id: str, config: Dict[str, Dict[str, Any]]) -> None:
-        path = self.config_dir / f"{Path(str(group_id)).name}.json"
-        _atomic_write_json(path, normalise_group_config(config))
+        group_id = _safe_data_id(group_id, "群号")
+        path = self.config_dir / f"{group_id}.json"
+        with self._lock:
+            _atomic_write_json(path, normalise_group_config(config))
+
+    def group_ids(self) -> List[str]:
+        with self._lock:
+            ids = {
+                path.stem
+                for path in self.config_dir.glob("*.json")
+                if path.name not in NON_GROUP_CONFIG_FILENAMES
+                and re.fullmatch(r"[A-Za-z0-9_-]{1,128}", path.stem)
+            }
+            ids.update(
+                str(value)
+                for value in (*self._draw_limits.keys(), *self._draw_bonuses.keys())
+                if re.fullmatch(r"[A-Za-z0-9_-]{1,128}", str(value))
+            )
+            return sorted(ids, key=lambda value: (not value.isdigit(), value))
+
+    def update_group_user(
+        self,
+        group_id: str,
+        user_id: str,
+        *,
+        nickname: Optional[str] = None,
+        no_new_count: Optional[int] = None,
+        current_filename: Any = _UNSET,
+        current_date: Optional[str] = None,
+        add_unlock_filename: str = "",
+        remove_unlock_filename: str = "",
+        unlock_date: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        group_id = _safe_data_id(group_id, "群号")
+        user_id = _safe_data_id(user_id, "用户 ID")
+        with self._lock:
+            config = self.load_group(group_id)
+            user = config.setdefault(
+                user_id,
+                {
+                    "current": {"ally_filename": "", "date": ""},
+                    "unlocked": [],
+                    "nickname": "用户",
+                    "no_new_count": 0,
+                },
+            )
+            if nickname is not None:
+                user["nickname"] = _as_text(nickname) or "用户"
+            if no_new_count is not None:
+                user["no_new_count"] = max(0, int(no_new_count))
+            if current_filename is not _UNSET:
+                filename = Path(_as_text(current_filename)).name
+                if filename and filename not in self._catalog:
+                    raise ValueError("当前盟友素材不存在")
+                user["current"] = {
+                    "ally_filename": filename,
+                    "date": _as_text(current_date) if filename else "",
+                }
+
+            unlocked = _normalise_unlocked(user.get("unlocked"))
+            remove_name = Path(_as_text(remove_unlock_filename)).name
+            if remove_name:
+                unlocked = [
+                    item
+                    for item in unlocked
+                    if item.get("ally_filename") != remove_name
+                ]
+            add_name = Path(_as_text(add_unlock_filename)).name
+            if add_name:
+                if add_name not in self._catalog:
+                    raise ValueError("要添加的解锁素材不存在")
+                if not any(item.get("ally_filename") == add_name for item in unlocked):
+                    unlocked.append(
+                        {
+                            "ally_filename": add_name,
+                            "unlock_date": _normalise_date(unlock_date),
+                        }
+                    )
+            user["unlocked"] = unlocked
+            config[user_id] = normalise_group_config({user_id: user})[user_id]
+            self.save_group(group_id, config)
+            return deepcopy(config[user_id])
+
+    def update_group_user_state(
+        self,
+        group_id: str,
+        user_id: str,
+        *,
+        nickname: Optional[str] = None,
+        no_new_count: Optional[int] = None,
+        current_filename: Any = _UNSET,
+        current_date: Optional[str] = None,
+        draw_count: Any = _UNSET,
+        draw_bonus: Any = _UNSET,
+        counter_date: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Atomically update one member record and its daily counters."""
+
+        group_id = _safe_data_id(group_id, "群号")
+        user_id = _safe_data_id(user_id, "用户 ID")
+        normalized_draw_count = (
+            _UNSET if draw_count is _UNSET else max(0, int(draw_count))
+        )
+        normalized_draw_bonus = (
+            _UNSET if draw_bonus is _UNSET else max(0, int(draw_bonus))
+        )
+        with self._lock:
+            group_path = self.config_dir / f"{group_id}.json"
+            file_snapshots = {
+                group_path: _snapshot_file(group_path),
+                self.draw_limits_path: _snapshot_file(self.draw_limits_path),
+                self.draw_bonuses_path: _snapshot_file(self.draw_bonuses_path),
+            }
+            draw_limits_before = deepcopy(self._draw_limits)
+            draw_bonuses_before = deepcopy(self._draw_bonuses)
+            try:
+                updated = self.update_group_user(
+                    group_id,
+                    user_id,
+                    nickname=nickname,
+                    no_new_count=no_new_count,
+                    current_filename=current_filename,
+                    current_date=current_date,
+                )
+                if normalized_draw_count is not _UNSET:
+                    self.set_draw_count(
+                        group_id,
+                        user_id,
+                        normalized_draw_count,
+                        counter_date,
+                    )
+                if normalized_draw_bonus is not _UNSET:
+                    self.set_draw_bonus(
+                        group_id,
+                        user_id,
+                        normalized_draw_bonus,
+                        counter_date,
+                    )
+                return updated
+            except Exception as exc:
+                self._draw_limits = draw_limits_before
+                self._draw_bonuses = draw_bonuses_before
+                rollback_errors: List[str] = []
+                for path, snapshot in file_snapshots.items():
+                    try:
+                        _restore_file(path, snapshot)
+                    except Exception as rollback_exc:
+                        rollback_errors.append(f"{path.name}: {rollback_exc}")
+                if rollback_errors:
+                    raise RuntimeError(
+                        "成员数据保存失败且自动回滚不完整："
+                        + "；".join(rollback_errors)
+                    ) from exc
+                raise
+
+    def delete_group_user(self, group_id: str, user_id: str) -> bool:
+        group_id = _safe_data_id(group_id, "群号")
+        user_id = _safe_data_id(user_id, "用户 ID")
+        with self._lock:
+            config = self.load_group(group_id)
+            removed = config.pop(user_id, None) is not None
+            if removed:
+                self.save_group(group_id, config)
+            counters_changed = False
+            for data in (self._draw_limits, self._draw_bonuses):
+                group = data.get(group_id)
+                if not isinstance(group, dict) or user_id not in group:
+                    continue
+                group.pop(user_id, None)
+                counters_changed = True
+                if not group:
+                    data.pop(group_id, None)
+            if counters_changed:
+                self._save_draw_limits()
+                self._save_draw_bonuses()
+            return removed or counters_changed
 
     def draw_count(
         self, group_id: str, user_id: str, today: Optional[str] = None
@@ -972,14 +1259,79 @@ class CatalogStore:
             self._save_draw_bonuses()
             return int(user[today])
 
+    def set_draw_count(
+        self,
+        group_id: str,
+        user_id: str,
+        value: int,
+        today: Optional[str] = None,
+    ) -> int:
+        return self._set_daily_counter(
+            self._draw_limits,
+            self._save_draw_limits,
+            group_id,
+            user_id,
+            value,
+            today,
+        )
+
+    def set_draw_bonus(
+        self,
+        group_id: str,
+        user_id: str,
+        value: int,
+        today: Optional[str] = None,
+    ) -> int:
+        return self._set_daily_counter(
+            self._draw_bonuses,
+            self._save_draw_bonuses,
+            group_id,
+            user_id,
+            value,
+            today,
+        )
+
+    def _set_daily_counter(
+        self,
+        data: Dict[str, Any],
+        save: Any,
+        group_id: str,
+        user_id: str,
+        value: int,
+        today: Optional[str],
+    ) -> int:
+        group_id = _safe_data_id(group_id, "群号")
+        user_id = _safe_data_id(user_id, "用户 ID")
+        date = _as_text(today) or get_today()
+        value = max(0, int(value))
+        with self._lock:
+            group = data.setdefault(group_id, {})
+            if not isinstance(group, dict):
+                group = {}
+                data[group_id] = group
+            dates = group.setdefault(user_id, {})
+            if not isinstance(dates, dict):
+                dates = {}
+                group[user_id] = dates
+            if value:
+                dates[date] = value
+            else:
+                dates.pop(date, None)
+                if not dates:
+                    group.pop(user_id, None)
+                if not group:
+                    data.pop(group_id, None)
+            save()
+            return value
+
     def reset_group_draws(
         self, group_id: str, today: Optional[str] = None
     ) -> Dict[str, int]:
         """Clear one group's used counts and granted opportunities for one day."""
 
+        group_id = _safe_data_id(group_id, "群号")
         with self._lock:
             today = today or get_today()
-            group_id = str(group_id)
             affected_users: Set[str] = set()
 
             def clear_day(data: Dict[str, Any]) -> int:
@@ -1011,7 +1363,7 @@ class CatalogStore:
                 "bonus_records": bonus_records,
             }
 
-    def rename_entry(
+    def _rename_entry_unchecked(
         self,
         entry: Dict[str, Any],
         new_name: str,
@@ -1021,9 +1373,16 @@ class CatalogStore:
             old_description_key = self._description_key(entry)
             old_filename = Path(_as_text(entry["filename"])).name
             old_path = self.asset_path(entry)
-            suffix = old_path.suffix if old_path else ".png"
-            prefix = _as_text(entry.get("source"))
-            if not prefix:
+            suffix = (
+                old_path.suffix if old_path else Path(old_filename).suffix or ".png"
+            )
+            source = (
+                _as_text(entry.get("source"))
+                if new_source is None
+                else _as_text(new_source)
+            )
+            prefix = source
+            if new_source is None and not prefix:
                 _old_name, prefix = _parse_filename(old_filename)
             if prefix:
                 new_filename = f"{prefix}.{_safe_filename(new_name)}{suffix.lower()}"
@@ -1051,7 +1410,7 @@ class CatalogStore:
                 {
                     "filename": new_filename,
                     "name": _as_text(new_name) or entry.get("name", "未命名盟友"),
-                    "source": _as_text(new_source) or entry.get("source", ""),
+                    "source": source,
                     "aliases": sorted(set(aliases)),
                 }
             )
@@ -1068,6 +1427,104 @@ class CatalogStore:
                 self._save_description_overrides()
             self._save_catalog()
             return dict(updated)
+
+    def update_entry_details(
+        self,
+        entry: Mapping[str, Any],
+        new_name: str,
+        new_source: Optional[str] = None,
+        *,
+        description_action: str = "keep",
+        description: str = "",
+        updated_by: str = "",
+    ) -> Dict[str, Any]:
+        """Atomically update an entry filename, references and description."""
+
+        description_action = _as_text(description_action) or "keep"
+        if description_action not in {"keep", "set", "restore"}:
+            raise ValueError("简介操作无效")
+        description = str(description or "").strip()
+        if description_action == "set" and not description:
+            raise ValueError("简介不能为空")
+
+        with self._lock:
+            old_filename = Path(_as_text(entry.get("filename"))).name
+            current = self._catalog.get(old_filename)
+            if current is None:
+                raise ValueError("图鉴条目不存在或已经删除")
+            current = deepcopy(current)
+            old_path = self.asset_path(current)
+            suffix = (
+                old_path.suffix if old_path else Path(old_filename).suffix or ".png"
+            )
+            source = (
+                _as_text(current.get("source"))
+                if new_source is None
+                else _as_text(new_source)
+            )
+            prefix = source
+            if new_source is None and not prefix:
+                _old_name, prefix = _parse_filename(old_filename)
+            if prefix:
+                new_filename = f"{prefix}.{_safe_filename(new_name)}{suffix.lower()}"
+            else:
+                new_filename = (
+                    f"ally_{int(current['id']):04d}_{_safe_filename(new_name)}"
+                    f"{suffix.lower()}"
+                )
+
+            tracked_paths = {
+                self.catalog_path,
+                self.description_overrides_path,
+                *[
+                    path
+                    for path in self.config_dir.glob("*.json")
+                    if path.name not in NON_GROUP_CONFIG_FILENAMES
+                ],
+                self.assets_dir / old_filename,
+                self.assets_dir / new_filename,
+            }
+            file_snapshots = {path: _snapshot_file(path) for path in tracked_paths}
+            catalog_before = deepcopy(self._catalog)
+            descriptions_before = deepcopy(self._description_overrides)
+            try:
+                updated = current
+                if _as_text(new_name) != _as_text(
+                    current.get("name")
+                ) or source != _as_text(current.get("source")):
+                    updated = self._rename_entry_unchecked(
+                        current,
+                        new_name,
+                        new_source,
+                    )
+                if description_action == "set":
+                    self.set_description(updated, description, updated_by=updated_by)
+                elif description_action == "restore":
+                    self.restore_description(updated)
+                return dict(updated)
+            except Exception as exc:
+                self._catalog = catalog_before
+                self._description_overrides = descriptions_before
+                rollback_errors: List[str] = []
+                for path, snapshot in file_snapshots.items():
+                    try:
+                        _restore_file(path, snapshot)
+                    except Exception as rollback_exc:
+                        rollback_errors.append(f"{path.name}: {rollback_exc}")
+                if rollback_errors:
+                    raise RuntimeError(
+                        "素材资料保存失败且自动回滚不完整："
+                        + "；".join(rollback_errors)
+                    ) from exc
+                raise
+
+    def rename_entry(
+        self,
+        entry: Dict[str, Any],
+        new_name: str,
+        new_source: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        return self.update_entry_details(entry, new_name, new_source)
 
     def cleanup_renamed_prefix(
         self,
@@ -1208,6 +1665,310 @@ class CatalogStore:
             self._save_catalog()
         return {"removed": removed, "unresolved": unresolved}
 
+    def delete_entry(
+        self,
+        entry: Mapping[str, Any],
+        deleted_by: str = "",
+    ) -> Dict[str, Any]:
+        """Archive one entry and remove its references from active group data."""
+
+        with self._lock:
+            filename = Path(_as_text(entry.get("filename"))).name
+            current = self._catalog.get(filename)
+            if current is None:
+                raise ValueError("图鉴条目不存在或已经删除")
+            current = deepcopy(current)
+            entry_id = int(current.get("id", 0) or 0)
+            token = (
+                datetime.now(SHANGHAI).strftime("%Y%m%d-%H%M%S")
+                + f"-{entry_id}-{uuid.uuid4().hex[:8]}"
+            )
+            archive_dir = self.trash_dir / token
+            archive_dir.mkdir(parents=True, exist_ok=False)
+            record_path = archive_dir / "record.json"
+            asset_path = self.asset_path(current)
+            archived_asset = archive_dir / filename
+            if asset_path is not None and asset_path.is_file():
+                shutil.copy2(asset_path, archived_asset)
+
+            reference_names = {
+                filename,
+                *[
+                    Path(_as_text(alias)).name
+                    for alias in current.get("aliases", [])
+                    if _as_text(alias)
+                ],
+            }
+            affected_groups: Dict[str, Dict[str, Dict[str, Any]]] = {}
+            changed_groups: Dict[str, Dict[str, Dict[str, Any]]] = {}
+            for group_id in self.group_ids():
+                group_file = self.config_dir / f"{group_id}.json"
+                if not group_file.is_file():
+                    continue
+                config = self.load_group(group_id)
+                changed = False
+                snapshots: Dict[str, Dict[str, Any]] = {}
+                for user_id, user in config.items():
+                    current_ref = Path(
+                        _as_text(user.get("current", {}).get("ally_filename"))
+                    ).name
+                    unlocked = _normalise_unlocked(user.get("unlocked"))
+                    removed_unlocks = [
+                        item
+                        for item in unlocked
+                        if Path(_as_text(item.get("ally_filename"))).name
+                        in reference_names
+                    ]
+                    if current_ref not in reference_names and not removed_unlocks:
+                        continue
+                    snapshots[user_id] = deepcopy(user)
+                    if current_ref in reference_names:
+                        user["current"] = {"ally_filename": "", "date": ""}
+                    if removed_unlocks:
+                        user["unlocked"] = [
+                            item
+                            for item in unlocked
+                            if Path(_as_text(item.get("ally_filename"))).name
+                            not in reference_names
+                        ]
+                    changed = True
+                if changed:
+                    affected_groups[group_id] = snapshots
+                    changed_groups[group_id] = config
+
+            description_key = self._description_key(current)
+            description_override = deepcopy(
+                self._description_overrides.get(description_key)
+            )
+            deleted_at = datetime.now(SHANGHAI).isoformat(timespec="seconds")
+            record = {
+                "version": 1,
+                "status": "prepared",
+                "token": token,
+                "deleted_at": deleted_at,
+                "deleted_by": _as_text(deleted_by) or "dashboard",
+                "entry": current,
+                "reference_names": sorted(reference_names),
+                "description_key": description_key,
+                "description_override": description_override,
+                "affected_groups": affected_groups,
+                "asset_present": archived_asset.is_file(),
+            }
+            _atomic_write_json(record_path, record)
+
+            try:
+                for group_id, config in changed_groups.items():
+                    self.save_group(group_id, config)
+                self._description_overrides.pop(description_key, None)
+                if description_override is not None:
+                    self._save_description_overrides()
+                self._catalog.pop(filename, None)
+                self._save_catalog()
+                if (
+                    asset_path is not None
+                    and asset_path.parent == self.assets_dir
+                    and asset_path.is_file()
+                ):
+                    asset_path.unlink()
+                tombstone = {
+                    "token": token,
+                    "id": entry_id,
+                    "name": _as_text(current.get("name")),
+                    "source": _as_text(current.get("source")),
+                    "filename": filename,
+                    "deleted_at": deleted_at,
+                    "deleted_by": record["deleted_by"],
+                    "reference_names": sorted(reference_names),
+                    "affected_users": sum(
+                        len(users) for users in affected_groups.values()
+                    ),
+                    "asset_present": archived_asset.is_file(),
+                }
+                self._tombstones[token] = tombstone
+                self._save_tombstones()
+                record["status"] = "deleted"
+                _atomic_write_json(record_path, record)
+                return dict(tombstone)
+            except Exception:
+                self._catalog[filename] = current
+                self._save_catalog()
+                if description_override is not None:
+                    self._description_overrides[description_key] = description_override
+                    self._save_description_overrides()
+                for group_id, snapshots in affected_groups.items():
+                    config = self.load_group(group_id)
+                    for user_id, user in snapshots.items():
+                        config[user_id] = deepcopy(user)
+                    self.save_group(group_id, config)
+                if (
+                    archived_asset.is_file()
+                    and asset_path is not None
+                    and asset_path.parent == self.assets_dir
+                    and not asset_path.exists()
+                ):
+                    shutil.copy2(archived_asset, asset_path)
+                self._tombstones.pop(token, None)
+                self._save_tombstones()
+                record["status"] = "failed"
+                _atomic_write_json(record_path, record)
+                raise
+
+    def deleted_entries(self) -> List[Dict[str, Any]]:
+        with self._lock:
+            return sorted(
+                (dict(item) for item in self._tombstones.values()),
+                key=lambda item: _as_text(item.get("deleted_at")),
+                reverse=True,
+            )
+
+    def restore_deleted_entry(
+        self,
+        token: str,
+        restored_by: str = "",
+    ) -> Dict[str, Any]:
+        token = _safe_data_id(token, "回收站标识")
+        with self._lock:
+            tombstone = self._tombstones.get(token)
+            if tombstone is None:
+                raise ValueError("回收站记录不存在或已经恢复")
+            archive_dir = self.trash_dir / token
+            record_path = archive_dir / "record.json"
+            record = _read_json(record_path, {})
+            entry = record.get("entry") if isinstance(record, dict) else None
+            if not isinstance(entry, dict):
+                raise ValueError("回收站记录损坏，缺少图鉴条目")
+            filename = Path(_as_text(entry.get("filename"))).name
+            entry_id = int(entry.get("id", 0) or 0)
+            if not filename or entry_id <= 0:
+                raise ValueError("回收站记录损坏，编号或文件名无效")
+            if filename in self._catalog or any(
+                int(item.get("id", 0) or 0) == entry_id
+                for item in self._catalog.values()
+            ):
+                raise FileExistsError("当前图鉴已有相同文件名或编号，无法恢复")
+
+            archived_asset = archive_dir / filename
+            target_asset = self.assets_dir / filename
+            if target_asset.exists():
+                raise FileExistsError("素材目录已有同名文件，无法恢复")
+            if bool(record.get("asset_present")) and not archived_asset.is_file():
+                raise ValueError("回收站记录损坏，归档素材文件缺失")
+
+            description_key = _as_text(record.get("description_key"))
+            description_override = record.get("description_override")
+            reference_names = {
+                Path(_as_text(value)).name
+                for value in record.get("reference_names", [])
+                if _as_text(value)
+            }
+            reference_names.add(filename)
+            affected_groups = record.get("affected_groups", {})
+            group_before: Dict[str, Tuple[bool, Dict[str, Dict[str, Any]]]] = {}
+            group_updates: Dict[str, Dict[str, Dict[str, Any]]] = {}
+            if isinstance(affected_groups, dict):
+                for raw_group_id, snapshots in affected_groups.items():
+                    if not isinstance(snapshots, dict):
+                        continue
+                    group_id = _safe_data_id(raw_group_id, "群号")
+                    group_path = self.config_dir / f"{group_id}.json"
+                    config = self.load_group(group_id)
+                    group_before[group_id] = (group_path.is_file(), deepcopy(config))
+                    for user_id, snapshot in snapshots.items():
+                        if not isinstance(snapshot, dict):
+                            continue
+                        current_user = config.get(user_id)
+                        if current_user is None:
+                            config[user_id] = deepcopy(snapshot)
+                            continue
+                        current_ref = _as_text(
+                            current_user.get("current", {}).get("ally_filename")
+                        )
+                        snapshot_current = snapshot.get("current", {})
+                        snapshot_ref = Path(
+                            _as_text(snapshot_current.get("ally_filename"))
+                        ).name
+                        if not current_ref and snapshot_ref in reference_names:
+                            current_user["current"] = deepcopy(snapshot_current)
+                        unlocked = _normalise_unlocked(current_user.get("unlocked"))
+                        by_filename = {item["ally_filename"]: item for item in unlocked}
+                        for item in _normalise_unlocked(snapshot.get("unlocked")):
+                            item_name = Path(item["ally_filename"]).name
+                            if item_name not in reference_names:
+                                continue
+                            previous = by_filename.get(item_name)
+                            if (
+                                previous is None
+                                or item["unlock_date"] < previous["unlock_date"]
+                            ):
+                                by_filename[item_name] = item
+                        current_user["unlocked"] = list(by_filename.values())
+                    group_updates[group_id] = config
+
+            catalog_before = deepcopy(self._catalog)
+            descriptions_before = deepcopy(self._description_overrides)
+            tombstones_before = deepcopy(self._tombstones)
+            record_before = deepcopy(record)
+            asset_copied = False
+            try:
+                if archived_asset.is_file():
+                    shutil.copy2(archived_asset, target_asset)
+                    asset_copied = True
+                self._catalog[filename] = deepcopy(entry)
+                if description_key and isinstance(description_override, dict):
+                    self._description_overrides[description_key] = deepcopy(
+                        description_override
+                    )
+                    self._save_description_overrides()
+                self._save_catalog()
+                for group_id, config in group_updates.items():
+                    self.save_group(group_id, config)
+                self._tombstones.pop(token, None)
+                self._save_tombstones()
+                record["status"] = "restored"
+                record["restored_at"] = datetime.now(SHANGHAI).isoformat(
+                    timespec="seconds"
+                )
+                record["restored_by"] = _as_text(restored_by) or "dashboard"
+                _atomic_write_json(record_path, record)
+                return dict(self._catalog[filename])
+            except Exception as exc:
+                rollback_errors: List[str] = []
+                self._catalog = catalog_before
+                self._description_overrides = descriptions_before
+                self._tombstones = tombstones_before
+                for operation, label in (
+                    (self._save_catalog, "图鉴目录"),
+                    (self._save_description_overrides, "简介覆盖"),
+                    (self._save_tombstones, "回收站索引"),
+                ):
+                    try:
+                        operation()
+                    except Exception as rollback_exc:
+                        rollback_errors.append(f"{label}: {rollback_exc}")
+                for group_id, (existed, previous) in group_before.items():
+                    group_path = self.config_dir / f"{group_id}.json"
+                    try:
+                        if existed:
+                            _atomic_write_json(group_path, previous)
+                        elif group_path.exists():
+                            group_path.unlink()
+                    except Exception as rollback_exc:
+                        rollback_errors.append(f"群 {group_id}: {rollback_exc}")
+                if asset_copied and target_asset.exists():
+                    try:
+                        target_asset.unlink()
+                    except Exception as rollback_exc:
+                        rollback_errors.append(f"素材文件: {rollback_exc}")
+                try:
+                    _atomic_write_json(record_path, record_before)
+                except Exception as rollback_exc:
+                    rollback_errors.append(f"回收站记录: {rollback_exc}")
+                if rollback_errors:
+                    raise RuntimeError(
+                        "恢复失败且自动回滚不完整：" + "；".join(rollback_errors)
+                    ) from exc
+                raise
+
     def _replace_references(self, old_filename: str, new_filename: str) -> None:
         for group_file in self.config_dir.glob("*.json"):
             if group_file.name in NON_GROUP_CONFIG_FILENAMES:
@@ -1239,8 +2000,11 @@ class CatalogStore:
         name: str,
         data: bytes,
         source: str = "",
+        description: str = "",
+        updated_by: str = "",
     ) -> Dict[str, Any]:
         self._validate_image(data)
+        description = str(description or "").strip()
         with self._lock:
             entry_id = self._next_id()
             image_format = "png"
@@ -1250,21 +2014,49 @@ class CatalogStore:
                 ".jpg" if image_format in {"jpeg", "jpg"} else f".{image_format}"
             )
             filename = f"ally_{entry_id:04d}_{_safe_filename(name)}{extension}"
-            _atomic_write_bytes(self.assets_dir / filename, data)
-            digest = hashlib.sha256(data).hexdigest()[:24]
-            entry = self._set_entry(
-                filename,
-                entry_id,
-                name,
-                source,
-                metadata={
-                    "entry_key": f"manual:{entry_id}:{digest}",
-                    "catalog_kind": "manual",
-                    "asset_set": "manual",
-                },
-            )
-            self._save_catalog()
-            return dict(entry)
+            target = self.assets_dir / filename
+            catalog_before = deepcopy(self._catalog)
+            descriptions_before = deepcopy(self._description_overrides)
+            try:
+                _atomic_write_bytes(target, data)
+                digest = hashlib.sha256(data).hexdigest()[:24]
+                entry = self._set_entry(
+                    filename,
+                    entry_id,
+                    name,
+                    source,
+                    metadata={
+                        "entry_key": f"manual:{entry_id}:{digest}",
+                        "catalog_kind": "manual",
+                        "asset_set": "manual",
+                    },
+                )
+                self._save_catalog()
+                if description:
+                    self.set_description(entry, description, updated_by=updated_by)
+                return dict(entry)
+            except Exception as exc:
+                self._catalog = catalog_before
+                self._description_overrides = descriptions_before
+                rollback_errors: List[str] = []
+                for operation, label in (
+                    (self._save_catalog, "图鉴目录"),
+                    (self._save_description_overrides, "简介覆盖"),
+                ):
+                    try:
+                        operation()
+                    except Exception as rollback_exc:
+                        rollback_errors.append(f"{label}: {rollback_exc}")
+                if target.exists():
+                    try:
+                        target.unlink()
+                    except Exception as rollback_exc:
+                        rollback_errors.append(f"素材文件: {rollback_exc}")
+                if rollback_errors:
+                    raise RuntimeError(
+                        "新增素材失败且自动回滚不完整：" + "；".join(rollback_errors)
+                    ) from exc
+                raise
 
     def unlocked_filenames(self, user: Dict[str, Any]) -> List[str]:
         return [

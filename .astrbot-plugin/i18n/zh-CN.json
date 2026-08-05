@@ -1,0 +1,11 @@
+{
+  "metadata": {
+    "display_name": "星之卡比图鉴"
+  },
+  "pages": {
+    "catalog-admin": {
+      "title": "星之卡比图鉴管理台",
+      "desc": "管理素材资料、群成员图鉴、回收站与操作记录"
+    }
+  }
+}

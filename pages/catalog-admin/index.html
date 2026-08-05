@@ -1,0 +1,411 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <title>星之卡比图鉴管理台</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <div id="app" class="app-shell" aria-busy="true">
+      <header class="topbar">
+        <div class="brand">
+          <span class="brand-mark" aria-hidden="true">
+            <i data-lucide="sparkles"></i>
+          </span>
+          <span class="brand-copy">
+            <strong>星之卡比图鉴</strong>
+            <small>管理台</small>
+          </span>
+        </div>
+
+        <nav class="primary-nav" aria-label="管理模块">
+          <button class="nav-item is-active" type="button" data-view="overview">
+            <i data-lucide="layout-dashboard"></i><span>概览</span>
+          </button>
+          <button class="nav-item" type="button" data-view="catalog">
+            <i data-lucide="library-big"></i><span>素材库</span>
+          </button>
+          <button class="nav-item" type="button" data-view="groups">
+            <i data-lucide="users-round"></i><span>群数据</span>
+          </button>
+          <button class="nav-item" type="button" data-view="trash">
+            <i data-lucide="archive-restore"></i><span>回收站</span>
+          </button>
+          <button class="nav-item" type="button" data-view="audit">
+            <i data-lucide="history"></i><span>操作记录</span>
+          </button>
+        </nav>
+
+        <div class="topbar-actions">
+          <div class="theme-switch" role="group" aria-label="界面主题">
+            <button type="button" data-theme-value="auto" title="跟随 AstrBot" aria-label="跟随 AstrBot">
+              <i data-lucide="monitor-cog"></i>
+            </button>
+            <button type="button" data-theme-value="kirby" title="卡比配色" aria-label="卡比配色">
+              <i data-lucide="sparkle"></i>
+            </button>
+            <button type="button" data-theme-value="dark" title="暗色模式" aria-label="暗色模式">
+              <i data-lucide="moon"></i>
+            </button>
+          </div>
+          <button id="quickAddButton" class="icon-button accent" type="button" title="新增素材" aria-label="新增素材">
+            <i data-lucide="plus"></i>
+          </button>
+        </div>
+      </header>
+
+      <main class="workspace">
+        <section id="view-overview" class="view is-active" data-view-panel="overview">
+          <div class="page-heading">
+            <div>
+              <p class="eyebrow">CATALOG CONTROL</p>
+              <h1>运行概览</h1>
+            </div>
+            <span id="todayLabel" class="date-chip">--</span>
+          </div>
+
+          <div id="overviewMetrics" class="metric-grid" aria-live="polite"></div>
+
+          <div class="overview-grid">
+            <section class="surface health-surface" aria-labelledby="healthTitle">
+              <div class="section-heading">
+                <div>
+                  <h2 id="healthTitle">资料完整度</h2>
+                  <p>素材文件与角色简介</p>
+                </div>
+                <i data-lucide="shield-check"></i>
+              </div>
+              <div id="healthContent" class="health-content"></div>
+            </section>
+
+            <section class="surface source-surface" aria-labelledby="sourceTitle">
+              <div class="section-heading">
+                <div>
+                  <h2 id="sourceTitle">登场作品分布</h2>
+                  <p>当前图鉴条目最多的作品</p>
+                </div>
+                <i data-lucide="chart-no-axes-column-increasing"></i>
+              </div>
+              <div id="sourceDistribution" class="bar-list"></div>
+            </section>
+          </div>
+
+          <section class="surface recent-surface" aria-labelledby="recentTitle">
+            <div class="section-heading">
+              <div>
+                <h2 id="recentTitle">最近操作</h2>
+                <p>Dashboard 管理变更</p>
+              </div>
+              <button class="text-button" type="button" data-view-link="audit">
+                查看全部<i data-lucide="arrow-right"></i>
+              </button>
+            </div>
+            <div id="recentAudit" class="audit-list compact"></div>
+          </section>
+        </section>
+
+        <section id="view-catalog" class="view" data-view-panel="catalog" hidden>
+          <div class="page-heading">
+            <div>
+              <p class="eyebrow">ASSET LIBRARY</p>
+              <h1>素材库</h1>
+            </div>
+            <button id="addEntryButton" class="button primary" type="button">
+              <i data-lucide="plus"></i>新增素材
+            </button>
+          </div>
+
+          <div class="toolbar catalog-toolbar">
+            <label class="search-field grow">
+              <i data-lucide="search"></i>
+              <input id="entrySearch" type="search" placeholder="搜索编号、中文名、英文名或作品" autocomplete="off" />
+            </label>
+            <label class="select-field">
+              <span class="sr-only">登场作品</span>
+              <select id="entrySourceFilter"><option value="">全部作品</option></select>
+              <i data-lucide="chevron-down"></i>
+            </label>
+            <label class="select-field">
+              <span class="sr-only">条目类型</span>
+              <select id="entryKindFilter"><option value="">全部类型</option></select>
+              <i data-lucide="chevron-down"></i>
+            </label>
+            <label class="select-field">
+              <span class="sr-only">资料状态</span>
+              <select id="entryStatusFilter">
+                <option value="all">全部状态</option>
+                <option value="missing_asset">缺少图片</option>
+                <option value="missing_description">缺少简介</option>
+                <option value="description_override">已修改简介</option>
+                <option value="manual">手动新增</option>
+              </select>
+              <i data-lucide="chevron-down"></i>
+            </label>
+            <label class="select-field compact-select">
+              <span class="sr-only">排序</span>
+              <select id="entrySort">
+                <option value="id_asc">编号升序</option>
+                <option value="id_desc">编号降序</option>
+                <option value="name_asc">名称排序</option>
+                <option value="source_asc">作品排序</option>
+              </select>
+              <i data-lucide="arrow-up-down"></i>
+            </label>
+          </div>
+
+          <div class="table-shell">
+            <table class="data-table catalog-table">
+              <thead>
+                <tr>
+                  <th class="media-column">素材</th>
+                  <th>角色</th>
+                  <th>首次登场</th>
+                  <th>类型</th>
+                  <th>状态</th>
+                  <th class="actions-column"><span class="sr-only">操作</span></th>
+                </tr>
+              </thead>
+              <tbody id="entryRows"></tbody>
+            </table>
+            <div id="entryEmpty" class="empty-state" hidden>
+              <i data-lucide="search-x"></i>
+              <strong>没有匹配的素材</strong>
+              <span>调整搜索或筛选条件</span>
+            </div>
+          </div>
+          <div id="entryPagination" class="pagination"></div>
+        </section>
+
+        <section id="view-groups" class="view" data-view-panel="groups" hidden>
+          <div class="page-heading">
+            <div>
+              <p class="eyebrow">GROUP RECORDS</p>
+              <h1>群数据</h1>
+            </div>
+            <span id="groupTotalLabel" class="quiet-label">--</span>
+          </div>
+
+          <div class="group-workbench">
+            <section class="surface group-index" aria-labelledby="groupIndexTitle">
+              <div class="section-heading dense">
+                <div>
+                  <h2 id="groupIndexTitle">群组</h2>
+                  <p>按最近活动排序</p>
+                </div>
+              </div>
+              <label class="search-field">
+                <i data-lucide="search"></i>
+                <input id="groupSearch" type="search" placeholder="搜索群号" autocomplete="off" />
+              </label>
+              <div id="groupList" class="group-list"></div>
+              <div id="groupPagination" class="pagination compact-pagination"></div>
+            </section>
+
+            <section class="surface member-index" aria-labelledby="memberIndexTitle">
+              <div id="groupSelectionEmpty" class="empty-state tall">
+                <i data-lucide="users-round"></i>
+                <strong>选择一个群组</strong>
+                <span>成员图鉴数据将在此处显示</span>
+              </div>
+              <div id="groupSelectionContent" hidden>
+                <div class="section-heading member-heading">
+                  <div>
+                    <p class="eyebrow">SELECTED GROUP</p>
+                    <h2 id="memberIndexTitle">群 <span id="selectedGroupId">--</span></h2>
+                    <p id="selectedGroupSummary">--</p>
+                  </div>
+                  <button id="resetGroupDrawsButton" class="button warning" type="button">
+                    <i data-lucide="rotate-ccw"></i>重置今日次数
+                  </button>
+                </div>
+                <div class="toolbar member-toolbar">
+                  <label class="search-field grow">
+                    <i data-lucide="search"></i>
+                    <input id="userSearch" type="search" placeholder="搜索用户 ID 或昵称" autocomplete="off" />
+                  </label>
+                </div>
+                <div class="table-shell inner-table-shell">
+                  <table class="data-table member-table">
+                    <thead>
+                      <tr>
+                        <th>成员</th>
+                        <th>进度</th>
+                        <th>当前盟友</th>
+                        <th>今日次数</th>
+                        <th class="actions-column"><span class="sr-only">操作</span></th>
+                      </tr>
+                    </thead>
+                    <tbody id="userRows"></tbody>
+                  </table>
+                  <div id="userEmpty" class="empty-state" hidden>
+                    <i data-lucide="user-round-search"></i>
+                    <strong>没有匹配的成员</strong>
+                  </div>
+                </div>
+                <div id="userPagination" class="pagination"></div>
+              </div>
+            </section>
+          </div>
+        </section>
+
+        <section id="view-trash" class="view" data-view-panel="trash" hidden>
+          <div class="page-heading">
+            <div>
+              <p class="eyebrow">RECYCLE BIN</p>
+              <h1>回收站</h1>
+            </div>
+            <span id="trashCountLabel" class="quiet-label">--</span>
+          </div>
+          <div class="table-shell">
+            <table class="data-table trash-table">
+              <thead>
+                <tr>
+                  <th>条目</th>
+                  <th>首次登场</th>
+                  <th>删除时间</th>
+                  <th>影响用户</th>
+                  <th class="actions-column"><span class="sr-only">操作</span></th>
+                </tr>
+              </thead>
+              <tbody id="trashRows"></tbody>
+            </table>
+            <div id="trashEmpty" class="empty-state" hidden>
+              <i data-lucide="archive"></i>
+              <strong>回收站为空</strong>
+              <span>删除的素材会保留原编号和用户引用快照</span>
+            </div>
+          </div>
+        </section>
+
+        <section id="view-audit" class="view" data-view-panel="audit" hidden>
+          <div class="page-heading">
+            <div>
+              <p class="eyebrow">AUDIT TRAIL</p>
+              <h1>操作记录</h1>
+            </div>
+            <button id="refreshAuditButton" class="button secondary" type="button">
+              <i data-lucide="refresh-cw"></i>刷新
+            </button>
+          </div>
+          <section class="surface audit-surface">
+            <div id="auditRows" class="audit-list"></div>
+            <div id="auditEmpty" class="empty-state" hidden>
+              <i data-lucide="file-clock"></i>
+              <strong>暂无管理操作</strong>
+            </div>
+          </section>
+        </section>
+      </main>
+    </div>
+
+    <div id="drawerScrim" class="drawer-scrim" hidden></div>
+
+    <aside id="entryDrawer" class="drawer" aria-labelledby="entryDrawerTitle" aria-hidden="true">
+      <header class="drawer-header">
+        <div>
+          <p class="eyebrow">CATALOG ENTRY</p>
+          <h2 id="entryDrawerTitle">素材详情</h2>
+        </div>
+        <button class="icon-button" type="button" data-close-drawer title="关闭" aria-label="关闭">
+          <i data-lucide="x"></i>
+        </button>
+      </header>
+      <div id="entryDrawerBody" class="drawer-body"></div>
+      <footer id="entryDrawerFooter" class="drawer-footer" hidden>
+        <button id="deleteEntryButton" class="button danger-ghost" type="button">
+          <i data-lucide="trash-2"></i>移入回收站
+        </button>
+        <button id="saveEntryButton" class="button primary" type="button">
+          <i data-lucide="save"></i>保存修改
+        </button>
+      </footer>
+    </aside>
+
+    <aside id="userDrawer" class="drawer" aria-labelledby="userDrawerTitle" aria-hidden="true">
+      <header class="drawer-header">
+        <div>
+          <p class="eyebrow">MEMBER RECORD</p>
+          <h2 id="userDrawerTitle">成员图鉴</h2>
+        </div>
+        <button class="icon-button" type="button" data-close-drawer title="关闭" aria-label="关闭">
+          <i data-lucide="x"></i>
+        </button>
+      </header>
+      <div id="userDrawerBody" class="drawer-body"></div>
+      <footer id="userDrawerFooter" class="drawer-footer" hidden>
+        <button id="deleteUserButton" class="button danger-ghost" type="button">
+          <i data-lucide="user-round-x"></i>删除成员数据
+        </button>
+        <button id="saveUserButton" class="button primary" type="button">
+          <i data-lucide="save"></i>保存成员数据
+        </button>
+      </footer>
+    </aside>
+
+    <dialog id="addEntryDialog" class="modal">
+      <form id="addEntryForm" method="dialog">
+        <header class="modal-header">
+          <div>
+            <p class="eyebrow">NEW CATALOG ENTRY</p>
+            <h2>新增素材</h2>
+          </div>
+          <button class="icon-button" type="button" data-close-dialog="addEntryDialog" title="关闭" aria-label="关闭">
+            <i data-lucide="x"></i>
+          </button>
+        </header>
+        <div class="modal-body">
+          <div id="addUploadZone" class="upload-zone" tabindex="0" role="button">
+            <input id="addImageInput" type="file" accept="image/png,image/jpeg,image/gif,image/bmp,image/webp" hidden />
+            <div id="addUploadPlaceholder" class="upload-placeholder">
+              <i data-lucide="image-up"></i>
+              <strong>选择素材图片</strong>
+              <span>PNG、JPG、GIF、BMP 或 WebP，最大 16 MB</span>
+            </div>
+            <img id="addImagePreview" alt="新素材预览" hidden />
+          </div>
+          <div class="form-grid two-columns">
+            <label class="field">
+              <span>盟友名称</span>
+              <input id="addName" name="name" maxlength="160" required />
+            </label>
+            <label class="field">
+              <span>首次登场作品</span>
+              <input id="addSource" name="source" maxlength="240" />
+            </label>
+          </div>
+          <label class="field">
+            <span>简介</span>
+            <textarea id="addDescription" name="description" rows="7" maxlength="30000"></textarea>
+          </label>
+        </div>
+        <footer class="modal-footer">
+          <button class="button secondary" type="button" data-close-dialog="addEntryDialog">取消</button>
+          <button id="confirmAddEntryButton" class="button primary" type="submit">
+            <i data-lucide="plus"></i>添加到图鉴
+          </button>
+        </footer>
+      </form>
+    </dialog>
+
+    <dialog id="confirmDialog" class="modal confirm-modal">
+      <div class="confirm-icon" id="confirmIcon"><i data-lucide="triangle-alert"></i></div>
+      <h2 id="confirmTitle">确认操作</h2>
+      <p id="confirmMessage"></p>
+      <div class="modal-footer centered">
+        <button id="confirmCancelButton" class="button secondary" type="button">取消</button>
+        <button id="confirmAcceptButton" class="button danger" type="button">确认</button>
+      </div>
+    </dialog>
+
+    <div id="toastRegion" class="toast-region" aria-live="polite" aria-atomic="true"></div>
+    <div id="initialLoader" class="initial-loader">
+      <span class="loader-mark"><i data-lucide="sparkles"></i></span>
+      <span>正在读取图鉴数据</span>
+    </div>
+
+    <script src="./vendor/lucide.min.js"></script>
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

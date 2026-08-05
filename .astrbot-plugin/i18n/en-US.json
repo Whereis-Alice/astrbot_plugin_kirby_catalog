@@ -1,0 +1,11 @@
+{
+  "metadata": {
+    "display_name": "Kirby Catalog"
+  },
+  "pages": {
+    "catalog-admin": {
+      "title": "Kirby Catalog Console",
+      "desc": "Manage catalog assets, group collections, recycle bin, and audit history"
+    }
+  }
+}

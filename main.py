@@ -36,6 +36,7 @@ from .wikirby_card import (
     build_card_layout,
     resolve_card_template,
 )
+from .webui import KirbyCatalogWebUI
 
 PLUGIN_ID = "astrbot_plugin_kirby_catalog"
 LEGACY_PLUGIN_ID = "astrbot_plugin_AnimeWife"
@@ -64,7 +65,7 @@ CATALOG_PROFILES_PATH = Path(__file__).parent / "resources" / "catalog_profiles.
     PLUGIN_ID,
     "Whereis-Alice",
     "星之卡比盟友抽取、收藏图鉴与双百科查询插件",
-    "3.3.2",
+    "3.4.0",
     "https://github.com/Whereis-Alice/astrbot_plugin_kirby_catalog",
 )
 class KirbyCatalogPlugin(Star):
@@ -82,12 +83,23 @@ class KirbyCatalogPlugin(Star):
             profiles_path=CATALOG_PROFILES_PATH,
         )
         self._draw_lock = asyncio.Lock()
+        self.webui: Optional[KirbyCatalogWebUI] = None
+        try:
+            self.webui = KirbyCatalogWebUI(
+                self.context,
+                self.store,
+                self._draw_lock,
+            )
+            self.webui.register()
+        except Exception as exc:
+            self.webui = None
+            logger.exception(
+                "[%s] WebUI 注册失败，插件消息功能仍继续运行: %s", PLUGIN_ID, exc
+            )
         self._cooldowns: Dict[str, Dict[str, float]] = {}
         self._guess_sessions: Dict[str, Dict[str, Any]] = {}
         self._guess_timeout_tasks: Dict[str, asyncio.Task[None]] = {}
-        self._wiki_translation_cache: Dict[
-            Tuple[str, str, str], Tuple[float, str]
-        ] = {}
+        self._wiki_translation_cache: Dict[Tuple[str, str, str], Tuple[float, str]] = {}
         self.wikirby = WikirbyClient(
             api_url=str(self._config_value("wikirby_api_url", DEFAULT_API_URL)),
             timeout_seconds=float(self._config_value("wikirby_timeout_seconds", 12)),
@@ -752,9 +764,7 @@ class KirbyCatalogPlugin(Star):
             detail_lines.append(f"首次登场：{display_work}")
         source_url = str(profile.get("source_url") or "").strip()
         if not source_url:
-            source_url = (
-                "https://github.com/Whereis-Alice/astrbot_plugin_kirby_catalog"
-            )
+            source_url = "https://github.com/Whereis-Alice/astrbot_plugin_kirby_catalog"
         return await self._wiki_card_component(
             {
                 "title": self._display_name(entry),
@@ -826,15 +836,11 @@ class KirbyCatalogPlugin(Star):
     ) -> List[Comp.Nodes]:
         nodes = [
             Comp.Node(name="星之卡比图鉴", content=[Comp.Plain(chunk)])
-            for chunk in self._split_forward_text(
-                text, self._forward_node_max_chars()
-            )
+            for chunk in self._split_forward_text(text, self._forward_node_max_chars())
         ]
         for component in trailing_components or []:
             if component is not None:
-                nodes.append(
-                    Comp.Node(name="星之卡比图鉴", content=[component])
-                )
+                nodes.append(Comp.Node(name="星之卡比图鉴", content=[component]))
         max_nodes = self._forward_max_nodes()
         return [
             Comp.Nodes(nodes=nodes[index : index + max_nodes])

@@ -33,6 +33,14 @@ The plugin can query WiKirby and [Kirby Wiki | Fandom](https://kirby.fandom.com/
 at runtime. Those responses remain subject to the source site's terms and
 content license. Fandom article content is not bundled in this repository.
 
+## Lucide icons
+
+The catalog management Page bundles Lucide `v1.28.0` in
+`pages/catalog-admin/vendor/lucide.min.js`. Lucide is distributed under the
+ISC License. Icons derived from the Feather project remain available under the
+MIT License. The complete notices are included at
+[`LICENSES/LUCIDE-ISC.txt`](LICENSES/LUCIDE-ISC.txt).
+
 ## Plugin code
 
 Unless a file says otherwise, the plugin source code is distributed under the
