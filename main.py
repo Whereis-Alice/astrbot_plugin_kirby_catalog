@@ -31,7 +31,7 @@ from .kirby_fandom import (
     KirbyFandomError,
 )
 from .media_delivery import (
-    cleanup_staged_media,
+    cleanup_staged_media_if_due,
     image_limit_reasons,
     inspect_image,
     local_path_from_image_file,
@@ -79,6 +79,12 @@ DEFAULT_WIKI_CARD_MAX_HEIGHT_PX = 8000
 DEFAULT_WIKI_CARD_MAX_MEGAPIXELS = 18.0
 DEFAULT_WIKI_CARD_MAX_BYTES_MB = 8.0
 DEFAULT_WIKI_CARD_JPEG_QUALITY = 92
+DEFAULT_ALLY_MEDIA_MAX_WIDTH_PX = 2160
+DEFAULT_ALLY_MEDIA_MAX_HEIGHT_PX = 8000
+DEFAULT_ALLY_MEDIA_MAX_MEGAPIXELS = 18.0
+DEFAULT_ALLY_MEDIA_MAX_BYTES_MB = 8.0
+DEFAULT_ALLY_MEDIA_JPEG_QUALITY = 92
+DEFAULT_MEDIA_CLEANUP_INTERVAL_MINUTES = 5.0
 DEFAULT_GALLERY_MAX_HEIGHT_PX = 7600
 DEFAULT_BOT_DRAW_MESSAGE_TEMPLATE = (
     "{nickname}今天的盟友是 {name}，图鉴编号 #{id}{source_text}。{status_text}"
@@ -100,7 +106,7 @@ class AllyDrawOutcome:
     PLUGIN_ID,
     "Whereis-Alice",
     "星之卡比盟友抽取、收藏图鉴与双百科查询插件",
-    "3.5.2",
+    "3.5.3",
     "https://github.com/Whereis-Alice/astrbot_plugin_kirby_catalog",
 )
 class KirbyCatalogPlugin(Star):
@@ -432,7 +438,6 @@ class KirbyCatalogPlugin(Star):
     def _entry_or_error(
         self, target: str
     ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
-        self.store.refresh()
         matches = self.store.find_entries(target)
         if len(matches) == 1:
             return matches[0], None
@@ -504,10 +509,82 @@ class KirbyCatalogPlugin(Star):
             1,
             1440,
         )
-        cleanup_staged_media(path, retention_seconds=retention_minutes * 60)
+        cleanup_staged_media_if_due(
+            path,
+            retention_seconds=retention_minutes * 60,
+            min_interval_seconds=self._media_cleanup_interval_seconds(),
+        )
         return path
 
-    async def _direct_image_value(self, component: Any) -> str | None:
+    def _media_delivery_limits(
+        self, media_profile: str
+    ) -> Tuple[int, int, float, int, int]:
+        if media_profile == "wiki_card":
+            prefix = "wiki_card"
+            defaults = (
+                DEFAULT_WIKI_CARD_MAX_WIDTH_PX,
+                DEFAULT_WIKI_CARD_MAX_HEIGHT_PX,
+                DEFAULT_WIKI_CARD_MAX_MEGAPIXELS,
+                DEFAULT_WIKI_CARD_MAX_BYTES_MB,
+                DEFAULT_WIKI_CARD_JPEG_QUALITY,
+            )
+        else:
+            prefix = "ally_media"
+            defaults = (
+                DEFAULT_ALLY_MEDIA_MAX_WIDTH_PX,
+                DEFAULT_ALLY_MEDIA_MAX_HEIGHT_PX,
+                DEFAULT_ALLY_MEDIA_MAX_MEGAPIXELS,
+                DEFAULT_ALLY_MEDIA_MAX_BYTES_MB,
+                DEFAULT_ALLY_MEDIA_JPEG_QUALITY,
+            )
+        width, height, megapixels, bytes_mb, quality = defaults
+        max_width = self._bounded_int(
+            self._config_value(f"{prefix}_max_width_px", width), width, 0, 20000
+        )
+        max_height = self._bounded_int(
+            self._config_value(f"{prefix}_max_height_px", height), height, 0, 50000
+        )
+        max_megapixels = self._bounded_float(
+            self._config_value(f"{prefix}_max_megapixels", megapixels),
+            megapixels,
+            0,
+            200,
+        )
+        max_bytes = int(
+            self._bounded_float(
+                self._config_value(f"{prefix}_max_bytes_mb", bytes_mb),
+                bytes_mb,
+                0,
+                100,
+            )
+            * 1024
+            * 1024
+        )
+        jpeg_quality = self._bounded_int(
+            self._config_value(f"{prefix}_jpeg_quality", quality),
+            quality,
+            60,
+            98,
+        )
+        return max_width, max_height, max_megapixels, max_bytes, jpeg_quality
+
+    def _media_cleanup_interval_seconds(self) -> float:
+        return (
+            self._bounded_float(
+                self._config_value(
+                    "media_cleanup_interval_minutes",
+                    DEFAULT_MEDIA_CLEANUP_INTERVAL_MINUTES,
+                ),
+                DEFAULT_MEDIA_CLEANUP_INTERVAL_MINUTES,
+                0,
+                1440,
+            )
+            * 60
+        )
+
+    async def _direct_image_value(
+        self, component: Any, *, media_profile: str = "ally"
+    ) -> str | None:
         file_value = str(getattr(component, "file", "") or "").strip()
         if file_value.startswith(("http://", "https://")):
             return file_value
@@ -547,14 +624,7 @@ class KirbyCatalogPlugin(Star):
         normalize_enabled = self._bool_value(
             self._config_value("media_normalize_jpeg", True)
         ) and not source.name.startswith(("kirby-delivery-", "kirby-card-"))
-        jpeg_quality = self._bounded_int(
-            self._config_value(
-                "wiki_card_jpeg_quality", DEFAULT_WIKI_CARD_JPEG_QUALITY
-            ),
-            DEFAULT_WIKI_CARD_JPEG_QUALITY,
-            60,
-            98,
-        )
+        _, _, _, _, jpeg_quality = self._media_delivery_limits(media_profile)
         retention_minutes = self._bounded_float(
             self._config_value("media_stage_retention_minutes", 30),
             30,
@@ -569,39 +639,19 @@ class KirbyCatalogPlugin(Star):
             normalize_jpeg_enabled=normalize_enabled,
             jpeg_quality=jpeg_quality,
             retention_seconds=retention_minutes * 60,
+            cleanup_interval_seconds=self._media_cleanup_interval_seconds(),
         )
         return onebot_value
 
     async def _prepare_media_components(
-        self, components: List[Any]
+        self, components: List[Any], *, media_profile: str = "ally"
     ) -> List[Any]:
         cache_dir = self._media_cache_dir()
-        max_width = self._bounded_int(
-            self._config_value("media_max_width_px", 2160), 2160, 0, 20000
-        )
-        max_height = self._bounded_int(
-            self._config_value("media_max_height_px", 8000), 8000, 0, 50000
-        )
-        max_megapixels = self._bounded_float(
-            self._config_value("media_max_megapixels", 18), 18, 0, 200
-        )
-        max_bytes = int(
-            self._bounded_float(
-                self._config_value("media_max_bytes_mb", 8), 8, 0, 100
-            )
-            * 1024
-            * 1024
+        max_width, max_height, max_megapixels, max_bytes, jpeg_quality = (
+            self._media_delivery_limits(media_profile)
         )
         normalize_enabled = self._bool_value(
             self._config_value("media_normalize_jpeg", True)
-        )
-        jpeg_quality = self._bounded_int(
-            self._config_value(
-                "wiki_card_jpeg_quality", DEFAULT_WIKI_CARD_JPEG_QUALITY
-            ),
-            DEFAULT_WIKI_CARD_JPEG_QUALITY,
-            60,
-            98,
         )
         async def prepare_component(component: Any) -> Any:
             if isinstance(component, Comp.Node):
@@ -680,7 +730,11 @@ class KirbyCatalogPlugin(Star):
         return [await prepare_component(component) for component in components]
 
     async def _try_direct_media_send(
-        self, event: AstrMessageEvent, components: List[Any]
+        self,
+        event: AstrMessageEvent,
+        components: List[Any],
+        *,
+        media_profile: str = "ally",
     ) -> bool:
         if self._media_send_mode() == "standard":
             return False
@@ -701,7 +755,9 @@ class KirbyCatalogPlugin(Star):
                     )
                 continue
             if isinstance(component, Comp.Image):
-                image_value = await self._direct_image_value(component)
+                image_value = await self._direct_image_value(
+                    component, media_profile=media_profile
+                )
                 if not image_value:
                     return False
                 segments.append(
@@ -810,12 +866,16 @@ class KirbyCatalogPlugin(Star):
             10,
         )
 
-    async def _forward_component_segment(self, component: Any) -> Dict[str, Any]:
+    async def _forward_component_segment(
+        self, component: Any, *, media_profile: str = "ally"
+    ) -> Dict[str, Any]:
         if isinstance(component, Comp.Plain):
             return {"type": "text", "data": {"text": component.text}}
         if isinstance(component, Comp.Image):
             if self._media_send_mode() != "standard":
-                image_value = await self._direct_image_value(component)
+                image_value = await self._direct_image_value(
+                    component, media_profile=media_profile
+                )
                 if image_value:
                     return {"type": "image", "data": {"file": image_value}}
             encoded = await component.convert_to_base64()
@@ -835,11 +895,15 @@ class KirbyCatalogPlugin(Star):
                 return value
         raise TypeError(f"不支持的合并转发组件: {type(component).__name__}")
 
-    async def _forward_payload(self, nodes: List[Any]) -> Dict[str, Any]:
+    async def _forward_payload(
+        self, nodes: List[Any], *, media_profile: str = "ally"
+    ) -> Dict[str, Any]:
         messages: List[Dict[str, Any]] = []
         for node in nodes:
             content = [
-                await self._forward_component_segment(component)
+                await self._forward_component_segment(
+                    component, media_profile=media_profile
+                )
                 for component in list(getattr(node, "content", []) or [])
             ]
             messages.append(
@@ -858,7 +922,7 @@ class KirbyCatalogPlugin(Star):
         return {"messages": messages}
 
     async def _fallback_forward_node(
-        self, event: AstrMessageEvent, node: Any
+        self, event: AstrMessageEvent, node: Any, *, media_profile: str = "ally"
     ) -> bool:
         content = list(getattr(node, "content", []) or [])
         if not content:
@@ -867,7 +931,7 @@ class KirbyCatalogPlugin(Star):
         delivered = True
         for component in content:
             if isinstance(component, Comp.Image) and await self._try_direct_media_send(
-                event, [component]
+                event, [component], media_profile=media_profile
             ):
                 continue
             send = getattr(event, "send", None)
@@ -894,13 +958,17 @@ class KirbyCatalogPlugin(Star):
         route_key: str,
         route_value: int,
         nodes: List[Any],
+        *,
+        media_profile: str = "ally",
     ) -> bool:
         attempts = self._forward_retry_count() + 1 if len(nodes) == 1 else 1
         retry_delay = self._forward_retry_delay()
         last_error: Exception | None = None
         for attempt in range(attempts):
             try:
-                payload = await self._forward_payload(nodes)
+                payload = await self._forward_payload(
+                    nodes, media_profile=media_profile
+                )
                 payload[route_key] = route_value
                 await bot.call_action(action, **payload)
                 logger.info(
@@ -934,22 +1002,40 @@ class KirbyCatalogPlugin(Star):
                 last_error,
             )
             left_ok = await self._deliver_forward_nodes(
-                event, bot, action, route_key, route_value, nodes[:split_at]
+                event,
+                bot,
+                action,
+                route_key,
+                route_value,
+                nodes[:split_at],
+                media_profile=media_profile,
             )
             if self._forward_batch_delay():
                 await asyncio.sleep(self._forward_batch_delay())
             right_ok = await self._deliver_forward_nodes(
-                event, bot, action, route_key, route_value, nodes[split_at:]
+                event,
+                bot,
+                action,
+                route_key,
+                route_value,
+                nodes[split_at:],
+                media_profile=media_profile,
             )
             return left_ok and right_ok
 
         logger.warning(
             "[%s] 单节点合并转发仍失败，改发普通消息: %s", PLUGIN_ID, last_error
         )
-        return await self._fallback_forward_node(event, nodes[0])
+        return await self._fallback_forward_node(
+            event, nodes[0], media_profile=media_profile
+        )
 
     async def _try_direct_forward_send(
-        self, event: AstrMessageEvent, components: List[Any]
+        self,
+        event: AstrMessageEvent,
+        components: List[Any],
+        *,
+        media_profile: str = "ally",
     ) -> bool:
         if not self._bool_value(
             self._config_value("forward_direct_send_enabled", True)
@@ -992,6 +1078,7 @@ class KirbyCatalogPlugin(Star):
                         route_key,
                         route_value,
                         nodes,
+                        media_profile=media_profile,
                     )
                     and delivered
                 )
@@ -1004,13 +1091,38 @@ class KirbyCatalogPlugin(Star):
         return True
 
     async def _chain_result_with_media(
-        self, event: AstrMessageEvent, components: List[Any]
+        self,
+        event: AstrMessageEvent,
+        components: List[Any],
+        *,
+        media_profile: str = "ally",
+        timing: Optional[Dict[str, Any]] = None,
     ) -> Any | None:
-        components = await self._prepare_media_components(components)
-        if await self._try_direct_forward_send(event, components):
+        started_at = time.monotonic()
+        components = await self._prepare_media_components(
+            components, media_profile=media_profile
+        )
+        if timing is not None:
+            timing["prepare_seconds"] = time.monotonic() - started_at
+
+        send_started_at = time.monotonic()
+        if await self._try_direct_forward_send(
+            event, components, media_profile=media_profile
+        ):
+            if timing is not None:
+                timing["send_seconds"] = time.monotonic() - send_started_at
+                timing["delivery_mode"] = "direct_forward"
             return None
-        if await self._try_direct_media_send(event, components):
+        if await self._try_direct_media_send(
+            event, components, media_profile=media_profile
+        ):
+            if timing is not None:
+                timing["send_seconds"] = time.monotonic() - send_started_at
+                timing["delivery_mode"] = "direct_media"
             return None
+        if timing is not None:
+            timing["send_seconds"] = time.monotonic() - send_started_at
+            timing["delivery_mode"] = "standard_queued"
         return event.chain_result(components)
 
     async def _ally_chain(
@@ -2423,7 +2535,9 @@ class KirbyCatalogPlugin(Star):
             self._log_wiki_response_ready(
                 "WiKirby", query, output_mode, text, components, started_at
             )
-            result = await self._chain_result_with_media(event, components)
+            result = await self._chain_result_with_media(
+                event, components, media_profile="wiki_card"
+            )
             if result is not None:
                 yield result
         except WikirbyError as exc:
@@ -2788,7 +2902,9 @@ class KirbyCatalogPlugin(Star):
                 components,
                 started_at,
             )
-            result = await self._chain_result_with_media(event, components)
+            result = await self._chain_result_with_media(
+                event, components, media_profile="wiki_card"
+            )
             if result is not None:
                 yield result
         except KirbyFandomError as exc:
@@ -3019,7 +3135,8 @@ class KirbyCatalogPlugin(Star):
             )
 
         async with self._draw_lock:
-            self.store.refresh()
+            # The store is kept current by startup, WebUI, and admin mutations.
+            # A full filesystem and group-data scan here made every draw wait.
             today = get_today()
             config = self.store.load_group(group_id)
             user = self._user_data(config, user_id, nickname)
@@ -3093,6 +3210,7 @@ class KirbyCatalogPlugin(Star):
             yield event.plain_result("无法获取用户信息，请稍后再试。")
             return
 
+        started_at = time.monotonic()
         outcome, error = await self._draw_for_identity(
             group_id=group_id,
             user_id=user_id,
@@ -3106,6 +3224,7 @@ class KirbyCatalogPlugin(Star):
             yield event.plain_result(error or "盟友抽取失败，请稍后再试。")
             return
 
+        selection_seconds = time.monotonic() - started_at
         entry = outcome.entry
         flags = ("（重复）" if outcome.repeated else "") + (
             "（保底）" if outcome.pity else ""
@@ -3113,8 +3232,26 @@ class KirbyCatalogPlugin(Star):
         text = self._ally_detail_message(
             entry, self._draw_message(entry, nickname, outcome.remaining, flags)
         )
+        asset_started_at = time.monotonic()
         chain = await self._ally_chain(entry, text)
-        result = await self._chain_result_with_media(event, chain)
+        asset_seconds = time.monotonic() - asset_started_at
+        delivery_timing: Dict[str, Any] = {}
+        result = await self._chain_result_with_media(
+            event, chain, timing=delivery_timing
+        )
+        logger.info(
+            "[%s] 今日盟友性能: entry=#%s %s, select=%.3fs, asset=%.3fs, "
+            "prepare=%.3fs, send=%.3fs, mode=%s, total=%.3fs",
+            PLUGIN_ID,
+            entry.get("id", "?"),
+            entry.get("name", "未命名盟友"),
+            selection_seconds,
+            asset_seconds,
+            float(delivery_timing.get("prepare_seconds", 0.0)),
+            float(delivery_timing.get("send_seconds", 0.0)),
+            delivery_timing.get("delivery_mode", "unknown"),
+            time.monotonic() - started_at,
+        )
         if result is not None:
             yield result
 
@@ -3300,7 +3437,6 @@ class KirbyCatalogPlugin(Star):
     @filter.event_message_type(EventMessageType.GROUP_MESSAGE)
     async def random_ally(self, event: AstrMessageEvent):
         """随机展示一位盟友，不写入用户抽取或解锁记录。"""
-        self.store.refresh()
         pool = self.store.get_draw_pool()
         if not pool:
             yield event.plain_result("当前没有可用盟友素材，请管理员先添加图片。")
@@ -3416,7 +3552,7 @@ class KirbyCatalogPlugin(Star):
             )
             if card_component is not None:
                 result = await self._chain_result_with_media(
-                    event, [card_component]
+                    event, [card_component], media_profile="wiki_card"
                 )
                 if result is not None:
                     yield result
@@ -3448,7 +3584,6 @@ class KirbyCatalogPlugin(Star):
         if not group_id:
             yield event.plain_result("该功能仅支持群聊。")
             return
-        self.store.refresh()
         config = self.store.load_group(group_id)
         unlocked = {
             filename
@@ -3543,7 +3678,6 @@ class KirbyCatalogPlugin(Star):
         """查看自己的有效图鉴数量、完成率和剩余数量。"""
         group_id = self._group_id(event)
         user_id = self._sender_id(event)
-        self.store.refresh()
         user = self.store.load_group(group_id).get(user_id, {})
         progress = self.store.user_progress(user)
         total = int(progress["total"])

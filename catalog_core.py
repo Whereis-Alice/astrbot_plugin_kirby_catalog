@@ -274,6 +274,7 @@ class CatalogStore:
         self._description_overrides: Dict[str, Dict[str, Any]] = {}
         self._audit_entries: List[Dict[str, Any]] = []
         self._tombstones: Dict[str, Dict[str, Any]] = {}
+        self._draw_pool_cache: Optional[Tuple[Dict[str, Any], ...]] = None
         self._lock = threading.RLock()
         self._prepare()
 
@@ -452,6 +453,7 @@ class CatalogStore:
         self._deduplicate_ids()
         items = sorted(self._catalog.values(), key=lambda item: int(item["id"]))
         _atomic_write_json(self.catalog_path, {"version": 2, "items": items})
+        self._draw_pool_cache = None
 
     def _legacy_config_dirs(self) -> List[Path]:
         return [
@@ -955,11 +957,14 @@ class CatalogStore:
         return matches[0] if len(matches) == 1 else None
 
     def get_draw_pool(self) -> List[Dict[str, Any]]:
-        return [
-            entry
-            for entry in self.entries()
-            if self.asset_path(entry) is not None or self.image_base_url
-        ]
+        with self._lock:
+            if self._draw_pool_cache is None:
+                self._draw_pool_cache = tuple(
+                    entry
+                    for entry in self.entries()
+                    if self.asset_path(entry) is not None or self.image_base_url
+                )
+            return [dict(entry) for entry in self._draw_pool_cache]
 
     def asset_path(self, entry: Dict[str, Any]) -> Optional[Path]:
         filename = Path(_as_text(entry.get("filename"))).name

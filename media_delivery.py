@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import re
 import shutil
+import threading
 import time
 import uuid
 from dataclasses import dataclass
@@ -10,6 +11,10 @@ from pathlib import Path
 from urllib.parse import quote, unquote, urlparse
 
 from PIL import Image, ImageOps
+
+
+_CLEANUP_LOCK = threading.RLock()
+_LAST_CLEANUP_AT: dict[Path, float] = {}
 
 
 @dataclass(frozen=True)
@@ -170,6 +175,10 @@ def prepare_image_for_delivery(
             max_megapixels=max_megapixels,
             max_bytes=max_bytes,
         ):
+            try:
+                output_path.touch()
+            except OSError:
+                pass
             return output_path
 
     with Image.open(source_path) as image:
@@ -232,11 +241,16 @@ def stage_local_image(
     normalize_jpeg_enabled: bool = True,
     jpeg_quality: int = 92,
     retention_seconds: float = 1800,
+    cleanup_interval_seconds: float = 300,
 ) -> tuple[Path, str]:
     source_path = Path(source)
     shared_root = Path(shared_directory) / "astrbot_plugin_kirby_catalog"
     shared_root.mkdir(parents=True, exist_ok=True)
-    cleanup_staged_media(shared_root, retention_seconds=retention_seconds)
+    cleanup_staged_media_if_due(
+        shared_root,
+        retention_seconds=retention_seconds,
+        min_interval_seconds=cleanup_interval_seconds,
+    )
 
     metrics = inspect_image(source_path)
     is_jpeg = bool(
@@ -312,3 +326,26 @@ def cleanup_staged_media(
         except OSError:
             continue
     return removed
+
+
+def cleanup_staged_media_if_due(
+    directory: Path | str,
+    *,
+    retention_seconds: float = 1800,
+    min_interval_seconds: float = 300,
+) -> int:
+    """Remove expired delivery files at a bounded cadence instead of per message."""
+
+    root = Path(directory)
+    try:
+        key = root.resolve()
+    except OSError:
+        key = root
+    now = time.monotonic()
+    interval = max(0.0, float(min_interval_seconds))
+    with _CLEANUP_LOCK:
+        last_run = _LAST_CLEANUP_AT.get(key)
+        if last_run is not None and interval > 0 and now - last_run < interval:
+            return 0
+        _LAST_CLEANUP_AT[key] = now
+    return cleanup_staged_media(root, retention_seconds=retention_seconds)

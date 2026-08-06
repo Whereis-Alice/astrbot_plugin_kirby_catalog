@@ -89,6 +89,33 @@ class CatalogStoreTests(unittest.TestCase):
             self.assertEqual(reloaded.draw_count("group-2", "42", today), 1)
             self.assertEqual(reloaded.draw_bonus("group-1", "42", previous_day), 1)
 
+    def test_draw_pool_is_cached_until_catalog_changes(self):
+        with tempfile.TemporaryDirectory() as temp:
+            store = CatalogStore(Path(temp) / "new", image_base_url="")
+            first = store.add_asset("测试盟友一", self.make_image(), "星之卡比")
+            second = store.add_asset("测试盟友二", self.make_image(), "星之卡比")
+            original_asset_path = store.asset_path
+            calls = []
+
+            def counting_asset_path(entry):
+                calls.append(entry["filename"])
+                return original_asset_path(entry)
+
+            store.asset_path = counting_asset_path  # type: ignore[method-assign]
+            self.assertEqual(
+                {item["filename"] for item in store.get_draw_pool()},
+                {first["filename"], second["filename"]},
+            )
+            store.get_draw_pool()
+            self.assertEqual(len(calls), 2)
+
+            third = store.add_asset("测试盟友三", self.make_image(), "星之卡比")
+            self.assertEqual(
+                {item["filename"] for item in store.get_draw_pool()},
+                {first["filename"], second["filename"], third["filename"]},
+            )
+            self.assertEqual(len(calls), 5)
+
     def test_reset_group_draws_rejects_unsafe_group_id(self):
         with tempfile.TemporaryDirectory() as temp:
             store = CatalogStore(Path(temp) / "new", image_base_url="")

@@ -661,6 +661,10 @@ AstrBot v4.26.8 的 aiocqhttp 适配器会把 `Image` 组件统一转换为 base
 3. 仍失败则回退 AstrBot 标准发送，不会因为直发不可用而吞掉消息；
 4. 非 aiocqhttp 平台直接使用标准发送。
 
+`今日盟友`、`随机盟友`、查盟友和图鉴读取已加载的内存图鉴，不会在每条消息中重新扫描整个素材库或所有群 JSON。素材通过 WebUI、管理员命令增删改时会即时更新内存；直接在服务器目录手工增删文件后，请重载插件，或执行管理员的 `星之卡比图鉴迁移` 命令进行一次受控扫描。
+
+从 v3.5.3 起，普通盟友图片与百科卡片使用独立发送规格。这样可以为超长百科卡片保留较高的尺寸与像素阈值，同时让每日抽取仍使用更小、更快、更稳定的图片副本。
+
 常用配置：
 
 | 配置项 | 默认值 | 说明 |
@@ -670,19 +674,25 @@ AstrBot v4.26.8 的 aiocqhttp 适配器会把 `Image` 组件统一转换为 base
 | `media_napcat_directory` | 留空 | 同一共享卷在 NapCat 容器内使用不同路径时填写 |
 | `media_direct_retry_count` | `1` | 本地文件直发失败后的重试次数 |
 | `media_normalize_jpeg` | 开启 | 将 JPEG 统一为 RGB/JFIF，排除非标准编码问题 |
-| `media_max_width_px` / `media_max_height_px` | `2160` / `8000` | 所有本地发送图片的最终尺寸保护 |
-| `media_max_megapixels` / `media_max_bytes_mb` | `18` / `8` | 所有本地发送图片的总像素与文件大小保护 |
+| `media_cleanup_interval_minutes` | `5` | 发送缓存的扫描清理间隔；`0` 表示每条消息都清理，不建议用于日常抽取 |
+| `ally_media_max_width_px` / `ally_media_max_height_px` | `2160` / `8000` | 今日盟友、随机盟友、查盟友、猜盟友和图鉴的最终尺寸保护 |
+| `ally_media_max_megapixels` / `ally_media_max_bytes_mb` | `18` / `8` | 盟友素材的总像素与文件大小保护，不影响百科卡片 |
+| `ally_media_jpeg_quality` | `92` | 盟友素材的 JPEG 标准化和缩放副本质量 |
 | `gallery_max_height_px` | `7600` | 群或个人图鉴超过此高度才分页；`0` 表示关闭 |
 | `wiki_card_auto_paginate` | 开启 | 只分页真正过长的百科卡片 |
 | `wiki_card_page_line_budget` | `110` | 每页内容预算，可配置范围 `60-3000`；复杂页面可从 `500` 或 `600` 开始测试 |
+| `wiki_card_max_width_px` / `wiki_card_max_height_px` | `2160` / `8000` | WiKirby、Kirby Fandom 和简介卡片的独立尺寸保护 |
+| `wiki_card_max_megapixels` / `wiki_card_max_bytes_mb` | `18` / `8` | 百科卡片的独立总像素与文件大小保护 |
 | `wiki_card_resolution` | `高清（推荐）` | 标准、高清或超清 |
 | `wiki_card_image_format` | `JPEG` | JPEG 体积更小；PNG 保留无损文字边缘 |
 
 AstrBot 与 NapCat 运行在同一系统、NapCat 能读取 AstrBot 文件路径时，共享目录可以留空。容器部署时应给两边挂载同一个目录：若容器内路径相同，只填写 `media_shared_directory`；若路径不同，再填写 NapCat 侧的 `media_napcat_directory`。插件只会在共享目录下使用自己的 `astrbot_plugin_kirby_catalog` 子目录，并定期清理过期暂存图片；同一源文件未变化时会复用暂存副本，重复查询不再反复复制或转码。
 
-群总图鉴会根据 `gallery_max_height_px` 自动分成少量图片；状态、素材和版式未变化时会直接复用上次生成结果。个人图鉴较短时仍只发送一张。百科分页和图鉴分页都不删除内容，只改变图片分组。若今日盟友等原始素材自身仍超过通用阈值，插件只创建等比缩放的发送缓存副本，原素材文件、图鉴编号和用户数据都不会被修改。百科卡片宽度超过安全值时会自动降低一级渲染清晰度后重试。
+群总图鉴会根据 `gallery_max_height_px` 自动分成少量图片；状态、素材和版式未变化时会直接复用上次生成结果。个人图鉴较短时仍只发送一张。百科分页和图鉴分页都不删除内容，只改变图片分组。若今日盟友等原始素材自身超过 `ally_media_*` 阈值，插件只创建等比缩放的发送缓存副本，原素材文件、图鉴编号和用户数据都不会被修改。百科卡片宽度超过自己的安全值时会自动降低一级渲染清晰度后重试。
 
 `wiki_card_page_line_budget` 从 v3.5.2 起不再限制为最高 `300`，现在最高可设为 `3000`。它是分页目标，不是绕过图片安全检查的开关：如果单页渲染后仍超过 `wiki_card_max_height_px`、`wiki_card_max_megapixels` 或 `wiki_card_max_bytes_mb`，插件会自动降低预算重新分页。大幅提高这些图片阈值可能重新触发 NapCat/QQNT 上传失败。
+
+旧版的 `media_max_width_px`、`media_max_height_px`、`media_max_megapixels` 和 `media_max_bytes_mb` 是历史通用字段。v3.5.3 起它们不再影响发送行为，避免曾为百科调高的阈值拖慢今日盟友；请使用上表中的 `ally_media_*` 与 `wiki_card_*` 字段分别配置。
 
 ### LLM 翻译
 

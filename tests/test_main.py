@@ -22,6 +22,7 @@ class FakeStore:
         self.group = {}
         self.draws = {}
         self.bonuses = {}
+        self.refresh_calls = 0
         self.description = "这是一段简体中文盟友简介。"
         self.description_is_override = False
 
@@ -56,7 +57,7 @@ class FakeStore:
         self.group = config
 
     def refresh(self):
-        return None
+        self.refresh_calls += 1
 
     def get_draw_pool(self):
         return [self.entry]
@@ -476,6 +477,18 @@ class DrawManagementTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("今天已经抽过", second[0][0].text)
         self.assertIn("今天已经抽过", tool_text)
 
+    async def test_draw_uses_loaded_catalog_without_full_refresh(self):
+        plugin = make_plugin(self.entry)
+        plugin.config = {"draw_cooldown_seconds": 0}
+        plugin.store.asset_bytes = lambda _entry, _download=False: b"image-bytes"
+
+        results = [
+            result async for result in plugin.draw_ally(FakeEvent("今日盟友"))
+        ]
+
+        self.assertEqual(plugin.store.refresh_calls, 0)
+        self.assertEqual(len(results), 1)
+
     async def test_napcat_direct_send_uses_file_uri_instead_of_base64(self):
         class FakeBot:
             def __init__(self):
@@ -672,10 +685,10 @@ class DrawManagementTests(unittest.IsolatedAsyncioTestCase):
         plugin.config = {
             "media_send_mode": "AstrBot标准发送",
             "media_normalize_jpeg": False,
-            "media_max_width_px": 1000,
-            "media_max_height_px": 8000,
-            "media_max_megapixels": 18,
-            "media_max_bytes_mb": 8,
+            "ally_media_max_width_px": 1000,
+            "ally_media_max_height_px": 8000,
+            "ally_media_max_megapixels": 18,
+            "ally_media_max_bytes_mb": 8,
         }
         with tempfile.TemporaryDirectory() as temp:
             plugin.store.root = Path(temp) / "plugin-data"
@@ -691,6 +704,39 @@ class DrawManagementTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(delivered.height, 50)
 
         self.assertNotEqual(delivered_path, image_path)
+
+    async def test_wiki_card_delivery_limits_do_not_expand_ally_images(self):
+        plugin = make_plugin(self.entry)
+        plugin.config = {
+            "media_send_mode": "AstrBot标准发送",
+            "media_normalize_jpeg": False,
+            "ally_media_max_width_px": 1000,
+            "ally_media_max_height_px": 8000,
+            "ally_media_max_megapixels": 18,
+            "ally_media_max_bytes_mb": 8,
+            "wiki_card_max_width_px": 3000,
+            "wiki_card_max_height_px": 8000,
+            "wiki_card_max_megapixels": 18,
+            "wiki_card_max_bytes_mb": 8,
+        }
+        with tempfile.TemporaryDirectory() as temp:
+            plugin.store.root = Path(temp) / "plugin-data"
+            image_path = Path(temp) / "wide.png"
+            Image.new("RGB", (2400, 120), "pink").save(image_path, format="PNG")
+
+            ally_result = await plugin._chain_result_with_media(
+                FakeEvent("测试"), [Comp.Image.fromFileSystem(str(image_path))]
+            )
+            wiki_result = await plugin._chain_result_with_media(
+                FakeEvent("测试"),
+                [Comp.Image.fromFileSystem(str(image_path))],
+                media_profile="wiki_card",
+            )
+
+            with Image.open(Path(ally_result[0].path)) as ally_image:
+                self.assertEqual(ally_image.width, 1000)
+            with Image.open(Path(wiki_result[0].path)) as wiki_image:
+                self.assertEqual(wiki_image.width, 2400)
 
     def test_ally_detail_template_and_visibility_switches(self):
         plugin = make_plugin(self.entry)

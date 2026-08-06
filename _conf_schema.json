@@ -232,34 +232,50 @@
         "default": true,
         "hint": "将 JPEG 统一保存为 RGB/JFIF，规避部分非标准 JPEG 被 QQNT 判定为 rich media transfer failed。"
       },
-      "media_max_width_px": {
-        "description": "通用发送图片最大宽度（像素）",
+      "media_cleanup_interval_minutes": {
+        "description": "发送缓存清理间隔（分钟）",
+        "type": "float",
+        "default": 5,
+        "min": 0,
+        "max": 1440,
+        "hint": "默认最多每 5 分钟扫描一次发送缓存，避免每条今日盟友都遍历缓存目录；设为 0 时每次发送都立即清理。"
+      },
+      "ally_media_max_width_px": {
+        "description": "盟友素材最大宽度（像素）",
         "type": "int",
         "default": 2160,
         "min": 0,
         "max": 20000
       },
-      "media_max_height_px": {
-        "description": "通用发送图片最大高度（像素）",
+      "ally_media_max_height_px": {
+        "description": "盟友素材最大高度（像素）",
         "type": "int",
         "default": 8000,
         "min": 0,
         "max": 50000
       },
-      "media_max_megapixels": {
-        "description": "通用发送图片最大总像素（百万像素）",
+      "ally_media_max_megapixels": {
+        "description": "盟友素材最大总像素（百万像素）",
         "type": "float",
         "default": 18,
         "min": 0,
         "max": 200
       },
-      "media_max_bytes_mb": {
-        "description": "通用发送图片最大文件大小（MiB）",
+      "ally_media_max_bytes_mb": {
+        "description": "盟友素材最大文件大小（MiB）",
         "type": "float",
         "default": 8,
         "min": 0,
         "max": 100,
-        "hint": "今日盟友、随机盟友、查盟友、猜盟友、百科卡片和图鉴共用最后一道发送保护。超过阈值时只生成发送缓存副本，不修改原素材；设为 0 可关闭对应限制。"
+        "hint": "仅影响今日盟友、随机盟友、查盟友、猜盟友和图鉴，不影响百科卡片。超过阈值时只生成发送缓存副本，不修改原素材；设为 0 可关闭对应限制。"
+      },
+      "ally_media_jpeg_quality": {
+        "description": "盟友素材 JPEG 质量",
+        "type": "int",
+        "default": 92,
+        "min": 60,
+        "max": 98,
+        "hint": "仅影响盟友素材的标准化和缩放副本；百科卡片使用自己的 JPEG 质量配置。"
       },
       "gallery_max_height_px": {
         "description": "单张图鉴最大高度（像素）",
