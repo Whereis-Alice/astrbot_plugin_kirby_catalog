@@ -23,7 +23,7 @@ class FakeStore:
         self.draws = {}
         self.bonuses = {}
         self.refresh_calls = 0
-        self.description = "这是一段简体中文盟友简介。"
+        self.description = "?????????????"
         self.description_is_override = False
 
     def resolve_entry(self, filename):
@@ -106,7 +106,7 @@ class FakeStore:
 
     def profile_for(self, entry):
         return {
-            "name_zh": "测试中文名",
+            "name_zh": "?????",
             "name_en": str(entry.get("page_title") or entry.get("name") or ""),
             "display_name": str(entry.get("name") or ""),
             "description_zh": self.description,
@@ -127,7 +127,7 @@ class FakeStore:
     def restore_description(self, entry):
         removed = self.description_is_override
         self.description_is_override = False
-        self.description = "这是一段简体中文盟友简介。"
+        self.description = "?????????????"
         return removed, self.profile_for(entry)
 
     def user_progress(self, _user):
@@ -155,13 +155,14 @@ class FakeEvent:
         message=None,
         group_id="group-1",
         sender_id="user-1",
-        sender_name="测试用户",
+        sender_name="????",
     ):
         self.message_str = message_str
         self.message_obj = SimpleNamespace(group_id=group_id, message=message or [])
         self.unified_msg_origin = f"test:group:{group_id}"
         self.sender_id = sender_id
         self.sender_name = sender_name
+        self.sent_chains = []
 
     def get_sender_id(self):
         return self.sender_id
@@ -174,6 +175,10 @@ class FakeEvent:
 
     def chain_result(self, chain):
         return chain
+
+    async def send(self, chain):
+        self.sent_chains.append(chain)
+        return True
 
 
 def make_plugin(entry):
@@ -190,7 +195,7 @@ def make_plugin(entry):
 
 class GuessFlowTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
-        self.entry = {"filename": "ally.png", "id": 12, "name": "星之卡比"}
+        self.entry = {"filename": "ally.png", "id": 12, "name": "????"}
 
     async def test_wrong_guess_reveals_answer_and_ends_round(self):
         plugin = make_plugin(self.entry)
@@ -200,12 +205,12 @@ class GuessFlowTests(unittest.IsolatedAsyncioTestCase):
         }
 
         results = [
-            result async for result in plugin.guess_ally(FakeEvent("猜盟友 错误答案"))
+            result async for result in plugin.guess_ally(FakeEvent("??? ????"))
         ]
 
         self.assertEqual(
             results,
-            ["猜错了，本轮结束。正确答案是 #12 星之卡比。"],
+            ["?????????????? #12 ?????"],
         )
         self.assertNotIn("group-1", plugin._guess_sessions)
 
@@ -225,7 +230,7 @@ class GuessFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(plugin.context.sent), 1)
         umo, message_chain = plugin.context.sent[0]
         self.assertEqual(umo, "aiocqhttp:group:group-1")
-        self.assertIn("正确答案是 #12 星之卡比。", message_chain.chain[0].text)
+        self.assertIn("????? #12 ?????", message_chain.chain[0].text)
 
     async def test_terminate_cancels_pending_guess_timeout(self):
         plugin = make_plugin(self.entry)
@@ -243,19 +248,19 @@ class GuessFlowTests(unittest.IsolatedAsyncioTestCase):
         plugin = make_plugin(self.entry)
         quoted_message = Comp.Reply(
             id="reply-1",
-            message_str="测试用户，你今天的盟友是 #12 星之卡比。",
+            message_str="???????????? #12 ?????",
         )
 
         results = [
             result
             async for result in plugin.rename_ally(
-                FakeEvent("星之卡比图鉴改名 结晶化天鹅罗利那", [quoted_message])
+                FakeEvent("???????? ????????", [quoted_message])
             )
         ]
 
         self.assertEqual(
             results,
-            ["已将 #12 改为 结晶化天鹅罗利那，所有用户解锁记录已同步。"],
+            ["?? #12 ?? ?????????????????????"],
         )
 
     async def test_quoted_image_can_answer_without_guess_command(self):
@@ -270,13 +275,13 @@ class GuessFlowTests(unittest.IsolatedAsyncioTestCase):
         results = [
             result
             async for result in plugin.guess_ally_by_quoted_image(
-                FakeEvent("星之卡比", [quoted_message])
+                FakeEvent("????", [quoted_message])
             )
         ]
 
         self.assertEqual(
             results,
-            ["答对啦！答案是 #12 星之卡比。"],
+            ["??????? #12 ?????"],
         )
         self.assertNotIn("group-1", plugin._guess_sessions)
         self.assertFalse(plugin.store.group)
@@ -288,23 +293,23 @@ class GuessFlowTests(unittest.IsolatedAsyncioTestCase):
             "started_at": time.monotonic(),
         }
 
-        results = [result async for result in plugin.guess_ally(FakeEvent("猜盟友"))]
+        results = [result async for result in plugin.guess_ally(FakeEvent("???"))]
 
         self.assertEqual(
             results,
-            ["本群已有一轮猜盟友正在进行，请直接引用题目图片并发送名字作答。"],
+            ["???????????????????????????????"],
         )
         self.assertEqual(plugin._guess_sessions["group-1"]["filename"], "ally.png")
 
     async def test_random_ally_only_displays_entry(self):
         plugin = make_plugin(self.entry)
 
-        results = [result async for result in plugin.random_ally(FakeEvent("随机盟友"))]
+        results = [result async for result in plugin.random_ally(FakeEvent("????"))]
 
         self.assertTrue(
-            results[0][0].text.startswith("随机查看的盟友是 星之卡比，图鉴编号 #12")
+            results[0][0].text.startswith("???????? ????????? #12")
         )
-        self.assertIn("简介：\n这是一段简体中文盟友简介。", results[0][0].text)
+        self.assertIn("???\n?????????????", results[0][0].text)
         self.assertFalse(plugin.store.group)
 
     async def test_personal_progress_reports_percentage_and_remaining_count(self):
@@ -312,24 +317,24 @@ class GuessFlowTests(unittest.IsolatedAsyncioTestCase):
 
         results = [
             result
-            async for result in plugin.personal_progress(FakeEvent("我的图鉴进度"))
+            async for result in plugin.personal_progress(FakeEvent("??????"))
         ]
 
-        self.assertIn("已解锁：102/409", results[0])
+        self.assertIn("????102/409", results[0])
         self.assertIn("24.9%", results[0])
-        self.assertIn("还差 307 个盟友", results[0])
+        self.assertIn("?? 307 ???", results[0])
 
     async def test_chinese_and_english_names_both_answer_correctly(self):
         entry = {
-            "filename": "星之卡比 新星同盟.滴水鳗（Driblee）.png",
+            "filename": "???? ????.????Driblee?.png",
             "id": 88,
-            "name": "滴水鳗（Driblee）",
-            "source": "星之卡比 新星同盟",
+            "name": "????Driblee?",
+            "source": "???? ????",
             "page_title": "Driblee",
             "variant_key": "Driblee",
             "aliases": [],
         }
-        for answer in ("滴水鳗", "Driblee", "driblee"):
+        for answer in ("???", "Driblee", "driblee"):
             with self.subTest(answer=answer):
                 plugin = make_plugin(entry)
                 plugin._guess_sessions["group-1"] = {
@@ -338,26 +343,26 @@ class GuessFlowTests(unittest.IsolatedAsyncioTestCase):
                 }
                 results = [
                     result
-                    async for result in plugin.guess_ally(FakeEvent(f"猜盟友 {answer}"))
+                    async for result in plugin.guess_ally(FakeEvent(f"??? {answer}"))
                 ]
                 self.assertEqual(
                     results,
-                    ["答对啦！答案是 #88 滴水鳗（Driblee）。"],
+                    ["??????? #88 ????Driblee??"],
                 )
 
     def test_variant_does_not_accept_base_page_title_as_answer(self):
         entry = {
-            "filename": "星之卡比 Wii.山石EX（Moundo EX）.png",
+            "filename": "???? Wii.??EX?Moundo EX?.png",
             "id": 842,
-            "name": "山石EX（Moundo EX）",
-            "source": "星之卡比 Wii",
+            "name": "??EX?Moundo EX?",
+            "source": "???? Wii",
             "page_title": "Moundo",
             "variant_key": "Moundo EX",
-            "aliases": ["Moundo", "Moundo EX", "山石EX"],
+            "aliases": ["Moundo", "Moundo EX", "??EX"],
         }
         plugin = make_plugin(entry)
 
-        self.assertTrue(plugin._guess_matches(entry, "山石EX"))
+        self.assertTrue(plugin._guess_matches(entry, "??EX"))
         self.assertTrue(plugin._guess_matches(entry, "moundo ex"))
         self.assertFalse(plugin._guess_matches(entry, "Moundo"))
 
@@ -379,22 +384,22 @@ class QuotedWikiQueryTests(unittest.TestCase):
         quoted = Comp.Reply(
             id="reply-wiki",
             message_str=(
-                "爱丽丝的尼酱，你今天的盟友是 Papi，图鉴编号 #1202，"
-                "首次登场于《Kirby: Meta Knight and the Knight of Yomi》。\n"
-                "今日剩余次数：2"
+                "?????????????? Papi????? #1202?"
+                "??????Kirby: Meta Knight and the Knight of Yomi??\n"
+                "???????2"
             ),
         )
 
         self.assertEqual(
-            self.plugin._wikirby_query_parts(FakeEvent("卡比百科", [quoted])),
+            self.plugin._wikirby_query_parts(FakeEvent("????", [quoted])),
             ("Papi", False),
         )
         self.assertEqual(
-            self.plugin._wikirby_query_parts(FakeEvent("卡比百科名称", [quoted])),
+            self.plugin._wikirby_query_parts(FakeEvent("??????", [quoted])),
             ("Papi", True),
         )
         self.assertEqual(
-            self.plugin._fandom_query_parts(FakeEvent("卡比F", [quoted])),
+            self.plugin._fandom_query_parts(FakeEvent("??F", [quoted])),
             ("Papi", "page", ""),
         )
 
@@ -405,21 +410,21 @@ class QuotedWikiQueryTests(unittest.TestCase):
         )
 
         self.assertEqual(
-            self.plugin._wikirby_query_parts(FakeEvent("卡比百科", [quoted])),
+            self.plugin._wikirby_query_parts(FakeEvent("????", [quoted])),
             ("Benny", False),
         )
         self.assertEqual(
-            self.plugin._fandom_query_parts(FakeEvent("卡比F", [quoted])),
+            self.plugin._fandom_query_parts(FakeEvent("??F", [quoted])),
             ("Benny", "page", ""),
         )
 
     def test_command_text_is_not_mistaken_for_quoted_content(self):
-        quoted = Comp.Reply(id="reply-name", message_str="角色（Driblee）")
-        current_command = Comp.Plain("卡比百科")
+        quoted = Comp.Reply(id="reply-name", message_str="???Driblee?")
+        current_command = Comp.Plain("????")
 
         self.assertEqual(
             self.plugin._wikirby_query_parts(
-                FakeEvent("卡比百科", [quoted, current_command])
+                FakeEvent("????", [quoted, current_command])
             ),
             ("Driblee", False),
         )
@@ -437,45 +442,52 @@ class DrawManagementTests(unittest.IsolatedAsyncioTestCase):
     def test_default_and_custom_draw_message_templates(self):
         plugin = make_plugin(self.entry)
 
-        default_text = plugin._draw_message(self.entry, "爱丽丝的尼酱", 2, "")
+        default_text = plugin._draw_message(self.entry, "??????", 2, "")
         self.assertEqual(
             default_text,
-            "爱丽丝的尼酱，你今天的盟友是 Papi，图鉴编号 #1202，"
-            "首次登场于《Kirby: Meta Knight and the Knight of Yomi》。\n"
-            "今日剩余次数：2",
+            "?????????????? Papi????? #1202?"
+            "??????Kirby: Meta Knight and the Knight of Yomi??\n"
+            "???????2",
         )
 
         plugin.config = {
-            "draw_message_template": "{nickname} 抽到了 {name} / #{id} / 剩余 {remaining}"
+            "draw_message_template": "{nickname} ??? {name} / #{id} / ?? {remaining}"
         }
         self.assertEqual(
-            plugin._draw_message(self.entry, "爱丽丝", 4, "（保底）"),
-            "爱丽丝 抽到了 Papi / #1202 / 剩余 4",
+            plugin._draw_message(self.entry, "???", 4, "????"),
+            "??? ??? Papi / #1202 / ?? 4",
         )
 
         plugin.config = {"draw_message_template": "{unknown_placeholder}"}
         self.assertEqual(
-            plugin._draw_message(self.entry, "爱丽丝", 2, ""),
-            "爱丽丝，你今天的盟友是 Papi，图鉴编号 #1202，"
-            "首次登场于《Kirby: Meta Knight and the Knight of Yomi》。\n"
-            "今日剩余次数：2",
+            plugin._draw_message(self.entry, "???", 2, ""),
+            "??????????? Papi????? #1202?"
+            "??????Kirby: Meta Knight and the Knight of Yomi??\n"
+            "???????2",
         )
 
-    async def test_bot_draw_is_persistent_and_idempotent_for_the_day(self):
+    async def test_bot_draw_has_three_independent_daily_chances_and_tool_sends_image(self):
         plugin = make_plugin(self.entry)
         plugin.store.asset_bytes = lambda _entry, _download=False: b"image-bytes"
-        event = FakeEvent("Bot今日盟友", group_id="100")
+        event = FakeEvent("Bot????", group_id="100")
 
         first = [result async for result in plugin.draw_bot_ally(event)]
         second = [result async for result in plugin.draw_bot_ally(event)]
         tool_text = await plugin.draw_bot_ally_tool(event)
+        fourth_outcome, fourth_error = await plugin._draw_bot_ally(event)
 
         today = get_today()
-        self.assertEqual(plugin.store.draw_count("100", "bot_astrbot", today), 1)
+        self.assertEqual(plugin.store.draw_count("100", "bot_astrbot", today), 3)
+        self.assertEqual(plugin.store.draw_count("100", "user-1", today), 0)
         self.assertIn("bot_astrbot", plugin.store.group)
         self.assertIn("Papi", first[0][0].text)
-        self.assertIn("今天已经抽过", second[0][0].text)
-        self.assertIn("今天已经抽过", tool_text)
+        self.assertIn("???????1", second[0][0].text)
+        self.assertEqual(len(event.sent_chains), 1)
+        self.assertIn("???????0", event.sent_chains[0].chain[0].text)
+        self.assertIsInstance(event.sent_chains[0].chain[1], Comp.Image)
+        self.assertIn("???????", tool_text)
+        self.assertIsNone(fourth_outcome)
+        self.assertIn("?????? 3 ?", fourth_error)
 
     async def test_draw_uses_loaded_catalog_without_full_refresh(self):
         plugin = make_plugin(self.entry)
@@ -483,7 +495,7 @@ class DrawManagementTests(unittest.IsolatedAsyncioTestCase):
         plugin.store.asset_bytes = lambda _entry, _download=False: b"image-bytes"
 
         results = [
-            result async for result in plugin.draw_ally(FakeEvent("今日盟友"))
+            result async for result in plugin.draw_ally(FakeEvent("????"))
         ]
 
         self.assertEqual(plugin.store.refresh_calls, 0)
@@ -499,11 +511,11 @@ class DrawManagementTests(unittest.IsolatedAsyncioTestCase):
 
         plugin = make_plugin(self.entry)
         plugin.config = {
-            "media_send_mode": "NapCat本地文件直发",
+            "media_send_mode": "NapCat??????",
             "media_normalize_jpeg": False,
             "media_direct_retry_count": 0,
         }
-        event = FakeEvent("测试", group_id="123456")
+        event = FakeEvent("??", group_id="123456")
         event.unified_msg_origin = "aiocqhttp:group:123456"
         event.bot = FakeBot()
         with tempfile.TemporaryDirectory() as temp:
@@ -513,7 +525,7 @@ class DrawManagementTests(unittest.IsolatedAsyncioTestCase):
             sent = await plugin._try_direct_media_send(
                 event,
                 [
-                    Comp.Plain("测试图片"),
+                    Comp.Plain("????"),
                     Comp.Image.fromFileSystem(str(image_path)),
                 ],
             )
@@ -521,7 +533,7 @@ class DrawManagementTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(sent)
         self.assertEqual(len(event.bot.calls), 1)
         payload = event.bot.calls[0]["message"]
-        self.assertEqual(payload[0]["data"]["text"], "测试图片")
+        self.assertEqual(payload[0]["data"]["text"], "????")
         self.assertTrue(payload[1]["data"]["file"].startswith("file:///"))
         self.assertNotIn("base64://", payload[1]["data"]["file"])
 
@@ -536,12 +548,12 @@ class DrawManagementTests(unittest.IsolatedAsyncioTestCase):
 
         plugin = make_plugin(self.entry)
         plugin.config = {
-            "media_send_mode": "自动（推荐）",
+            "media_send_mode": "??????",
             "media_normalize_jpeg": False,
             "media_direct_retry_count": 1,
             "media_direct_retry_delay_seconds": 0,
         }
-        event = FakeEvent("测试", group_id="123456")
+        event = FakeEvent("??", group_id="123456")
         event.unified_msg_origin = "aiocqhttp:group:123456"
         event.bot = FailingBot()
         with tempfile.TemporaryDirectory() as temp:
@@ -564,13 +576,13 @@ class DrawManagementTests(unittest.IsolatedAsyncioTestCase):
 
         plugin = make_plugin(self.entry)
         plugin.config = {
-            "media_send_mode": "NapCat本地文件直发",
+            "media_send_mode": "NapCat??????",
             "media_normalize_jpeg": False,
             "forward_direct_send_enabled": True,
             "forward_retry_count": 0,
             "forward_batch_delay_seconds": 0,
         }
-        event = FakeEvent("测试", group_id="123456")
+        event = FakeEvent("??", group_id="123456")
         event.unified_msg_origin = "aiocqhttp:group:123456"
         event.bot = FakeBot()
         with tempfile.TemporaryDirectory() as temp:
@@ -578,7 +590,7 @@ class DrawManagementTests(unittest.IsolatedAsyncioTestCase):
             image_path = Path(temp) / "card.jpg"
             Image.new("RGB", (64, 64), "pink").save(image_path, format="JPEG")
             components = plugin._forward_nodes(
-                "简短百科", [Comp.Image.fromFileSystem(str(image_path))]
+                "????", [Comp.Image.fromFileSystem(str(image_path))]
             )
 
             result = await plugin._chain_result_with_media(event, components)
@@ -608,7 +620,7 @@ class DrawManagementTests(unittest.IsolatedAsyncioTestCase):
 
         class SendingEvent(FakeEvent):
             def __init__(self):
-                super().__init__("测试", group_id="123456")
+                super().__init__("??", group_id="123456")
                 self.unified_msg_origin = "aiocqhttp:group:123456"
                 self.sent_chains = []
 
@@ -617,7 +629,7 @@ class DrawManagementTests(unittest.IsolatedAsyncioTestCase):
 
         plugin = make_plugin(self.entry)
         plugin.config = {
-            "media_send_mode": "NapCat本地文件直发",
+            "media_send_mode": "NapCat??????",
             "media_normalize_jpeg": False,
             "media_direct_retry_count": 0,
             "forward_direct_send_enabled": True,
@@ -632,7 +644,7 @@ class DrawManagementTests(unittest.IsolatedAsyncioTestCase):
             image_path = Path(temp) / "card.jpg"
             Image.new("RGB", (64, 64), "pink").save(image_path, format="JPEG")
             components = plugin._forward_nodes(
-                "简短百科", [Comp.Image.fromFileSystem(str(image_path))]
+                "????", [Comp.Image.fromFileSystem(str(image_path))]
             )
 
             result = await plugin._chain_result_with_media(event, components)
@@ -640,7 +652,7 @@ class DrawManagementTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(result)
         self.assertEqual(event.bot.forward_sizes, [2, 1, 1])
         self.assertEqual(len(event.sent_chains), 1)
-        self.assertEqual(event.sent_chains[0].chain[0].text, "简短百科")
+        self.assertEqual(event.sent_chains[0].chain[0].text, "????")
         self.assertEqual(len(event.bot.normal_messages), 1)
         self.assertEqual(event.bot.normal_messages[0][0]["type"], "image")
 
@@ -653,11 +665,11 @@ class DrawManagementTests(unittest.IsolatedAsyncioTestCase):
                 self.calls += 1
 
         plugin = make_plugin(self.entry)
-        plugin.config = {"media_send_mode": "NapCat本地文件直发"}
-        event = FakeEvent("测试", group_id="123456")
+        plugin.config = {"media_send_mode": "NapCat??????"}
+        event = FakeEvent("??", group_id="123456")
         event.bot = FakeBot()
 
-        sent = await plugin._try_direct_media_send(event, [Comp.Plain("测试")])
+        sent = await plugin._try_direct_media_send(event, [Comp.Plain("??")])
 
         self.assertFalse(sent)
         self.assertEqual(event.bot.calls, 0)
@@ -683,7 +695,7 @@ class DrawManagementTests(unittest.IsolatedAsyncioTestCase):
     async def test_standard_fallback_uses_safe_delivery_copy_for_oversized_image(self):
         plugin = make_plugin(self.entry)
         plugin.config = {
-            "media_send_mode": "AstrBot标准发送",
+            "media_send_mode": "AstrBot????",
             "media_normalize_jpeg": False,
             "ally_media_max_width_px": 1000,
             "ally_media_max_height_px": 8000,
@@ -696,7 +708,7 @@ class DrawManagementTests(unittest.IsolatedAsyncioTestCase):
             Image.new("RGB", (2400, 120), "pink").save(image_path, format="PNG")
 
             result = await plugin._chain_result_with_media(
-                FakeEvent("测试"), [Comp.Image.fromFileSystem(str(image_path))]
+                FakeEvent("??"), [Comp.Image.fromFileSystem(str(image_path))]
             )
             delivered_path = Path(result[0].path)
             with Image.open(delivered_path) as delivered:
@@ -708,7 +720,7 @@ class DrawManagementTests(unittest.IsolatedAsyncioTestCase):
     async def test_wiki_card_delivery_limits_do_not_expand_ally_images(self):
         plugin = make_plugin(self.entry)
         plugin.config = {
-            "media_send_mode": "AstrBot标准发送",
+            "media_send_mode": "AstrBot????",
             "media_normalize_jpeg": False,
             "ally_media_max_width_px": 1000,
             "ally_media_max_height_px": 8000,
@@ -725,10 +737,10 @@ class DrawManagementTests(unittest.IsolatedAsyncioTestCase):
             Image.new("RGB", (2400, 120), "pink").save(image_path, format="PNG")
 
             ally_result = await plugin._chain_result_with_media(
-                FakeEvent("测试"), [Comp.Image.fromFileSystem(str(image_path))]
+                FakeEvent("??"), [Comp.Image.fromFileSystem(str(image_path))]
             )
             wiki_result = await plugin._chain_result_with_media(
-                FakeEvent("测试"),
+                FakeEvent("??"),
                 [Comp.Image.fromFileSystem(str(image_path))],
                 media_profile="wiki_card",
             )
@@ -742,11 +754,11 @@ class DrawManagementTests(unittest.IsolatedAsyncioTestCase):
         plugin = make_plugin(self.entry)
 
         self.assertEqual(
-            plugin._ally_detail_message(self.entry, "基础文案"),
-            "基础文案\n"
-            "简介：\n"
-            "这是一段简体中文盟友简介。\n"
-            "详细信息引用本条消息并回复卡比百科即可查看（查百科会比较慢）",
+            plugin._ally_detail_message(self.entry, "????"),
+            "????\n"
+            "???\n"
+            "?????????????\n"
+            "??????????????????????????????",
         )
 
         plugin.config = {
@@ -754,21 +766,21 @@ class DrawManagementTests(unittest.IsolatedAsyncioTestCase):
             "ally_wiki_hint_enabled": False,
         }
         self.assertEqual(
-            plugin._ally_detail_message(self.entry, "基础文案"), "基础文案"
+            plugin._ally_detail_message(self.entry, "????"), "????"
         )
 
         plugin.config = {
-            "ally_detail_template": "{base}\n资料：{description}\n{wiki_hint}",
-            "ally_wiki_hint_text": "引用后发送卡比百科",
+            "ally_detail_template": "{base}\n???{description}\n{wiki_hint}",
+            "ally_wiki_hint_text": "?????????",
         }
         self.assertEqual(
-            plugin._ally_detail_message(self.entry, "基础文案"),
-            "基础文案\n资料：这是一段简体中文盟友简介。\n引用后发送卡比百科",
+            plugin._ally_detail_message(self.entry, "????"),
+            "????\n????????????????\n?????????",
         )
 
     def test_ally_description_limit_includes_suffix_and_zero_is_unlimited(self):
         plugin = make_plugin(self.entry)
-        plugin.store.description = "星" * 40
+        plugin.store.description = "?" * 40
         plugin.config = {"ally_description_max_chars": 16}
 
         truncated = plugin._ally_description_text(self.entry)
@@ -777,35 +789,35 @@ class DrawManagementTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(truncated.endswith("... ..."))
 
         plugin.config = {"ally_description_max_chars": 0}
-        self.assertEqual(plugin._ally_description_text(self.entry), "星" * 40)
+        self.assertEqual(plugin._ally_description_text(self.entry), "?" * 40)
 
     async def test_view_description_works_when_automatic_display_is_disabled(self):
         plugin = make_plugin(self.entry)
         plugin.config = {"ally_description_enabled": False}
         quoted = Comp.Reply(
             id="reply-view-description",
-            message_str="随机查看的盟友是 Papi，图鉴编号 #1202。",
+            message_str="???????? Papi????? #1202?",
         )
 
         results = [
             result
             async for result in plugin.view_ally_description(
-                FakeEvent("查看简介", [quoted])
+                FakeEvent("????", [quoted])
             )
         ]
 
         self.assertEqual(len(results), 1)
         self.assertIn("#1202 Papi", results[0])
-        self.assertIn("这是一段简体中文盟友简介。", results[0])
+        self.assertIn("?????????????", results[0])
 
     async def test_view_description_can_use_forward_message(self):
         plugin = make_plugin(self.entry)
-        plugin.config = {"ally_description_view_mode": "合并转发"}
+        plugin.config = {"ally_description_view_mode": "????"}
 
         results = [
             result
             async for result in plugin.view_ally_description(
-                FakeEvent("查看简介 1202")
+                FakeEvent("???? 1202")
             )
         ]
 
@@ -813,23 +825,23 @@ class DrawManagementTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(results[0]), 1)
         self.assertIsInstance(results[0][0], Comp.Nodes)
         node = results[0][0].nodes[0]
-        self.assertEqual(node.name, "星之卡比图鉴")
+        self.assertEqual(node.name, "??????")
         self.assertIn("#1202 Papi", node.content[0].text)
 
     async def test_view_description_can_render_single_card(self):
         plugin = make_plugin(self.entry)
-        plugin.store.description = "卡比简介" * 20
+        plugin.store.description = "????" * 20
         plugin.config = {
             "ally_description_max_chars": 30,
-            "ally_description_view_mode": "简介卡片",
-            "ally_description_card_template": "星际档案",
+            "ally_description_view_mode": "????",
+            "ally_description_card_template": "????",
         }
         plugin.html_render = AsyncMock(return_value="C:\\temp\\ally-introduction.png")
 
         results = [
             result
             async for result in plugin.view_ally_description(
-                FakeEvent("/查看简介 1202")
+                FakeEvent("/???? 1202")
             )
         ]
 
@@ -842,39 +854,39 @@ class DrawManagementTests(unittest.IsolatedAsyncioTestCase):
         expected = plugin._truncate_ally_description(plugin.store.description, 30)
         self.assertIn(expected, payload_text)
         self.assertEqual(payload["title"], "Papi")
-        self.assertEqual(payload["theme"]["label"], "星际档案")
+        self.assertEqual(payload["theme"]["label"], "????")
         self.assertEqual(payload["image_data_uri"], "")
-        self.assertIn("图鉴编号", payload_text)
+        self.assertIn("????", payload_text)
         self.assertIn("#1202", payload_text)
         self.assertIn("Kirby: Meta Knight and the Knight of Yomi", payload_text)
         self.assertEqual(payload["source"], "https://wikirby.com/wiki/Test")
 
     async def test_view_description_card_failure_falls_back_to_text(self):
         plugin = make_plugin(self.entry)
-        plugin.config = {"ally_description_view_mode": "简介卡片"}
+        plugin.config = {"ally_description_view_mode": "????"}
         plugin.html_render = AsyncMock(side_effect=RuntimeError("render failed"))
 
         results = [
             result
             async for result in plugin.view_ally_description(
-                FakeEvent("查看简介 1202")
+                FakeEvent("???? 1202")
             )
         ]
 
         self.assertEqual(len(results), 1)
         self.assertIsInstance(results[0], str)
-        self.assertIn("这是一段简体中文盟友简介。", results[0])
+        self.assertIn("?????????????", results[0])
 
     async def test_draw_message_places_description_before_hint(self):
         plugin = make_plugin(self.entry)
         plugin.config = {"draw_cooldown_seconds": 0}
         plugin.store.asset_bytes = lambda _entry, _download=False: b"image-bytes"
 
-        results = [result async for result in plugin.draw_ally(FakeEvent("今日盟友"))]
+        results = [result async for result in plugin.draw_ally(FakeEvent("????"))]
 
         text = results[0][0].text
-        self.assertLess(text.index("简介："), text.index("详细信息引用本条消息"))
-        self.assertIn("这是一段简体中文盟友简介。", text)
+        self.assertLess(text.index("???"), text.index("??????????"))
+        self.assertIn("?????????????", text)
         self.assertIsInstance(results[0][-1], Comp.Image)
 
     async def test_query_ally_uses_query_template_and_description(self):
@@ -885,49 +897,49 @@ class DrawManagementTests(unittest.IsolatedAsyncioTestCase):
                 "unlocked": [
                     {"ally_filename": "Papi.png", "unlock_date": "2026-08-01"}
                 ],
-                "nickname": "爱丽丝",
+                "nickname": "???",
             }
         }
 
-        results = [result async for result in plugin.query_ally(FakeEvent("查盟友"))]
+        results = [result async for result in plugin.query_ally(FakeEvent("???"))]
 
         text = results[0][0].text
-        self.assertIn("爱丽丝 今天的盟友是 Papi，图鉴编号 #1202", text)
-        self.assertIn("解锁于 2026-08-01", text)
-        self.assertIn("简介：\n这是一段简体中文盟友简介。", text)
+        self.assertIn("??? ?????? Papi????? #1202", text)
+        self.assertIn("??? 2026-08-01", text)
+        self.assertIn("???\n?????????????", text)
 
     async def test_admin_can_edit_and_restore_description_from_quote(self):
         plugin = make_plugin(self.entry)
         quoted = Comp.Reply(
             id="reply-description",
-            message_str="随机查看的盟友是 Papi，图鉴编号 #1202。",
+            message_str="???????? Papi????? #1202?",
         )
 
         updated = [
             result
             async for result in plugin.edit_ally_description(
-                FakeEvent("星之卡比图鉴简介 新的人工简介。", [quoted])
+                FakeEvent("???????? ???????", [quoted])
             )
         ]
-        self.assertIn("已保存 #1202 Papi 的人工简介", updated[0])
-        self.assertEqual(plugin.store.description, "新的人工简介。")
+        self.assertIn("??? #1202 Papi ?????", updated[0])
+        self.assertEqual(plugin.store.description, "???????")
 
         viewed = [
             result
             async for result in plugin.edit_ally_description(
-                FakeEvent("星之卡比图鉴简介 1202")
+                FakeEvent("???????? 1202")
             )
         ]
-        self.assertIn("管理员人工简介", viewed[0])
-        self.assertIn("新的人工简介。", viewed[0])
+        self.assertIn("???????", viewed[0])
+        self.assertIn("???????", viewed[0])
 
         restored = [
             result
             async for result in plugin.restore_ally_description(
-                FakeEvent("星之卡比图鉴恢复简介", [quoted])
+                FakeEvent("??????????", [quoted])
             )
         ]
-        self.assertIn("已恢复 #1202 Papi 的内置简介", restored[0])
+        self.assertIn("??? #1202 Papi ?????", restored[0])
 
     async def test_granted_opportunity_extends_effective_draw_limit(self):
         plugin = make_plugin(self.entry)
@@ -936,25 +948,25 @@ class DrawManagementTests(unittest.IsolatedAsyncioTestCase):
         plugin.store.draws[("group-1", "user-1", today)] = 1
         plugin.store.bonuses[("group-1", "user-1", today)] = 1
 
-        results = [result async for result in plugin.draw_ally(FakeEvent("今日盟友"))]
+        results = [result async for result in plugin.draw_ally(FakeEvent("????"))]
 
         self.assertEqual(plugin.store.draw_count("group-1", "user-1", today), 2)
-        self.assertIn("图鉴编号 #1202", results[0][0].text)
-        self.assertIn("今日剩余次数：0", results[0][0].text)
+        self.assertIn("???? #1202", results[0][0].text)
+        self.assertIn("???????0", results[0][0].text)
 
     async def test_admin_can_add_member_opportunities_by_at(self):
         plugin = make_plugin(self.entry)
-        plugin.store.group = {"42": {"nickname": "群友"}}
+        plugin.store.group = {"42": {"nickname": "??"}}
         event = FakeEvent(
-            "增加今日抽取次数 2",
+            "???????? 2",
             [Comp.At(qq="42"), Comp.Plain("2")],
         )
 
         results = [result async for result in plugin.add_member_draw_count(event)]
 
         self.assertEqual(len(results), 1)
-        self.assertIn("已为 群友（42）增加 2 次今日抽取机会", results[0])
-        self.assertIn("今日可用 5 次", results[0])
+        self.assertIn("?? ???42??? 2 ???????", results[0])
+        self.assertIn("???? 5 ?", results[0])
         self.assertEqual(sum(plugin.store.bonuses.values()), 2)
 
     async def test_admin_can_add_member_opportunity_by_user_id(self):
@@ -963,23 +975,23 @@ class DrawManagementTests(unittest.IsolatedAsyncioTestCase):
         results = [
             result
             async for result in plugin.add_member_draw_count(
-                FakeEvent("增加今日抽取次数 2127074778")
+                FakeEvent("???????? 2127074778")
             )
         ]
 
-        self.assertIn("增加 1 次今日抽取机会", results[0])
+        self.assertIn("?? 1 ???????", results[0])
         self.assertEqual(sum(plugin.store.bonuses.values()), 1)
 
     async def test_admin_rejects_non_positive_opportunity_amount(self):
         plugin = make_plugin(self.entry)
         event = FakeEvent(
-            "增加今日抽取次数 -2",
+            "???????? -2",
             [Comp.At(qq="42"), Comp.Plain("-2")],
         )
 
         results = [result async for result in plugin.add_member_draw_count(event)]
 
-        self.assertIn("用法：增加今日抽取次数", results[0])
+        self.assertIn("???????????", results[0])
         self.assertFalse(plugin.store.bonuses)
 
     async def test_admin_reset_only_clears_current_group_today(self):
@@ -994,11 +1006,11 @@ class DrawManagementTests(unittest.IsolatedAsyncioTestCase):
         results = [
             result
             async for result in plugin.reset_group_draw_counts(
-                FakeEvent("重置今日群抽取次数")
+                FakeEvent("?????????")
             )
         ]
 
-        self.assertIn("共处理 1 位群友", results[0])
+        self.assertIn("??? 1 ???", results[0])
         self.assertEqual(plugin.store.draw_count("group-1", "42", today), 0)
         self.assertEqual(plugin.store.draw_bonus("group-1", "42", today), 0)
         self.assertEqual(plugin.store.draw_count("group-2", "42", today), 1)
@@ -1019,12 +1031,12 @@ class DrawHandlerRegistrationTests(unittest.TestCase):
 
         command_pattern = regex_filters[0].regex
         for message in (
-            "今日盟友",
-            "/今日盟友",
-            "抽盟友",
-            "/抽盟友",
-            "抽取盟友",
-            "/抽取盟友",
+            "????",
+            "/????",
+            "???",
+            "/???",
+            "????",
+            "/????",
         ):
             with self.subTest(message=message):
                 self.assertIsNotNone(command_pattern.fullmatch(message))
