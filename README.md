@@ -1,6 +1,6 @@
 # 星之卡比图鉴
 
-[![AstrBot](https://img.shields.io/badge/AstrBot-%3E%3D4.16%2C%3C5-4c8bf5)](https://github.com/AstrBotDevs/AstrBot) [![Platform](https://img.shields.io/badge/platform-aiocqhttp-f59e0b)](https://github.com/AstrBotDevs/AstrBot) [![License](https://img.shields.io/badge/license-MIT-2ea44f)](LICENSE)
+[![AstrBot](https://img.shields.io/badge/AstrBot-%3E%3D4.22.2%2C%3C5-4c8bf5)](https://github.com/AstrBotDevs/AstrBot) [![Platform](https://img.shields.io/badge/platform-aiocqhttp-f59e0b)](https://github.com/AstrBotDevs/AstrBot) [![License](https://img.shields.io/badge/license-MIT-2ea44f)](LICENSE)
 
 面向 AstrBot 群聊的星之卡比盟友抽取、收藏图鉴和百科查询插件。
 
@@ -44,7 +44,7 @@
 
 ### 环境要求
 
-- AstrBot `>=4.16,<5`
+- AstrBot `>=4.22.2,<5`
 - 完整 WebUI 管理台需要 AstrBot `v4.26.8+`
 - `aiocqhttp` 平台适配器
 - Python 依赖：Pillow、Beautiful Soup 4
@@ -79,7 +79,7 @@ python -m pip install -r requirements.txt
 从 `v3.4.0` 起，插件提供 AstrBot Dashboard 原生管理 Page。更新并重载插件后，在 Dashboard 的插件详情中打开“星之卡比图鉴管理台”即可使用，不需要另开端口或部署独立前端。
 
 > [!IMPORTANT]
-> 完整管理台依赖 AstrBot `v4.26.8+` 的插件 Page 和 Web API。插件仍声明兼容 `>=4.16,<5`，因为旧版 AstrBot 上抽取、图鉴和百科等群聊功能可以继续运行；旧版只是不显示这套管理页面。
+> 完整管理台依赖 AstrBot `v4.26.8+` 的插件 Page 和 Web API。插件声明兼容 `>=4.22.2,<5`；这个最低版本同时确保 Bot 抽取工具可以把素材图作为原生视觉工具结果交给 LLM。低于 `v4.26.8` 时，群聊命令仍可用，但不显示这套管理页面。
 
 ### 管理范围
 
@@ -341,7 +341,9 @@ find /root/AstrBot/data/plugin_data -maxdepth 1 -type d -name 'astrbot_plugin_ki
 
 Bot 在每个群每天有独立的抽取机会，默认 3 次，数值与 `daily_draw_limit` 共用。每次 `Bot今日盟友` 或 LLM 工具调用都会消耗一次 Bot 自己的机会，不会占用任何群友的次数。Bot 解锁会计入本群汇总图鉴；默认不出现在个人排行榜，可通过 `bot_show_in_leaderboard` 开启。
 
-当 LLM 调用 `kirby_catalog_draw_bot_ally` 时，插件会立即在当前群发送与命令相同的完整结果，包括文字、简介（已启用时）和素材图片。因此所有群成员都能在 QQ 会话中看到图片；工具返回值只用于提醒 LLM 不要把抽取结果再发一遍。
+当 LLM 调用 `kirby_catalog_draw_bot_ally` 时，插件会立即在当前群发送与命令相同的完整结果，包括文字、简介（已启用时）和素材图片。因此所有群成员都能在 QQ 会话中看到图片。
+
+默认还会把完整文案和同一张素材的轻量化视觉副本交给 LLM。支持图片输入的供应商会让爱丽丝真正查看图片后，再自然回复一两句感想或互动内容；她不会重复发送抽取文案或图片。轻量化副本最高为 `1280 x 1280`、`1.5MP`、`2MiB`，只用于模型上下文，不改变原素材或群内图片。非视觉供应商仍会收到完整文字并正常回复，但无法识别图片细节。可通过 `bot_draw_llm_vision_enabled` 关闭这项行为。
 
 ### 猜盟友规则
 
@@ -442,9 +444,9 @@ Kirby Fandom 的特殊栏目会保留网页结构：`Related Quotes` 中每条�
 | `kirby_catalog_lookup_official_names` | 查询 WiKirby 多语言名称 |
 | `kirby_catalog_lookup_fandom` | 查询 Kirby Fandom 页面资料或指定章节 |
 | `kirby_catalog_lookup_fandom_names` | 查询 Fandom 跨语言社区页面名称 |
-| `kirby_catalog_draw_bot_ally` | 使用 Bot 独立身份抽取当前群当天盟友，并立即发送文字和素材图片 |
+| `kirby_catalog_draw_bot_ally` | 使用 Bot 独立身份抽取当前群当天盟友，立即发送文字和素材图片，并让视觉 LLM 查看同图后回复 |
 
-前四个百科工具只读，不会发送群消息或修改图鉴。`kirby_catalog_draw_bot_ally` 会写入 Bot 自己在当前群的当天盟友和解锁记录，但不会占用提问者的次数或修改群友数据。它会主动发送完整结果和素材图到当前群，工具返回值只作发送确认，避免 LLM 再次复述同一条抽取结果。
+前四个百科工具只读，不会发送群消息或修改图鉴。`kirby_catalog_draw_bot_ally` 会写入 Bot 自己在当前群的当天盟友和解锁记录，但不会占用提问者的次数或修改群友数据。它会主动发送完整结果和素材图到当前群；默认还会把完整文案和轻量化同图交给视觉 LLM，使爱丽丝能看图后自然回应，但不会重复发送同一条抽取结果。
 
 ## 管理员命令
 
@@ -645,6 +647,7 @@ Kirby： Squeak Squad.怪侠洛切团（Squeaks）.jpg
 | `ally_detail_template` | 编排基础文案、简介和百科提示 |
 | `bot_draw_enabled` | 启用 `Bot今日盟友` 和 Bot 抽取 LLM 工具；工具会主动发群消息和素材图 |
 | `bot_draw_nickname` | Bot 独立身份的显示名称 |
+| `bot_draw_llm_vision_enabled` | 让支持视觉的 LLM 查看 Bot 抽取的同图和完整文案后自然回复，默认开启 |
 | `bot_draw_message_template` | Bot 今日盟友基础文案，支持剩余次数和重复/保底标记 |
 | `bot_show_in_leaderboard` | 是否让 Bot 出现在群排行榜，默认关闭 |
 

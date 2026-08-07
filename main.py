@@ -12,6 +12,8 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
+from mcp.types import CallToolResult, ImageContent, TextContent
+
 from astrbot.api import logger
 from astrbot.api import message_components as Comp
 from astrbot.api.event import AstrMessageEvent, MessageChain, filter
@@ -90,6 +92,11 @@ DEFAULT_BOT_DRAW_MESSAGE_TEMPLATE = (
     "{nickname}今天的盟友是 {name}{flags}，图鉴编号 #{id}{source_text}。\n"
     "今日剩余次数：{remaining}"
 )
+DEFAULT_BOT_DRAW_LLM_IMAGE_MAX_WIDTH_PX = 1280
+DEFAULT_BOT_DRAW_LLM_IMAGE_MAX_HEIGHT_PX = 1280
+DEFAULT_BOT_DRAW_LLM_IMAGE_MAX_MEGAPIXELS = 1.5
+DEFAULT_BOT_DRAW_LLM_IMAGE_MAX_BYTES = 2 * 1024 * 1024
+DEFAULT_BOT_DRAW_LLM_IMAGE_JPEG_QUALITY = 88
 MAX_WIKI_TRANSLATION_CACHE_ITEMS = 128
 CATALOG_PROFILES_PATH = Path(__file__).parent / "resources" / "catalog_profiles.json"
 
@@ -107,7 +114,7 @@ class AllyDrawOutcome:
     PLUGIN_ID,
     "Whereis-Alice",
     "星之卡比盟友抽取、收藏图鉴与双百科查询插件",
-    "3.5.4",
+    "3.5.5",
     "https://github.com/Whereis-Alice/astrbot_plugin_kirby_catalog",
 )
 class KirbyCatalogPlugin(Star):
@@ -1161,6 +1168,90 @@ class KirbyCatalogPlugin(Star):
         elif len(chain) == 1:
             chain[0] = Comp.Plain(f"{text}\n图片暂时不可用，请管理员检查素材。")
         return chain
+
+    @staticmethod
+    def _tool_image_mime_type(data: bytes) -> str:
+        if data.startswith(b"\x89PNG\r\n\x1a\n"):
+            return "image/png"
+        if data.startswith(b"\xff\xd8\xff"):
+            return "image/jpeg"
+        if data.startswith((b"GIF87a", b"GIF89a")):
+            return "image/gif"
+        if data.startswith(b"RIFF") and data[8:12] == b"WEBP":
+            return "image/webp"
+        return "image/png"
+
+    async def _bot_draw_llm_image(
+        self, chain: Iterable[Any]
+    ) -> ImageContent | None:
+        """Build a bounded visual tool result without delaying the group send."""
+        for component in chain:
+            if not isinstance(component, Comp.Image):
+                continue
+            try:
+                source_text = await component.convert_to_file_path()
+                source = Path(source_text)
+                if not source.is_file():
+                    continue
+                prepared = await asyncio.to_thread(
+                    prepare_image_for_delivery,
+                    source,
+                    self._media_cache_dir(),
+                    max_width=DEFAULT_BOT_DRAW_LLM_IMAGE_MAX_WIDTH_PX,
+                    max_height=DEFAULT_BOT_DRAW_LLM_IMAGE_MAX_HEIGHT_PX,
+                    max_megapixels=DEFAULT_BOT_DRAW_LLM_IMAGE_MAX_MEGAPIXELS,
+                    max_bytes=DEFAULT_BOT_DRAW_LLM_IMAGE_MAX_BYTES,
+                    normalize_jpeg_enabled=True,
+                    jpeg_quality=DEFAULT_BOT_DRAW_LLM_IMAGE_JPEG_QUALITY,
+                )
+                data = await asyncio.to_thread(Path(prepared).read_bytes)
+            except Exception as exc:
+                logger.warning(
+                    "[%s] 无法为 Bot 抽取准备 LLM 视觉素材: %s", PLUGIN_ID, exc
+                )
+                continue
+            if data:
+                return ImageContent(
+                    type="image",
+                    data=base64.b64encode(data).decode("ascii"),
+                    mimeType=self._tool_image_mime_type(data),
+                )
+        return None
+
+    async def _bot_draw_tool_result(
+        self, text: str, chain: Iterable[Any]
+    ) -> str | CallToolResult:
+        prompt = (
+            "爱丽丝已在当前群发送以下盟友抽取消息。不要重复发送整段文案、"
+            "图鉴编号、简介或图片。\n\n"
+            f"{text}\n\n"
+        )
+        if not self._bool_value(
+            self._config_value("bot_draw_llm_vision_enabled", True)
+        ):
+            return (
+                f"{prompt}请以爱丽丝的身份自然回复一两句，不要重复抽取结果。"
+            )
+
+        image = await self._bot_draw_llm_image(chain)
+        if image is None:
+            return (
+                f"{prompt}素材图片已发到群里，但本次无法作为视觉输入附给模型。"
+                "请基于文案自然回复一两句，不要重复抽取结果。"
+            )
+        return CallToolResult(
+            content=[
+                TextContent(
+                    type="text",
+                    text=(
+                        f"{prompt}下方是同一张盟友素材图。请先看图，再以爱丽丝的"
+                        "身份自然回复一两句，可以表达感想或和群友互动；不要重复"
+                        "发送抽取文案、图鉴编号、简介或图片。"
+                    ),
+                ),
+                image,
+            ]
+        )
 
     @staticmethod
     def _truncate_ally_description(description: str, max_chars: int) -> str:
@@ -3351,12 +3442,14 @@ class KirbyCatalogPlugin(Star):
             yield result
 
     @filter.llm_tool(name="kirby_catalog_draw_bot_ally")
-    async def draw_bot_ally_tool(self, event: AstrMessageEvent) -> str:
+    async def draw_bot_ally_tool(
+        self, event: AstrMessageEvent
+    ) -> str | CallToolResult:
         """让 Bot 为自己抽取当前群今天的星之卡比盟友。
 
         使用独立且持久化的 Bot 身份，不占用提问者的次数或图鉴。每日次数
         与群友共用 daily_draw_limit；调用后会立即向当前群发送文字和素材图片。
-        工具返回值仅用于确认发送结果，不应重复复述抽取文案。
+        工具会同时提供完整文案和轻量化素材图给支持视觉的 LLM，用于自然回应。
         """
         outcome, error = await self._draw_bot_ally(event)
         if error or outcome is None:
@@ -3375,10 +3468,7 @@ class KirbyCatalogPlugin(Star):
                 f"爱丽丝抽到了 #{outcome.entry['id']} "
                 f"{self._display_name(outcome.entry)}，但群消息发送失败，请稍后重试。"
             )
-        return (
-            f"已在当前群发送爱丽丝抽到的 #{outcome.entry['id']} "
-            f"{self._display_name(outcome.entry)} 及素材图片；请勿重复发送抽取结果。"
-        )
+        return await self._bot_draw_tool_result(text, chain)
 
     @filter.command("重置今日群抽取次数", alias={"重置今日抽取次数", "重置群抽取次数"})
     @filter.permission_type(filter.PermissionType.ADMIN)

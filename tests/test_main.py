@@ -1,7 +1,9 @@
 import asyncio
+import base64
 import tempfile
 import time
 import unittest
+from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -9,6 +11,7 @@ from unittest.mock import AsyncMock
 from astrbot.api import message_components as Comp
 from astrbot.core.star.filter.regex import RegexFilter
 from astrbot.core.star.star_handler import star_handlers_registry
+from mcp.types import CallToolResult, ImageContent, TextContent
 from PIL import Image
 
 from astrbot_plugin_kirby_catalog.catalog_core import get_today
@@ -468,13 +471,18 @@ class DrawManagementTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_bot_draw_has_three_independent_daily_chances_and_tool_sends_image(self):
         plugin = make_plugin(self.entry)
-        plugin.store.asset_bytes = lambda _entry, _download=False: b"image-bytes"
         event = FakeEvent("Bot今日盟友", group_id="100")
 
-        first = [result async for result in plugin.draw_bot_ally(event)]
-        second = [result async for result in plugin.draw_bot_ally(event)]
-        tool_text = await plugin.draw_bot_ally_tool(event)
-        fourth_outcome, fourth_error = await plugin._draw_bot_ally(event)
+        with tempfile.TemporaryDirectory() as temp:
+            image_buffer = BytesIO()
+            Image.new("RGB", (64, 64), "pink").save(image_buffer, format="PNG")
+            plugin.store.root = Path(temp) / "plugin-data"
+            plugin.store.asset_bytes = lambda _entry, _download=False: image_buffer.getvalue()
+
+            first = [result async for result in plugin.draw_bot_ally(event)]
+            second = [result async for result in plugin.draw_bot_ally(event)]
+            tool_result = await plugin.draw_bot_ally_tool(event)
+            fourth_outcome, fourth_error = await plugin._draw_bot_ally(event)
 
         today = get_today()
         self.assertEqual(plugin.store.draw_count("100", "bot_astrbot", today), 3)
@@ -485,7 +493,21 @@ class DrawManagementTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(event.sent_chains), 1)
         self.assertIn("今日剩余次数：0", event.sent_chains[0].chain[0].text)
         self.assertIsInstance(event.sent_chains[0].chain[1], Comp.Image)
-        self.assertIn("已在当前群发送", tool_text)
+        self.assertIsInstance(tool_result, CallToolResult)
+        tool_texts = [
+            content.text
+            for content in tool_result.content
+            if isinstance(content, TextContent)
+        ]
+        self.assertTrue(any("已在当前群发送" in text for text in tool_texts))
+        vision_image = next(
+            content
+            for content in tool_result.content
+            if isinstance(content, ImageContent)
+        )
+        self.assertEqual(vision_image.mimeType, "image/png")
+        with Image.open(BytesIO(base64.b64decode(vision_image.data))) as image:
+            self.assertEqual(image.size, (64, 64))
         self.assertIsNone(fourth_outcome)
         self.assertIn("今天已经抽了 3 次", fourth_error)
 

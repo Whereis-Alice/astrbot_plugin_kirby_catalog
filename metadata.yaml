@@ -1,10 +1,10 @@
 name: astrbot_plugin_kirby_catalog
 display_name: 星之卡比图鉴
 desc: 星之卡比盟友与 Bot 独立抽取、能力形态图鉴、双百科查询、长图安全发送及 WebUI 管理台
-version: v3.5.4
+version: v3.5.5
 author: Whereis-Alice
 repo: https://github.com/Whereis-Alice/astrbot_plugin_kirby_catalog
-astrbot_version: ">=4.16,<5"
+astrbot_version: ">=4.22.2,<5"
 support_platforms:
   - aiocqhttp
 tags:
