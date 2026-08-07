@@ -337,13 +337,25 @@ find /root/AstrBot/data/plugin_data -maxdepth 1 -type d -name 'astrbot_plugin_ki
 
 ### Bot 今日盟友
 
-`Bot今日盟友` 使用 `bot_<QQ号>` 形式的独立持久化身份；无法读取 Bot QQ 号时使用稳定的 `bot_astrbot` 身份。它不会占用命令发送者的次数，也不会写入任何群友的当前盟友或个人图鉴。
+`Bot今日盟友` 使用 `bot_<QQ号>` 形式的独立持久化身份。它不会占用命令发送者的次数，也不会写入任何群友的当前盟友或个人图鉴。
 
 Bot 在每个群每天有独立的抽取机会，默认 3 次，数值与 `daily_draw_limit` 共用。每次 `Bot今日盟友` 或 LLM 工具调用都会消耗一次 Bot 自己的机会，不会占用任何群友的次数。Bot 解锁会计入本群汇总图鉴；默认不出现在个人排行榜，可通过 `bot_show_in_leaderboard` 开启。
 
 当 LLM 调用 `kirby_catalog_draw_bot_ally` 时，插件会立即在当前群发送与命令相同的完整结果，包括文字、简介（已启用时）和素材图片。因此所有群成员都能在 QQ 会话中看到图片。
 
 默认还会把完整文案和同一张素材的轻量化视觉副本交给 LLM。支持图片输入的供应商会让爱丽丝真正查看图片后，再自然回复一两句感想或互动内容；她不会重复发送抽取文案或图片。轻量化副本最高为 `1280 x 1280`、`1.5MP`、`2MiB`，只用于模型上下文，不改变原素材或群内图片。非视觉供应商仍会收到完整文字并正常回复，但无法识别图片细节。可通过 `bot_draw_llm_vision_enabled` 关闭这项行为。
+
+#### 未来任务自动抽取
+
+AstrBot 的“未来任务”可以每天自动让爱丽丝抽盟友。创建 Active Agent 任务时，务必在“投递到”选择目标群，然后让任务调用 `kirby_catalog_draw_bot_ally`，例如：
+
+```text
+现在是爱丽丝的抽盟友时间。调用 kirby_catalog_draw_bot_ally 工具抽取今天的盟友，并自然说一句感想。
+```
+
+任务触发后，插件会使用“投递到”所选群的会话发送完整抽取结果和图片；爱丽丝的回复也会回到同一个群。手动 `Bot今日盟友` 与未来任务会自动识别为同一个 Bot QQ 身份，共用该群当天的三次机会和同一份图鉴数据。
+
+没有选择群聊“投递到”的未来任务会被明确拒绝，不会在私聊、系统会话或未知目标里抽取。默认从 NapCat 当前连接自动读取 Bot QQ 号；只有多账号或特殊连接方式下无法自动识别时，才需要填写 `bot_draw_identity`，值直接填 Bot QQ 号即可。
 
 ### 猜盟友规则
 
@@ -647,6 +659,7 @@ Kirby： Squeak Squad.怪侠洛切团（Squeaks）.jpg
 | `ally_detail_template` | 编排基础文案、简介和百科提示 |
 | `bot_draw_enabled` | 启用 `Bot今日盟友` 和 Bot 抽取 LLM 工具；工具会主动发群消息和素材图 |
 | `bot_draw_nickname` | Bot 独立身份的显示名称 |
+| `bot_draw_identity` | 可选的 Bot QQ 稳定身份 ID；通常留空自动识别，仅在未来任务无法识别多账号/特殊连接时填写 |
 | `bot_draw_llm_vision_enabled` | 让支持视觉的 LLM 查看 Bot 抽取的同图和完整文案后自然回复，默认开启 |
 | `bot_draw_message_template` | Bot 今日盟友基础文案，支持剩余次数和重复/保底标记 |
 | `bot_show_in_leaderboard` | 是否让 Bot 出现在群排行榜，默认关闭 |

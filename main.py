@@ -114,7 +114,7 @@ class AllyDrawOutcome:
     PLUGIN_ID,
     "Whereis-Alice",
     "星之卡比盟友抽取、收藏图鉴与双百科查询插件",
-    "3.5.5",
+    "3.5.6",
     "https://github.com/Whereis-Alice/astrbot_plugin_kirby_catalog",
 )
 class KirbyCatalogPlugin(Star):
@@ -146,6 +146,7 @@ class KirbyCatalogPlugin(Star):
                 "[%s] WebUI 注册失败，插件消息功能仍继续运行: %s", PLUGIN_ID, exc
             )
         self._cooldowns: Dict[str, Dict[str, float]] = {}
+        self._bot_identity_cache: Dict[str, str] = {}
         self._guess_sessions: Dict[str, Dict[str, Any]] = {}
         self._guess_timeout_tasks: Dict[str, asyncio.Task[None]] = {}
         self._wiki_translation_cache: Dict[Tuple[str, str, str], Tuple[float, str]] = {}
@@ -290,7 +291,22 @@ class KirbyCatalogPlugin(Star):
 
     @staticmethod
     def _group_id(event: AstrMessageEvent) -> str:
-        return str(getattr(getattr(event, "message_obj", None), "group_id", "") or "")
+        group_id = str(
+            getattr(getattr(event, "message_obj", None), "group_id", "") or ""
+        )
+        if group_id:
+            return group_id
+
+        # Active Agent cron jobs use CronMessageEvent. It keeps the selected
+        # delivery session but does not populate message_obj.group_id.
+        session = getattr(event, "session", None)
+        message_type = getattr(session, "message_type", None)
+        message_type_value = str(
+            getattr(message_type, "value", message_type) or ""
+        )
+        if message_type_value != "GroupMessage":
+            return ""
+        return str(getattr(session, "session_id", "") or "")
 
     @staticmethod
     def _sender_id(event: AstrMessageEvent) -> str:
@@ -3370,7 +3386,88 @@ class KirbyCatalogPlugin(Star):
             yield result
 
     @staticmethod
-    def _bot_identity(event: AstrMessageEvent) -> str:
+    def _normalise_bot_identity(value: Any) -> str:
+        """Return a persistent catalog identity for a concrete Bot account."""
+        if not isinstance(value, (str, int)):
+            return ""
+        raw_value = str(value).strip()
+        if raw_value in {"", "*"}:
+            return ""
+        normalized = re.sub(r"[^A-Za-z0-9_-]+", "_", raw_value)
+        if not normalized or normalized.casefold() in {
+            "astrbot",
+            "cron",
+            "scheduler",
+        }:
+            return ""
+        if normalized.casefold().startswith("bot_"):
+            return normalized[:128]
+        return f"bot_{normalized}"[:128]
+
+    @staticmethod
+    def _event_platform_id(event: AstrMessageEvent) -> str:
+        session = getattr(event, "session", None)
+        candidates = [getattr(session, "platform_id", "")]
+        get_platform_id = getattr(event, "get_platform_id", None)
+        if callable(get_platform_id):
+            try:
+                candidates.append(get_platform_id())
+            except Exception:
+                pass
+        candidates.append(getattr(getattr(event, "platform_meta", None), "id", ""))
+        for candidate in candidates:
+            value = str(candidate or "").strip()
+            if value:
+                return value
+        return ""
+
+    @staticmethod
+    def _is_scheduled_event(event: AstrMessageEvent) -> bool:
+        extras = getattr(event, "_extras", None)
+        return isinstance(extras, dict) and "cron_job" in extras
+
+    def _platform_bot_identity(self, platform_id: str) -> str:
+        """Read the real OneBot self ID from the selected platform adapter."""
+        if not platform_id:
+            return ""
+        get_platform_inst = getattr(self.context, "get_platform_inst", None)
+        if not callable(get_platform_inst):
+            return ""
+        try:
+            platform = get_platform_inst(platform_id)
+        except Exception:
+            return ""
+        if platform is None:
+            return ""
+
+        bot = getattr(platform, "bot", None)
+        clients = getattr(bot, "_wsr_api_clients", None)
+        if isinstance(clients, dict):
+            identities = {
+                self._normalise_bot_identity(self_id)
+                for self_id in clients.keys()
+            }
+            identities.discard("")
+            if len(identities) == 1:
+                return identities.pop()
+
+        for target in (platform, bot):
+            for attribute in ("self_id", "bot_id", "user_id"):
+                identity = self._normalise_bot_identity(
+                    getattr(target, attribute, "")
+                )
+                if identity:
+                    return identity
+        return ""
+
+    def _bot_identity(self, event: AstrMessageEvent) -> str:
+        """Resolve one identity shared by manual and scheduled Bot draws."""
+        configured_identity = self._normalise_bot_identity(
+            self._config_value("bot_draw_identity", "")
+        )
+        if configured_identity:
+            return configured_identity
+
         message_obj = getattr(event, "message_obj", None)
         raw_event = getattr(message_obj, "raw_message", None)
         candidates = [getattr(message_obj, "self_id", "")]
@@ -3379,10 +3476,31 @@ class KirbyCatalogPlugin(Star):
                 candidates.append(raw_event.get("self_id"))
             except Exception:
                 pass
+        platform_id = self._event_platform_id(event)
+        identity_cache = getattr(self, "_bot_identity_cache", None)
+        if not isinstance(identity_cache, dict):
+            identity_cache = {}
+            self._bot_identity_cache = identity_cache
+
         for candidate in candidates:
-            normalized = re.sub(r"[^A-Za-z0-9_-]+", "_", str(candidate or ""))
-            if normalized:
-                return f"bot_{normalized}"[:128]
+            identity = self._normalise_bot_identity(candidate)
+            if identity:
+                if platform_id:
+                    identity_cache[platform_id] = identity
+                return identity
+
+        cached_identity = identity_cache.get(platform_id, "")
+        if cached_identity:
+            return cached_identity
+        platform_identity = self._platform_bot_identity(platform_id)
+        if platform_identity:
+            identity_cache[platform_id] = platform_identity
+            return platform_identity
+
+        # A scheduled event supplies a synthetic "astrbot" self_id. Falling
+        # back here would create a second daily limit and catalog for Alice.
+        if self._is_scheduled_event(event):
+            return ""
         return "bot_astrbot"
 
     def _bot_draw_message(self, outcome: AllyDrawOutcome) -> str:
@@ -3413,13 +3531,20 @@ class KirbyCatalogPlugin(Star):
         group_id = self._group_id(event)
         if not group_id:
             return None, "Bot 抽盟友只支持群聊。"
+        bot_identity = self._bot_identity(event)
+        if not bot_identity:
+            return (
+                None,
+                "无法确定当前平台的 Bot 身份。请确认 NapCat 已连接；"
+                "若使用多账号或特殊连接方式，请在插件配置中填写“Bot 抽取稳定身份 ID”（建议填写 Bot QQ 号）。",
+            )
         nickname = str(
             self._config_value("bot_draw_nickname", "星之卡比图鉴")
             or "星之卡比图鉴"
         ).strip()
         return await self._draw_for_identity(
             group_id=group_id,
-            user_id=self._bot_identity(event),
+            user_id=bot_identity,
             nickname=nickname,
             base_limit=max(1, int(self._config_value("daily_draw_limit", 3))),
             include_bonus=True,
@@ -3904,7 +4029,8 @@ class KirbyCatalogPlugin(Star):
         if not self._bool_value(
             self._config_value("bot_show_in_leaderboard", False)
         ):
-            excluded = (self._bot_identity(event),)
+            bot_identity = self._bot_identity(event)
+            excluded = (bot_identity,) if bot_identity else ()
         rows = self.store.leaderboard(
             group_id, limit=10, exclude_user_ids=excluded
         )

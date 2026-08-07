@@ -92,6 +92,12 @@
           "type": "string",
           "default": "星之卡比图鉴"
         },
+        "bot_draw_identity": {
+          "description": "Bot 抽取稳定身份 ID（可选）",
+          "type": "string",
+          "default": "",
+          "hint": "默认会从当前 QQ/NapCat 连接自动识别 Bot QQ 号，手动命令与未来任务共用同一身份和每日次数。仅在多账号或特殊连接方式下无法自动识别时填写 Bot QQ 号；不要填写 bot_ 前缀。"
+        },
         "bot_draw_llm_vision_enabled": {
           "description": "让 LLM 查看 Bot 抽取的素材图",
           "type": "bool",
