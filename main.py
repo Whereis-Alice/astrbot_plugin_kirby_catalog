@@ -114,7 +114,7 @@ class AllyDrawOutcome:
     PLUGIN_ID,
     "Whereis-Alice",
     "星之卡比盟友抽取、收藏图鉴与双百科查询插件",
-    "3.5.6",
+    "3.5.7",
     "https://github.com/Whereis-Alice/astrbot_plugin_kirby_catalog",
 )
 class KirbyCatalogPlugin(Star):
@@ -1197,41 +1197,52 @@ class KirbyCatalogPlugin(Star):
             return "image/webp"
         return "image/png"
 
+    async def _llm_image_from_component(
+        self, component: Any, *, purpose: str
+    ) -> ImageContent | None:
+        """Build one bounded visual input without delaying the group send."""
+        if not isinstance(component, Comp.Image):
+            return None
+        try:
+            source_text = await component.convert_to_file_path()
+            source = Path(source_text)
+            if not source.is_file():
+                return None
+            prepared = await asyncio.to_thread(
+                prepare_image_for_delivery,
+                source,
+                self._media_cache_dir(),
+                max_width=DEFAULT_BOT_DRAW_LLM_IMAGE_MAX_WIDTH_PX,
+                max_height=DEFAULT_BOT_DRAW_LLM_IMAGE_MAX_HEIGHT_PX,
+                max_megapixels=DEFAULT_BOT_DRAW_LLM_IMAGE_MAX_MEGAPIXELS,
+                max_bytes=DEFAULT_BOT_DRAW_LLM_IMAGE_MAX_BYTES,
+                normalize_jpeg_enabled=True,
+                jpeg_quality=DEFAULT_BOT_DRAW_LLM_IMAGE_JPEG_QUALITY,
+            )
+            data = await asyncio.to_thread(Path(prepared).read_bytes)
+        except Exception as exc:
+            logger.warning(
+                "[%s] 无法为 %s 准备 LLM 视觉素材: %s", PLUGIN_ID, purpose, exc
+            )
+            return None
+        if not data:
+            return None
+        return ImageContent(
+            type="image",
+            data=base64.b64encode(data).decode("ascii"),
+            mimeType=self._tool_image_mime_type(data),
+        )
+
     async def _bot_draw_llm_image(
         self, chain: Iterable[Any]
     ) -> ImageContent | None:
-        """Build a bounded visual tool result without delaying the group send."""
+        """Build a bounded visual tool result for one Bot ally draw."""
         for component in chain:
-            if not isinstance(component, Comp.Image):
-                continue
-            try:
-                source_text = await component.convert_to_file_path()
-                source = Path(source_text)
-                if not source.is_file():
-                    continue
-                prepared = await asyncio.to_thread(
-                    prepare_image_for_delivery,
-                    source,
-                    self._media_cache_dir(),
-                    max_width=DEFAULT_BOT_DRAW_LLM_IMAGE_MAX_WIDTH_PX,
-                    max_height=DEFAULT_BOT_DRAW_LLM_IMAGE_MAX_HEIGHT_PX,
-                    max_megapixels=DEFAULT_BOT_DRAW_LLM_IMAGE_MAX_MEGAPIXELS,
-                    max_bytes=DEFAULT_BOT_DRAW_LLM_IMAGE_MAX_BYTES,
-                    normalize_jpeg_enabled=True,
-                    jpeg_quality=DEFAULT_BOT_DRAW_LLM_IMAGE_JPEG_QUALITY,
-                )
-                data = await asyncio.to_thread(Path(prepared).read_bytes)
-            except Exception as exc:
-                logger.warning(
-                    "[%s] 无法为 Bot 抽取准备 LLM 视觉素材: %s", PLUGIN_ID, exc
-                )
-                continue
-            if data:
-                return ImageContent(
-                    type="image",
-                    data=base64.b64encode(data).decode("ascii"),
-                    mimeType=self._tool_image_mime_type(data),
-                )
+            image = await self._llm_image_from_component(
+                component, purpose="Bot 抽取"
+            )
+            if image is not None:
+                return image
         return None
 
     async def _bot_draw_tool_result(
@@ -1266,6 +1277,47 @@ class KirbyCatalogPlugin(Star):
                     ),
                 ),
                 image,
+            ]
+        )
+
+    async def _bot_gallery_tool_result(
+        self, title: str, components: Iterable[Any]
+    ) -> str | CallToolResult:
+        """Give Alice the same gallery pages that were just shown in the group."""
+        prompt = (
+            "爱丽丝已在当前群展示自己的盟友图鉴。不要重复发送图鉴图片或完整标题。\n\n"
+            f"{title}\n\n"
+        )
+        if not self._bool_value(
+            self._config_value("bot_draw_llm_vision_enabled", True)
+        ):
+            return (
+                f"{prompt}请以爱丽丝的身份自然回应一两句，可以聊聊自己的收藏或"
+                "期待；不要重复发送图鉴。"
+            )
+        images: List[ImageContent] = []
+        for component in components:
+            image = await self._llm_image_from_component(
+                component, purpose="Bot 盟友图鉴"
+            )
+            if image is not None:
+                images.append(image)
+        if not images:
+            return (
+                f"{prompt}图鉴已发到群里，但本次无法作为视觉输入附给模型。"
+                "请基于解锁数量自然回应一两句，不要重复发送图鉴。"
+            )
+        return CallToolResult(
+            content=[
+                TextContent(
+                    type="text",
+                    text=(
+                        f"{prompt}下方是同一份盟友图鉴的完整页面。请先查看，再以"
+                        "爱丽丝的身份自然回应一两句，可以聊聊自己的收藏或期待；"
+                        "不要重复发送图鉴图片或完整标题。"
+                    ),
+                ),
+                *images,
             ]
         )
 
@@ -3595,6 +3647,94 @@ class KirbyCatalogPlugin(Star):
             )
         return await self._bot_draw_tool_result(text, chain)
 
+    async def _bot_gallery_components(
+        self, event: AstrMessageEvent
+    ) -> Tuple[Optional[str], Optional[List[Any]], Optional[str]]:
+        """Render only the current Bot identity's catalog for the current group."""
+        group_id = self._group_id(event)
+        if not group_id:
+            return None, None, "爱丽丝的盟友图鉴只支持群聊。"
+        bot_identity = self._bot_identity(event)
+        if not bot_identity:
+            return (
+                None,
+                None,
+                "无法确定当前平台的 Bot 身份。请确认 NapCat 已连接；"
+                "若使用多账号或特殊连接方式，请在插件配置中填写“Bot 抽取稳定身份 ID”（建议填写 Bot QQ 号）。",
+            )
+
+        nickname = (
+            str(
+                self._config_value("bot_draw_nickname", "星之卡比图鉴")
+                or "星之卡比图鉴"
+            ).strip()
+            or "星之卡比图鉴"
+        )
+        config = self.store.load_group(group_id)
+        progress = self.store.user_progress(config.get(bot_identity, {}))
+        unlocked = set(progress["unlocked_filenames"])
+        if not unlocked:
+            return None, None, f"{nickname} 还没有解锁任何盟友。"
+
+        output = (
+            self.store.gallery_dir
+            / f"bot_{Path(group_id).name}_{Path(bot_identity).name}.png"
+        )
+        title = (
+            f"{nickname} 的盟友图鉴  "
+            f"已解锁 {progress['unlocked']}/{progress['total']}"
+        )
+        try:
+            outputs = await asyncio.to_thread(
+                self.store.render_gallery_pages,
+                output,
+                unlocked,
+                title,
+                int(self._config_value("gallery_columns", 10)),
+                True,
+                self._bounded_int(
+                    self._config_value(
+                        "gallery_max_height_px", DEFAULT_GALLERY_MAX_HEIGHT_PX
+                    ),
+                    DEFAULT_GALLERY_MAX_HEIGHT_PX,
+                    0,
+                    30000,
+                ),
+            )
+        except Exception as exc:
+            logger.exception("[%s] 生成爱丽丝盟友图鉴失败: %s", PLUGIN_ID, exc)
+            return None, None, "爱丽丝的盟友图鉴生成失败，请稍后再试。"
+
+        return (
+            title,
+            [
+                Comp.Plain(title),
+                *(Comp.Image.fromFileSystem(str(path)) for path in outputs),
+            ],
+            None,
+        )
+
+    @filter.llm_tool(name="kirby_catalog_view_bot_gallery")
+    async def view_bot_gallery_tool(
+        self, event: AstrMessageEvent
+    ) -> str | CallToolResult:
+        """让 Bot 查看自己在当前群已解锁的盟友图鉴。
+
+        调用后会立即向当前群发送图鉴图片，并将同一批轻量化图鉴页提供给支持视觉的
+        LLM，使爱丽丝能看完后自然回应。图鉴数据仅限当前群的 Bot 独立身份。
+        """
+        title, components, error = await self._bot_gallery_components(event)
+        if error or title is None or components is None:
+            return error or "爱丽丝的盟友图鉴生成失败，请稍后再试。"
+        try:
+            await self._chain_result_with_media(
+                event, components, send_immediately=True
+            )
+        except Exception as exc:
+            logger.exception("[%s] Bot LLM 盟友图鉴群消息发送失败: %s", PLUGIN_ID, exc)
+            return f"{title} 已生成，但群消息发送失败，请稍后重试。"
+        return await self._bot_gallery_tool_result(title, components)
+
     @filter.command("重置今日群抽取次数", alias={"重置今日抽取次数", "重置群抽取次数"})
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.event_message_type(EventMessageType.GROUP_MESSAGE)
@@ -3913,6 +4053,21 @@ class KirbyCatalogPlugin(Star):
         except Exception as exc:
             logger.exception("[%s] 生成个人图鉴失败: %s", PLUGIN_ID, exc)
             yield event.plain_result("个人图鉴生成失败，请稍后再试。")
+
+    @filter.command(
+        "看爱丽丝盟友图鉴",
+        alias={"爱丽丝盟友图鉴", "看爱丽丝图鉴", "Bot盟友图鉴"},
+    )
+    @filter.event_message_type(EventMessageType.GROUP_MESSAGE)
+    async def view_alice_gallery(self, event: AstrMessageEvent):
+        """查看爱丽丝在本群已解锁的盟友收藏。"""
+        title, components, error = await self._bot_gallery_components(event)
+        if error or title is None or components is None:
+            yield event.plain_result(error or "爱丽丝的盟友图鉴生成失败，请稍后再试。")
+            return
+        result = await self._chain_result_with_media(event, components)
+        if result is not None:
+            yield result
 
     @filter.command("我的图鉴进度", alias={"图鉴进度", "我的盟友图鉴进度"})
     @filter.event_message_type(EventMessageType.GROUP_MESSAGE)

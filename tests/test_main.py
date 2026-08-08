@@ -145,10 +145,14 @@ class FakeStore:
 class FakeContext:
     def __init__(self):
         self.sent = []
+        self.platforms = {}
 
     async def send_message(self, umo, message_chain):
         self.sent.append((umo, message_chain))
         return True
+
+    def get_platform_inst(self, platform_id):
+        return self.platforms.get(platform_id)
 
 
 class FakeEvent:
@@ -510,6 +514,145 @@ class DrawManagementTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(image.size, (64, 64))
         self.assertIsNone(fourth_outcome)
         self.assertIn("今天已经抽了 3 次", fourth_error)
+
+    async def test_bot_gallery_is_sent_to_group_and_visible_to_llm(self):
+        plugin = make_plugin(self.entry)
+        event = FakeEvent("看爱丽丝盟友图鉴", group_id="100")
+        plugin.store.group = {
+            "bot_astrbot": {
+                "unlocked": [
+                    {"ally_filename": "Papi.png", "unlock_date": "2026-08-03"}
+                ]
+            },
+            "user-1": {
+                "unlocked": [
+                    {"ally_filename": "other-user-only.png", "unlock_date": "2026-08-03"}
+                ]
+            },
+        }
+        render_calls = []
+
+        def user_progress(user):
+            unlocked = sorted(set(plugin.store.unlocked_filenames(user)))
+            return {
+                "unlocked": len(unlocked),
+                "total": 1,
+                "missing": [],
+                "unlocked_filenames": unlocked,
+            }
+
+        with tempfile.TemporaryDirectory() as temp:
+            plugin.store.root = Path(temp) / "plugin-data"
+            plugin.store.gallery_dir = Path(temp) / "gallery"
+            plugin.store.user_progress = user_progress
+
+            def render_gallery_pages(output, unlocked, title, *_args):
+                output.parent.mkdir(parents=True, exist_ok=True)
+                Image.new("RGB", (128, 80), "pink").save(output, format="PNG")
+                render_calls.append(
+                    {"unlocked": set(unlocked), "title": title, "output": output}
+                )
+                return [output]
+
+            plugin.store.render_gallery_pages = render_gallery_pages
+            command_results = [
+                result async for result in plugin.view_alice_gallery(event)
+            ]
+            tool_result = await plugin.view_bot_gallery_tool(event)
+
+        self.assertEqual(len(command_results), 1)
+        command_chain = command_results[0]
+        self.assertIn("星之卡比图鉴 的盟友图鉴", command_chain[0].text)
+        self.assertIn("已解锁 1/1", command_chain[0].text)
+        self.assertIsInstance(command_chain[1], Comp.Image)
+        self.assertEqual(len(event.sent_chains), 1)
+        self.assertIn("已解锁 1/1", event.sent_chains[0].chain[0].text)
+        self.assertTrue(render_calls)
+        self.assertTrue(
+            all(call["unlocked"] == {"Papi.png"} for call in render_calls)
+        )
+        self.assertIsInstance(tool_result, CallToolResult)
+        tool_texts = [
+            content.text
+            for content in tool_result.content
+            if isinstance(content, TextContent)
+        ]
+        self.assertTrue(any("已在当前群展示自己的盟友图鉴" in text for text in tool_texts))
+        vision_images = [
+            content
+            for content in tool_result.content
+            if isinstance(content, ImageContent)
+        ]
+        self.assertEqual(len(vision_images), 1)
+        with Image.open(BytesIO(base64.b64decode(vision_images[0].data))) as image:
+            self.assertEqual(image.size, (128, 80))
+
+    async def test_future_task_group_draw_uses_the_same_bot_identity(self):
+        plugin = make_plugin(self.entry)
+        platform = SimpleNamespace(
+            bot=SimpleNamespace(_wsr_api_clients={"2127074778": object()})
+        )
+        plugin.context.platforms["default"] = platform
+        scheduled = FakeEvent("定时抽盟友", group_id="")
+        scheduled.message_obj = SimpleNamespace(
+            group_id="",
+            message=[],
+            self_id="astrbot",
+            raw_message="定时抽盟友",
+        )
+        scheduled.session = SimpleNamespace(
+            platform_id="default",
+            message_type=SimpleNamespace(value="GroupMessage"),
+            session_id="100",
+        )
+        scheduled._extras = {"cron_job": {"id": "daily-draw"}}
+        scheduled.unified_msg_origin = "default:GroupMessage:100"
+
+        with tempfile.TemporaryDirectory() as temp:
+            image_buffer = BytesIO()
+            Image.new("RGB", (64, 64), "pink").save(image_buffer, format="PNG")
+            plugin.store.root = Path(temp) / "plugin-data"
+            plugin.store.asset_bytes = lambda _entry, _download=False: image_buffer.getvalue()
+
+            tool_result = await plugin.draw_bot_ally_tool(scheduled)
+            manual = FakeEvent("Bot今日盟友", group_id="100")
+            manual.message_obj.self_id = "2127074778"
+            manual.session = SimpleNamespace(
+                platform_id="default",
+                message_type=SimpleNamespace(value="GroupMessage"),
+                session_id="100",
+            )
+            second, error = await plugin._draw_bot_ally(manual)
+
+        today = get_today()
+        self.assertEqual(plugin._group_id(scheduled), "100")
+        self.assertIsInstance(tool_result, CallToolResult)
+        self.assertEqual(len(scheduled.sent_chains), 1)
+        self.assertIsNotNone(second)
+        self.assertIsNone(error)
+        self.assertEqual(plugin.store.draw_count("100", "bot_2127074778", today), 2)
+        self.assertNotIn("bot_astrbot", plugin.store.group)
+
+    async def test_future_task_without_group_delivery_is_rejected(self):
+        plugin = make_plugin(self.entry)
+        scheduled = FakeEvent("定时抽盟友", group_id="")
+        scheduled.message_obj = SimpleNamespace(
+            group_id="",
+            message=[],
+            self_id="astrbot",
+            raw_message="定时抽盟友",
+        )
+        scheduled.session = SimpleNamespace(
+            platform_id="default",
+            message_type=SimpleNamespace(value="OtherMessage"),
+            session_id="daily-draw",
+        )
+        scheduled._extras = {"cron_job": {"id": "daily-draw"}}
+
+        result = await plugin.draw_bot_ally_tool(scheduled)
+
+        self.assertEqual(plugin._group_id(scheduled), "")
+        self.assertEqual(result, "Bot 抽盟友只支持群聊。")
 
     async def test_draw_uses_loaded_catalog_without_full_refresh(self):
         plugin = make_plugin(self.entry)
