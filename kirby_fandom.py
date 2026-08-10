@@ -7,7 +7,7 @@ import re
 import time
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.parse import quote, unquote, urlencode, urlparse
+from urllib.parse import parse_qsl, quote, unquote, urlencode, urlparse
 from urllib.request import Request, urlopen
 
 from bs4 import BeautifulSoup
@@ -22,6 +22,13 @@ USER_AGENT = (
     "(+https://github.com/Whereis-Alice/astrbot_plugin_kirby_catalog)"
 )
 _RETRYABLE_HTTP_CODES = {408, 425, 429, 500, 502, 503, 504}
+_PROXY_FALLBACK_HTTP_CODES = _RETRYABLE_HTTP_CODES | {403}
+_FANDOM_IMAGE_HOSTS = {
+    "static.wikia.nocookie.net",
+    "vignette.wikia.nocookie.net",
+    "kirby.fandom.com",
+}
+_PROXY_PREFERENCE_SECONDS = 300.0
 
 _INFOBOX_LABELS = {
     "name(ja)": "日文名",
@@ -655,10 +662,15 @@ class KirbyFandomClient:
         cache_ttl_seconds: int = 3600,
         max_summary_chars: int | None = None,
         max_detail_chars: int | None = None,
+        proxy_url: str = "",
+        proxy_token: str = "",
     ) -> None:
         self.api_url = api_url.strip() or DEFAULT_FANDOM_API_URL
         self.timeout_seconds = max(2.0, float(timeout_seconds))
         self.cache_ttl_seconds = max(0, int(cache_ttl_seconds))
+        self.proxy_url = proxy_url.strip().rstrip("/")
+        self.proxy_token = proxy_token.strip()
+        self._proxy_preferred_until = 0.0
         self._cache: dict[str, tuple[float, Any]] = {}
         self._request_limit = asyncio.Semaphore(2)
 
@@ -687,38 +699,112 @@ class KirbyFandomClient:
         except (TypeError, ValueError):
             return 0.4 * (2**attempt)
 
-    def _request_sync(self, params: dict[str, Any]) -> dict[str, Any]:
-        query = urlencode({"format": "json", "formatversion": "2", **params})
-        separator = "&" if "?" in self.api_url else "?"
-        request = Request(
-            f"{self.api_url}{separator}{query}",
-            headers={
-                "Accept": "application/json",
-                "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-                "Referer": FANDOM_SITE_URL + "/",
-                "User-Agent": USER_AGENT,
-            },
-        )
-        last_error: Exception | None = None
+    def _proxy_configured(self) -> bool:
+        return bool(self.proxy_url and self.proxy_token)
+
+    def _proxy_url_for(self, target_url: str, *, image: bool) -> str:
+        """Build a fixed-route Worker request without exposing an open proxy."""
+        if not self._proxy_configured():
+            return ""
+        parsed = urlparse(target_url)
+        hostname = (parsed.hostname or "").casefold()
+        pathname = parsed.path or "/"
+        if image:
+            if hostname not in _FANDOM_IMAGE_HOSTS:
+                return ""
+            if hostname == "kirby.fandom.com":
+                allowed = pathname.startswith("/images/")
+            else:
+                allowed = pathname.startswith("/kirby/images/")
+            if not allowed:
+                return ""
+        elif hostname != "kirby.fandom.com" or pathname != "/api.php":
+            return ""
+
+        query: list[tuple[str, str]] = [("site", "fandom"), ("path", pathname)]
+        if image:
+            query.extend((("asset", "image"), ("image_host", hostname)))
+        query.extend(parse_qsl(parsed.query, keep_blank_values=True))
+        separator = "&" if "?" in self.proxy_url else "?"
+        return f"{self.proxy_url}{separator}{urlencode(query)}"
+
+    @staticmethod
+    def _should_fallback_to_proxy(error: Exception) -> bool:
+        if isinstance(error, HTTPError):
+            return error.code in _PROXY_FALLBACK_HTTP_CODES
+        return isinstance(error, (URLError, TimeoutError))
+
+    def _read_url_sync(self, url: str, headers: dict[str, str]) -> bytes:
+        request = Request(url, headers=headers)
         for attempt in range(2):
             try:
                 with urlopen(request, timeout=self.timeout_seconds) as response:
-                    raw = response.read()
-                break
+                    return response.read()
             except HTTPError as exc:
-                last_error = exc
                 if exc.code not in _RETRYABLE_HTTP_CODES or attempt == 1:
-                    raise KirbyFandomError(
-                        f"Kirby Fandom API 返回 HTTP {exc.code}，请稍后再试"
-                    ) from exc
+                    raise
                 time.sleep(self._retry_delay(exc, attempt))
-            except (URLError, TimeoutError) as exc:
-                last_error = exc
+            except (URLError, TimeoutError):
                 if attempt == 1:
-                    raise KirbyFandomError("无法连接 Kirby Fandom，请稍后再试") from exc
+                    raise
                 time.sleep(0.4 * (2**attempt))
-        else:
-            raise KirbyFandomError("无法连接 Kirby Fandom，请稍后再试") from last_error
+        raise RuntimeError("Fandom 请求重试意外结束")
+
+    def _read_target_with_proxy_fallback_sync(
+        self, target_url: str, headers: dict[str, str], *, image: bool
+    ) -> bytes:
+        """Prefer direct access, then use the configured relay only on WAF/network errors."""
+        proxy_url = self._proxy_url_for(target_url, image=image)
+        proxy_headers = dict(headers)
+        if proxy_url:
+            proxy_headers["Authorization"] = f"Bearer {self.proxy_token}"
+
+        proxy_failed = False
+        if proxy_url and time.monotonic() < self._proxy_preferred_until:
+            try:
+                return self._read_url_sync(proxy_url, proxy_headers)
+            except (HTTPError, URLError, TimeoutError):
+                self._proxy_preferred_until = 0.0
+                proxy_failed = True
+
+        try:
+            return self._read_url_sync(target_url, headers)
+        except (HTTPError, URLError, TimeoutError) as direct_error:
+            if (
+                not proxy_url
+                or proxy_failed
+                or not self._should_fallback_to_proxy(direct_error)
+            ):
+                raise
+            try:
+                raw = self._read_url_sync(proxy_url, proxy_headers)
+            except (HTTPError, URLError, TimeoutError) as proxy_error:
+                raise proxy_error from direct_error
+            self._proxy_preferred_until = (
+                time.monotonic() + _PROXY_PREFERENCE_SECONDS
+            )
+            return raw
+
+    def _request_sync(self, params: dict[str, Any]) -> dict[str, Any]:
+        query = urlencode({"format": "json", "formatversion": "2", **params})
+        separator = "&" if "?" in self.api_url else "?"
+        target_url = f"{self.api_url}{separator}{query}"
+        headers = {
+            "Accept": "application/json",
+            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+            "Referer": FANDOM_SITE_URL + "/",
+            "User-Agent": USER_AGENT,
+        }
+        try:
+            raw = self._read_target_with_proxy_fallback_sync(
+                target_url, headers, image=False
+            )
+        except HTTPError as exc:
+            raise KirbyFandomError(
+                f"Kirby Fandom API 返回 HTTP {exc.code}，请稍后再试"
+            ) from exc
+        except (URLError, TimeoutError) as exc:
+            raise KirbyFandomError("无法连接 Kirby Fandom，请稍后再试") from exc
 
         try:
             data = json.loads(raw.decode("utf-8"))
@@ -1040,23 +1126,17 @@ class KirbyFandomClient:
 
     def _image_bytes_sync(self, image_url: str) -> bytes:
         parsed = urlparse(image_url)
-        if (parsed.hostname or "").casefold() not in {
-            "static.wikia.nocookie.net",
-            "vignette.wikia.nocookie.net",
-            "kirby.fandom.com",
-        }:
+        if (parsed.hostname or "").casefold() not in _FANDOM_IMAGE_HOSTS:
             raise KirbyFandomError("图片来源不是 Kirby Fandom CDN")
-        request = Request(
-            image_url,
-            headers={
-                "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
-                "Referer": FANDOM_SITE_URL + "/",
-                "User-Agent": USER_AGENT,
-            },
-        )
+        headers = {
+            "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+            "Referer": FANDOM_SITE_URL + "/",
+            "User-Agent": USER_AGENT,
+        }
         try:
-            with urlopen(request, timeout=self.timeout_seconds) as response:
-                return response.read()
+            return self._read_target_with_proxy_fallback_sync(
+                image_url, headers, image=True
+            )
         except (HTTPError, URLError, TimeoutError) as exc:
             raise KirbyFandomError("Kirby Fandom 首图下载失败") from exc
 

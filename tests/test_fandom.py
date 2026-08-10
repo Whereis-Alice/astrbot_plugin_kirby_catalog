@@ -1,7 +1,9 @@
 import json
 import unittest
+from io import BytesIO
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
+from urllib.error import HTTPError
 
 from astrbot_plugin_kirby_catalog.kirby_fandom import (
     KirbyFandomClient,
@@ -107,6 +109,20 @@ def sample_page():
     }
 
 
+class FakeResponse:
+    def __init__(self, body):
+        self.body = body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        return None
+
+    def read(self):
+        return self.body
+
+
 class FakeFandom:
     def __init__(self):
         self.page = sample_page()
@@ -153,6 +169,74 @@ class FakeTranslationContext:
     async def llm_generate(self, **kwargs):
         self.calls.append(("generate", kwargs))
         return SimpleNamespace(completion_text=self.completion_text)
+
+
+class FandomNetworkTests(unittest.TestCase):
+    def test_api_403_falls_back_to_worker_and_then_prefers_it(self):
+        client = KirbyFandomClient(
+            proxy_url="https://kirby-proxy.example.workers.dev",
+            proxy_token="test-token",
+            cache_ttl_seconds=0,
+        )
+        blocked = HTTPError(
+            "https://kirby.fandom.com/api.php",
+            403,
+            "Forbidden",
+            {},
+            BytesIO(),
+        )
+        response = FakeResponse(b'{"query":{"pages":[]}}')
+
+        with patch(
+            "astrbot_plugin_kirby_catalog.kirby_fandom.urlopen",
+            side_effect=[blocked, response, response],
+        ) as open_url:
+            first = client._request_sync({"action": "query", "titles": "Kirby"})
+            second = client._request_sync(
+                {"action": "query", "titles": "Driblee"}
+            )
+
+        self.assertEqual(first, {"query": {"pages": []}})
+        self.assertEqual(second, {"query": {"pages": []}})
+        self.assertEqual(open_url.call_count, 3)
+        direct_request = open_url.call_args_list[0].args[0]
+        first_proxy_request = open_url.call_args_list[1].args[0]
+        preferred_proxy_request = open_url.call_args_list[2].args[0]
+        self.assertIn("https://kirby.fandom.com/api.php", direct_request.full_url)
+        self.assertIn("site=fandom", first_proxy_request.full_url)
+        self.assertIn("path=%2Fapi.php", first_proxy_request.full_url)
+        self.assertIn("titles=Kirby", first_proxy_request.full_url)
+        self.assertEqual(
+            first_proxy_request.headers["Authorization"], "Bearer test-token"
+        )
+        self.assertIn("site=fandom", preferred_proxy_request.full_url)
+        self.assertIn("titles=Driblee", preferred_proxy_request.full_url)
+
+    def test_image_403_falls_back_to_worker_with_fixed_cdn_host(self):
+        client = KirbyFandomClient(
+            proxy_url="https://kirby-proxy.example.workers.dev",
+            proxy_token="test-token",
+            cache_ttl_seconds=0,
+        )
+        image_url = (
+            "https://static.wikia.nocookie.net/kirby/images/9/92/Spinni.png?cb=1"
+        )
+        blocked = HTTPError(image_url, 403, "Forbidden", {}, BytesIO())
+
+        with patch(
+            "astrbot_plugin_kirby_catalog.kirby_fandom.urlopen",
+            side_effect=[blocked, FakeResponse(b"image-bytes")],
+        ) as open_url:
+            result = client._image_bytes_sync(image_url)
+
+        self.assertEqual(result, b"image-bytes")
+        request = open_url.call_args_list[1].args[0]
+        self.assertIn("site=fandom", request.full_url)
+        self.assertIn("asset=image", request.full_url)
+        self.assertIn("image_host=static.wikia.nocookie.net", request.full_url)
+        self.assertIn("path=%2Fkirby%2Fimages%2F9%2F92%2FSpinni.png", request.full_url)
+        self.assertIn("cb=1", request.full_url)
+        self.assertEqual(request.headers["Authorization"], "Bearer test-token")
 
 
 class FandomParserTests(unittest.TestCase):

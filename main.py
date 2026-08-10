@@ -114,7 +114,7 @@ class AllyDrawOutcome:
     PLUGIN_ID,
     "Whereis-Alice",
     "星之卡比盟友抽取、收藏图鉴与双百科查询插件",
-    "3.5.7",
+    "3.5.8",
     "https://github.com/Whereis-Alice/astrbot_plugin_kirby_catalog",
 )
 class KirbyCatalogPlugin(Star):
@@ -159,10 +159,26 @@ class KirbyCatalogPlugin(Star):
             proxy_url=str(self._config_value("wikirby_proxy_url", "")),
             proxy_token=str(self._config_value("wikirby_proxy_token", "")),
         )
+        fandom_proxy_url = str(
+            self._config_value("fandom_proxy_url", "") or ""
+        ).strip()
+        fandom_proxy_token = str(
+            self._config_value("fandom_proxy_token", "") or ""
+        ).strip()
+        if not fandom_proxy_url:
+            fandom_proxy_url = str(
+                self._config_value("wikirby_proxy_url", "") or ""
+            ).strip()
+        if not fandom_proxy_token:
+            fandom_proxy_token = str(
+                self._config_value("wikirby_proxy_token", "") or ""
+            ).strip()
         self.fandom = KirbyFandomClient(
             api_url=str(self._config_value("fandom_api_url", DEFAULT_FANDOM_API_URL)),
             timeout_seconds=float(self._config_value("fandom_timeout_seconds", 15)),
             cache_ttl_seconds=int(self._config_value("fandom_cache_ttl_seconds", 3600)),
+            proxy_url=fandom_proxy_url,
+            proxy_token=fandom_proxy_token,
         )
 
     def _cancel_guess_timeout(self, group_id: str) -> None:

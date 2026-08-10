@@ -1,5 +1,13 @@
 # 更新日志
 
+## v3.5.8 - 2026-08-10
+
+### Kirby Fandom Worker 失败中转
+
+- Kirby Fandom 查询现支持可选 Cloudflare Worker 兜底。它默认先直连，遇到 HTTP 403、429、可重试服务器错误或网络失败才通过中转重试；一次中转成功后会短暂优先走中转，避免同一次查询反复直连失败。
+- Fandom 的 API 请求和页面首图下载均支持中转。新增 `fandom_proxy_url`、`fandom_proxy_token`；两项留空时自动复用已有的 WiKirby Worker 地址和密钥，也支持填写独立 Worker。
+- `cloudflare_worker/wikirby_proxy.js` 升级为兼容 WiKirby 与 Fandom 的严格白名单中转。旧 WiKirby 请求保持兼容，现有 Worker 直接替换代码即可，不必新建 Worker 或更换 `WIKIRBY_PROXY_TOKEN`。
+
 ## v3.5.7 - 2026-08-08
 
 ### 爱丽丝自己的盟友图鉴

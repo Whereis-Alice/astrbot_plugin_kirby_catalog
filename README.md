@@ -644,7 +644,7 @@ Kirby： Squeak Squad.怪侠洛切团（Squeaks）.jpg
 | 抽取与图鉴 | 每日抽取次数、今日/随机/查询文案、Bot 独立抽取、简介长度与回复形式、百科提示开关、详情编排、冷却时间、猜盟友超时、图鉴列数 |
 | 图片发送与长卡片 | NapCat 本地文件直发、共享目录、失败重试、JPEG 标准化、群图鉴高度、百科分页与图片安全阈值 |
 | WiKirby | 启用状态、首图、详细资料、回复形式、卡片模板、LLM 翻译、缓存和 Worker 中转 |
-| Kirby Fandom | 启用状态、首图、详细栏目、回复形式、卡片模板、LLM 翻译和缓存 |
+| Kirby Fandom | 启用状态、首图、详细栏目、回复形式、卡片模板、LLM 翻译、缓存和 Worker 失败中转 |
 | 数据兼容 | 旧素材图床地址、上游 AW 或自定义兼容目录 `legacy_data_dir` |
 
 ### 盟友消息编排
@@ -741,9 +741,9 @@ AstrBot 与 NapCat 运行在同一系统、NapCat 能读取 AstrBot 文件路径
 
 这些设置由 WiKirby、Kirby Fandom 和 `查看简介` 的合并转发共用。普通短正文和一张图片仍会保持为一条转发；只有长正文、多卡片或节点超限时才拆分。通常应保持默认值：把字符数调得过大会重新形成超大节点，调得过小则会制造过多节点，同样可能触发 QQ 或 NapCat 的限制。
 
-### WiKirby Cloudflare Worker
+### WiKirby / Kirby Fandom Cloudflare Worker
 
-部分云服务器出口 IP 访问 WiKirby 时会收到 HTTP 403。插件会先尝试官方 API、备用域名、REST API 和静态页面回退。
+部分云服务器出口 IP 访问 WiKirby 或 Kirby Fandom 时会收到 HTTP 403、429 或网络错误。WiKirby 会尝试官方 API、备用域名、REST API 和静态页面回退；Fandom 会优先直连自己的 API，在 WAF、限流、服务器错误或网络失败时才尝试中转。
 
 如果所有官方入口都不可用，可以部署可选中转：
 
@@ -752,7 +752,7 @@ AstrBot 与 NapCat 运行在同一系统、NapCat 能读取 AstrBot 文件路径
 
 Worker 必须设置 `WIKIRBY_PROXY_TOKEN`。请勿把真实密钥提交到公开仓库、Issue 或日志截图中。
 
-Kirby Fandom 使用独立 API，不读取 WiKirby Worker 配置。
+更新 Worker 后，它会通过严格白名单同时支持 WiKirby API/CDN 与 Kirby Fandom API/首图 CDN；不会转发到任意 URL。Fandom 的两项 Worker 配置留空时会自动复用 WiKirby 的地址和密钥，也可单独填写另一套 Worker。详细的升级、测试与安全边界见 [Worker 部署说明](cloudflare_worker/README.md)。
 
 ## 数据规则
 
@@ -838,6 +838,10 @@ Kirby Fandom 使用独立 API，不读取 WiKirby Worker 配置。
 ### 为什么 WiKirby 查询返回 403？
 
 这通常是 WiKirby 或 Cloudflare 对云服务器出口 IP 的限制。先查看日志确认所有官方回退是否都失败，再按 [Worker 部署说明](cloudflare_worker/README.md) 配置中转。
+
+### 为什么 Kirby Fandom 查询返回 403、429 或没有首图？
+
+Fandom 同样可能限制云服务器出口 IP 或临时限流。先更新同一个 Worker 至仓库中的最新代码；若已配置 WiKirby Worker，Fandom 默认会自动复用它。插件会先直连，只有失败时才中转；首图下载也会走同一兜底。若 Worker 也失败，请等待限流恢复或检查上游站点的访问限制。
 
 ### Fandom 名称可以当作官方中文名吗？
 

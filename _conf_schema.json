@@ -537,6 +537,18 @@
         "default": 3600,
         "min": 0,
         "max": 604800
+      },
+      "fandom_proxy_url": {
+        "description": "可选 Fandom Cloudflare Worker 中转地址",
+        "type": "string",
+        "default": "",
+        "hint": "填写升级后的 Worker 根地址，例如 https://kirby-wiki-proxy.example.workers.dev；留空时自动复用 WiKirby Worker 地址。Fandom 先直连，遇到 403、429、服务器错误或网络失败才中转。不要填写 /api.php。"
+      },
+      "fandom_proxy_token": {
+        "description": "Fandom Cloudflare Worker 中转密钥",
+        "type": "string",
+        "default": "",
+        "hint": "对应 Worker 的 WIKIRBY_PROXY_TOKEN。留空时自动复用 WiKirby 中转密钥；只保存在本机配置中，不要提交到公开仓库。"
       }
     }
   },
