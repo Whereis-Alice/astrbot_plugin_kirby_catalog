@@ -60,46 +60,101 @@ def _clean_text(element: Tag | None) -> str:
     return re.sub(r"\s*(?:編集|履歴)\s*$", "", text).strip()
 
 
-def _table_lines(table: Tag) -> list[str]:
-    """Keep tables readable in messages and cards without dropping any rows."""
+def _table_cell(cell: Tag, base_url: str) -> dict[str, str]:
+    """Extract table text plus the original Seesaa icon when there is one."""
 
-    rows: list[list[str]] = []
+    icon_url = ""
+    for image in cell.select("img[src]"):
+        source = urljoin(base_url, str(image.get("src") or "").strip())
+        parsed = urlparse(source)
+        if not _IMAGE_HOST_RE.fullmatch((parsed.hostname or "").casefold()):
+            continue
+        if not parsed.path.startswith("/k/u/kirby_shinkaku/"):
+            continue
+        icon_url = source
+        break
+    return {"text": _clean_text(cell), "icon_url": icon_url}
+
+
+def _table_data(table: Tag, base_url: str) -> dict[str, Any] | None:
+    """Keep Seesaa tables structured so card rendering does not flatten them."""
+
+    matrix: list[list[dict[str, str]]] = []
     for row in table.find_all("tr"):
         cells = row.find_all(["th", "td"], recursive=False)
-        values = [_clean_text(cell) for cell in cells]
-        values = [value for value in values if value]
+        values = [_table_cell(cell, base_url) for cell in cells]
         if values:
-            rows.append(values)
-    if not rows:
+            matrix.append(values)
+    if not matrix:
+        return None
+
+    column_count = max(len(row) for row in matrix)
+    padding = {"text": "", "icon_url": ""}
+    matrix = [
+        row + [dict(padding) for _ in range(column_count - len(row))]
+        for row in matrix
+    ]
+    headers = [
+        str(cell.get("text") or f"第 {index + 1} 列").strip()
+        for index, cell in enumerate(matrix[0])
+    ]
+    return {
+        "headers": headers,
+        "rows": matrix[1:],
+        "column_count": column_count,
+    }
+
+
+def _table_lines(table_data: dict[str, Any]) -> list[str]:
+    """Keep a readable plain-text fallback without losing any table rows."""
+
+    header = [str(value or "—") for value in table_data.get("headers", [])]
+    if not header:
         return []
 
-    header = rows[0]
     output = ["表格：" + " | ".join(header)]
-    for row in rows[1:]:
-        output.append("- " + " | ".join(row))
+    for row in table_data.get("rows", []):
+        values: list[str] = []
+        for cell in row:
+            if not isinstance(cell, dict):
+                values.append(str(cell or "—"))
+                continue
+            text = str(cell.get("text") or "").strip()
+            values.append(text or ("[图标]" if cell.get("icon_url") else "—"))
+        output.append("- " + " | ".join(values))
     return output
 
 
-def _section_text(body: Tag) -> str:
-    """Read a Seesaa section one direct block at a time to avoid duplicates."""
+def _section_content(
+    body: Tag, base_url: str
+) -> tuple[str, str, list[dict[str, Any]]]:
+    """Read a Seesaa section once while retaining paragraphs and source tables."""
 
     parts: list[str] = []
+    narrative_parts: list[str] = []
+    tables: list[dict[str, Any]] = []
     for child in body.children:
         if not isinstance(child, Tag):
             continue
         if child.name == "table":
-            parts.extend(_table_lines(child))
+            table_data = _table_data(child, base_url)
+            if table_data is not None:
+                tables.append(table_data)
+                parts.extend(_table_lines(table_data))
             continue
         if child.name in {"ul", "ol"}:
             for item in child.find_all("li", recursive=False):
                 value = _clean_text(item)
                 if value:
-                    parts.append(f"- {value}")
+                    item_text = f"- {value}"
+                    parts.append(item_text)
+                    narrative_parts.append(item_text)
             continue
         if child.name == "dl":
             value = _clean_text(child)
             if value:
                 parts.append(value)
+                narrative_parts.append(value)
             continue
         if child.select_one("table") and child.name in {"div", "section"}:
             # Nested sections are parsed independently below. Only include the
@@ -111,11 +166,17 @@ def _section_text(body: Tag) -> str:
             ).strip()
             if direct_text:
                 parts.append(direct_text)
+                narrative_parts.append(direct_text)
             continue
         value = _clean_text(child)
         if value:
             parts.append(value)
-    return "\n".join(dict.fromkeys(parts)).strip()
+            narrative_parts.append(value)
+    return (
+        "\n".join(dict.fromkeys(parts)).strip(),
+        "\n".join(dict.fromkeys(narrative_parts)).strip(),
+        tables,
+    )
 
 
 def _section_level(body: Tag) -> str:
@@ -126,13 +187,13 @@ def _section_level(body: Tag) -> str:
     return "1"
 
 
-def _page_sections(root: Tag) -> list[dict[str, str]]:
-    sections: list[dict[str, str]] = []
+def _page_sections(root: Tag, base_url: str) -> list[dict[str, Any]]:
+    sections: list[dict[str, Any]] = []
     seen: set[tuple[str, str]] = set()
     for body in root.select("div[class*='wiki-section-body-']"):
         title_element = body.find_previous(["h3", "h4", "h5", "h6"])
         title = _clean_text(title_element)
-        text = _section_text(body)
+        text, text_without_tables, tables = _section_content(body, base_url)
         if not title or not text:
             continue
         key = (title, text)
@@ -140,7 +201,13 @@ def _page_sections(root: Tag) -> list[dict[str, str]]:
             continue
         seen.add(key)
         sections.append(
-            {"title": title, "text": text, "level": _section_level(body)}
+            {
+                "title": title,
+                "text": text,
+                "text_without_tables": text_without_tables,
+                "tables": tables,
+                "level": _section_level(body),
+            }
         )
     return sections
 
@@ -375,7 +442,7 @@ class KirbyShinkakuClient:
         title = _page_title(root, requested_title)
         if not title or "ページが見つかりません" in title:
             return None
-        sections = _page_sections(root)
+        sections = _page_sections(root, source_url)
         section_titles = [str(row["title"]) for row in sections[:6]]
         summary = (
             f"真格攻略 Wiki 的「{title}」资料页"

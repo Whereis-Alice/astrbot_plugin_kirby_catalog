@@ -525,6 +525,72 @@ WIKIRBY_CARD_TEMPLATE = r"""
       white-space: pre-line;
     }
 
+    .wiki-table-wrap {
+      overflow: hidden;
+      border: 1px solid {{ theme.border }};
+      background: {{ theme.panel_a }};
+    }
+
+    .wiki-table {
+      width: 100%;
+      border-collapse: collapse;
+      table-layout: fixed;
+    }
+
+    .wiki-table th {
+      padding: 13px 12px;
+      color: {{ theme.title }};
+      background: {{ theme.header }};
+      border-right: 1px solid {{ theme.border }};
+      border-bottom: 2px solid {{ theme.accent }};
+      font-size: 15px;
+      font-weight: 800;
+      line-height: 1.35;
+      text-align: center;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+
+    .wiki-table td {
+      padding: 12px 12px;
+      color: {{ theme.text }};
+      background: {{ theme.panel_a }};
+      border-right: 1px solid {{ theme.border }};
+      border-bottom: 1px solid {{ theme.border }};
+      font-size: 15px;
+      font-weight: 600;
+      line-height: 1.48;
+      text-align: center;
+      vertical-align: middle;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+
+    .wiki-table tr:nth-child(2n) td { background: {{ theme.panel_b }}; }
+    .wiki-table tr:nth-child(3n) td { background: {{ theme.panel_d }}; }
+    .wiki-table th:last-child,
+    .wiki-table td:last-child { border-right: 0; }
+    .wiki-table tbody tr:last-child td { border-bottom: 0; }
+
+    .wiki-table--wide th:first-child,
+    .wiki-table--wide td:first-child { width: 12%; }
+
+    .wiki-table-icon {
+      display: block;
+      width: 46px;
+      height: 46px;
+      margin: 0 auto;
+      object-fit: contain;
+    }
+
+    .wiki-table-cell--icon { padding: 7px !important; }
+    .wiki-table-cell--rating { font-weight: 900 !important; }
+    .wiki-table-cell--rating-legendary { color: #bd38c1 !important; }
+    .wiki-table-cell--rating-excellent { color: #ef3d8a !important; }
+    .wiki-table-cell--rating-good { color: #f45145 !important; }
+    .wiki-table-cell--rating-fair { color: #d68700 !important; }
+    .wiki-table-cell--rating-neutral { color: {{ theme.accent_alt }} !important; }
+
     .rich-warning {
       margin-top: 10px;
       color: {{ theme.muted }};
@@ -1033,6 +1099,30 @@ WIKIRBY_CARD_TEMPLATE = r"""
               </div>
             </section>
             {% endfor %}
+          {% elif section.kind == 'table' %}
+            <div class="wiki-table-wrap">
+              <table class="wiki-table{% if section.column_count >= 4 %} wiki-table--wide{% endif %}">
+                <thead>
+                  <tr>
+                    {% for header in section.headers %}
+                    <th>{{ header | e }}</th>
+                    {% endfor %}
+                  </tr>
+                </thead>
+                <tbody>
+                  {% for row in section.rows %}
+                  <tr>
+                    {% for cell in row %}
+                    <td class="{% if cell.icon_data_uri %}wiki-table-cell--icon {% endif %}{% if cell.tone %}wiki-table-cell--rating wiki-table-cell--rating-{{ cell.tone }}{% endif %}">
+                      {% if cell.icon_data_uri %}<img class="wiki-table-icon" src="{{ cell.icon_data_uri }}" alt="" />{% endif %}
+                      {% if cell.text %}<span>{{ cell.text | e }}</span>{% elif not cell.icon_data_uri %}<span>—</span>{% endif %}
+                    </td>
+                    {% endfor %}
+                  </tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            </div>
           {% endif %}
           {% if section.incomplete %}
           <div class="rich-warning">该栏目有部分内容未能完整解析，请打开来源页面核对。</div>
@@ -1278,6 +1368,30 @@ def _rich_section_lines(section: dict[str, Any]) -> int:
             + 5
             for quote in section.get("quotes", [])
         )
+    if section.get("kind") == "table":
+        headers = section.get("headers", []) or []
+        lines = 7 + max(
+            (estimate_text_lines(str(header or "")) for header in headers),
+            default=1,
+        )
+        for row in section.get("rows", []) or []:
+            lines += max(
+                (
+                    max(
+                        3,
+                        estimate_text_lines(
+                            str(
+                                cell.get("text", "")
+                                if isinstance(cell, dict)
+                                else cell or ""
+                            )
+                        ),
+                    )
+                    for cell in row
+                ),
+                default=3,
+            ) + 2
+        return lines
     if section.get("kind") != "techniques":
         return 0
     lines = 6 + estimate_text_lines(str(section.get("intro", "")))
@@ -1338,6 +1452,28 @@ def _split_prepared_rich_section(
         if chunks:
             chunks[-1]["incomplete"] = bool(section.get("incomplete"))
         return chunks
+
+    if section.get("kind") == "table":
+        chunks: list[dict[str, Any]] = []
+        current_rows: list[Any] = []
+        for row in section.get("rows", []) or []:
+            candidate = {
+                **section,
+                "rows": [*current_rows, row],
+                "incomplete": False,
+            }
+            if current_rows and _rich_section_lines(candidate) > max_lines:
+                chunks.append(
+                    {**section, "rows": current_rows, "incomplete": False}
+                )
+                current_rows = [row]
+            else:
+                current_rows.append(row)
+        if current_rows:
+            chunks.append({**section, "rows": current_rows, "incomplete": False})
+        if chunks:
+            chunks[-1]["incomplete"] = bool(section.get("incomplete"))
+        return chunks or [section]
 
     if section.get("kind") != "techniques":
         return [section]
@@ -1442,6 +1578,61 @@ def _prepare_rich_sections(
                     "display_title": "相关语录",
                     "context": context,
                     "quotes": quotes,
+                    "incomplete": incomplete,
+                }
+            )
+            continue
+        if kind == "table":
+            headers = [
+                str(value or f"第 {index + 1} 列").strip()
+                for index, value in enumerate(section.get("headers", []) or [])
+            ]
+            if not headers:
+                continue
+            column_count = len(headers)
+            rows: list[list[dict[str, str]]] = []
+            for raw_row in section.get("rows", []) or []:
+                if not isinstance(raw_row, list):
+                    continue
+                row: list[dict[str, str]] = []
+                for index in range(column_count):
+                    raw_cell = raw_row[index] if index < len(raw_row) else ""
+                    if isinstance(raw_cell, dict):
+                        text = str(raw_cell.get("text", "") or "").strip()
+                        icon_data_uri = str(
+                            raw_cell.get("icon_data_uri", "") or ""
+                        ).strip()
+                    else:
+                        text = str(raw_cell or "").strip()
+                        icon_data_uri = ""
+                    rating = text.upper()
+                    tone = {
+                        "SS": "legendary",
+                        "S": "excellent",
+                        "A": "good",
+                        "B": "fair",
+                        "C": "neutral",
+                    }.get(rating, "")
+                    row.append(
+                        {
+                            "text": text,
+                            "icon_data_uri": icon_data_uri,
+                            "tone": tone,
+                        }
+                    )
+                rows.append(row)
+            if not rows:
+                continue
+            prepared.append(
+                {
+                    "kind": "table",
+                    "display_title": str(
+                        section.get("title", "") or "攻略数据表"
+                    ).strip(),
+                    "context": context,
+                    "headers": headers,
+                    "rows": rows,
+                    "column_count": column_count,
                     "incomplete": incomplete,
                 }
             )

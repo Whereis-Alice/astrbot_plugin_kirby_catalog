@@ -8,6 +8,7 @@ from astrbot.api import message_components as Comp
 
 from astrbot_plugin_kirby_catalog.kirby_shinkaku import KirbyShinkakuClient
 from astrbot_plugin_kirby_catalog.main import KirbyCatalogPlugin
+from astrbot_plugin_kirby_catalog.wikirby_card import build_card_pages
 
 
 class FakeResponse:
@@ -231,6 +232,32 @@ class ShinkakuClientTests(unittest.IsolatedAsyncioTestCase):
         )
 
 
+    async def test_page_parser_keeps_original_table_icon_url(self):
+        client = KirbyShinkakuClient(cache_ttl_seconds=0)
+        html = b"""
+        <div id=\"main\">
+          <div id=\"page-header\"><h2>Test</h2></div>
+          <h3>Times</h3>
+          <div class=\"wiki-section-body-1\"><table>
+            <tr><th>Icon</th><th>Ability</th><th>Rating</th></tr>
+            <tr><td><img src=\"https://image01.seesaawiki.jp/k/u/kirby_shinkaku/ice.png\"></td><td>Ice</td><td>SS</td></tr>
+          </table></div>
+        </div>
+        """
+        page = client._parse_page(
+            html,
+            "Test",
+            "https://seesaawiki.jp/kirby_shinkaku/d/Test",
+        )
+
+        cell = page["sections"][0]["tables"][0]["rows"][0][0]
+        self.assertEqual(cell["text"], "")
+        self.assertEqual(
+            cell["icon_url"],
+            "https://image01.seesaawiki.jp/k/u/kirby_shinkaku/ice.png",
+        )
+
+
 class ShinkakuCommandTests(unittest.IsolatedAsyncioTestCase):
     def make_plugin(self):
         plugin = KirbyCatalogPlugin.__new__(KirbyCatalogPlugin)
@@ -285,6 +312,91 @@ class ShinkakuCommandTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Meta Knight", term_results[0])
         self.assertIn("\u30de\u30db\u30ed\u30a2EX", page_result)
         self.assertIn("\u30e1\u30bf\u30ca\u30a4\u30c8", term_result)
+
+    async def test_nested_shinkaku_settings_are_read(self):
+        plugin = self.make_plugin()
+        plugin.config = {
+            "shinkaku_settings": {
+                "shinkaku_translate_enabled": True,
+                "shinkaku_translate_provider_id": "translation-model",
+                "shinkaku_output_mode": "文字+卡片合并转发",
+            }
+        }
+
+        self.assertTrue(plugin._shinkaku_translate_enabled())
+        self.assertEqual(
+            plugin._config_value("shinkaku_translate_provider_id", ""),
+            "translation-model",
+        )
+        self.assertEqual(plugin._shinkaku_output_mode(), "card_forward")
+
+    async def test_table_translation_keeps_icons_and_invariant_scores(self):
+        plugin = self.make_plugin()
+        source = [
+            {
+                "kind": "table",
+                "title": "Times",
+                "headers": ["Icon", "Ability", "Rating", "Record"],
+                "rows": [
+                    [
+                        {"text": "", "icon_url": "https://example.test/ice.png"},
+                        {"text": "Ice", "icon_url": ""},
+                        {"text": "SS", "icon_url": ""},
+                        {"text": "34.17", "icon_url": ""},
+                    ]
+                ],
+            }
+        ]
+        translated = [
+            {
+                "kind": "table",
+                "title": "用时",
+                "headers": ["图标", "能力", "评级", "实机记录"],
+                "rows": [["图标", "冰", "超级", "三十四点一七"]],
+            }
+        ]
+
+        result = plugin._translated_rich_sections(source, translated)
+
+        self.assertEqual(result[0]["title"], "用时")
+        self.assertEqual(result[0]["rows"][0][0]["text"], "")
+        self.assertEqual(
+            result[0]["rows"][0][0]["icon_url"],
+            "https://example.test/ice.png",
+        )
+        self.assertEqual(result[0]["rows"][0][1]["text"], "冰")
+        self.assertEqual(result[0]["rows"][0][2]["text"], "SS")
+        self.assertEqual(result[0]["rows"][0][3]["text"], "34.17")
+
+    async def test_card_layout_keeps_table_rows_structured(self):
+        layouts = build_card_pages(
+            "Test summary",
+            "",
+            [
+                {
+                    "kind": "table",
+                    "title": "Times",
+                    "headers": ["Icon", "Ability", "Rating", "Record"],
+                    "rows": [
+                        [
+                            {"text": "", "icon_data_uri": "data:image/png;base64,AA=="},
+                            {"text": "Ice"},
+                            {"text": "SS"},
+                            {"text": "34.17"},
+                        ]
+                    ],
+                }
+            ],
+            page_line_budget=60,
+            force_paginate=True,
+        )
+
+        table = layouts[0]["rich_sections"][0]
+        self.assertEqual(table["kind"], "table")
+        self.assertEqual(
+            table["rows"][0][0]["icon_data_uri"],
+            "data:image/png;base64,AA==",
+        )
 
 
 if __name__ == "__main__":
