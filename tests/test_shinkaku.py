@@ -1,5 +1,7 @@
 import unittest
 from io import BytesIO
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import patch
 from urllib.error import HTTPError
@@ -36,6 +38,28 @@ class FakeEvent:
 
     def chain_result(self, chain):
         return chain
+
+
+class BatchTranslationContext:
+    def __init__(self):
+        self.calls = []
+
+    async def get_current_chat_provider_id(self, _umo):
+        return "provider"
+
+    async def llm_generate(self, **kwargs):
+        import json
+
+        self.calls.append(kwargs)
+        payload = json.loads(kwargs["prompt"].split("JSON：\n", 1)[1])
+        for section in payload:
+            section["title"] = f"译文：{section['title']}"
+            for row in section.get("rows", []) or []:
+                if row and row[0]:
+                    row[0] = f"译文：{row[0]}"
+        return SimpleNamespace(
+            completion_text=json.dumps(payload, ensure_ascii=False)
+        )
 
 
 def sample_page():
@@ -257,6 +281,60 @@ class ShinkakuClientTests(unittest.IsolatedAsyncioTestCase):
             "https://image01.seesaawiki.jp/k/u/kirby_shinkaku/ice.png",
         )
 
+    async def test_parser_keeps_bare_text_toggles_rowspans_hierarchy_and_video(self):
+        client = KirbyShinkakuClient(cache_ttl_seconds=0)
+        source = b"""
+        <div id="main">
+          <div id="page-header"><h2>Fighter Test</h2></div>
+          <h3>Techniques</h3>
+          <div class="wiki-section-body-1"><br></div>
+          <h5>Quick Shot</h5>
+          <div class="wiki-section-body-3">
+            First line.<br>Second line with <u>important</u> text.<br>
+            <div id="content_block_1">
+              <div class="toggle-title">Detailed data</div>
+              <div class="toggle-display">Hidden first.<br>Hidden second.</div>
+            </div>
+            <div id="content_block_2">
+              <div class="toggle-title">Boss modifiers</div>
+              <div class="toggle-display"><table>
+                <tr><th>Boss</th><th>Rating</th><th>Time</th></tr>
+                <tr><td rowspan="2">Boss A</td><td>A</td><td>10.0</td></tr>
+                <tr><td>B</td><td>12.0</td></tr>
+              </table></div>
+            </div>
+          </div>
+          <h3>Video</h3>
+          <div class="wiki-section-body-1">
+            <img src="https://image02.seesaawiki.jp/k/u/kirby_shinkaku/fighter.png">
+            <iframe src="https://www.youtube.com/embed/example"></iframe>
+          </div>
+        </div>
+        """
+        page = client._parse_page(
+            source,
+            "Fighter Test",
+            "https://seesaawiki.jp/kirby_shinkaku/d/Fighter_Test",
+        )
+
+        self.assertEqual(len(page["sections"]), 3)
+        self.assertTrue(page["sections"][0]["group_only"])
+        quick = page["sections"][1]
+        self.assertEqual(quick["context"], "Techniques")
+        self.assertIn("First line.", quick["text_without_tables"])
+        self.assertIn("Second line with important text.", quick["text_without_tables"])
+        self.assertIn("Hidden first.", quick["text_without_tables"])
+        self.assertEqual(len(quick["toggles"]), 2)
+        self.assertEqual(quick["tables"][0]["title"], "Boss modifiers")
+        self.assertEqual(
+            [cell["text"] for cell in quick["tables"][0]["rows"][1]],
+            ["Boss A", "B", "12.0"],
+        )
+        self.assertEqual(
+            page["media_urls"], ["https://www.youtube.com/embed/example"]
+        )
+        self.assertIn("image02.seesaawiki.jp", page["image_url"])
+
 
 class ShinkakuCommandTests(unittest.IsolatedAsyncioTestCase):
     def make_plugin(self):
@@ -283,17 +361,57 @@ class ShinkakuCommandTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(results), 1)
         self.assertIsInstance(results[0][0], Comp.Plain)
         self.assertIn("\u30de\u30db\u30ed\u30a2EX", results[0][0].text)
-        self.assertIn("\u653b\u7565\u8d44\u6599", results[0][0].text)
+        self.assertIn("\u3010\u884c\u52d5\u30d1\u30bf\u30fc\u30f3\u3011", results[0][0].text)
 
     async def test_wiki_case_and_section_alias_are_parsed(self):
         plugin = self.make_plugin()
-        query, mode, section = plugin._shinkaku_query_parts(
+        query, mode, section, output_override = plugin._shinkaku_query_parts(
             FakeEvent("\u5361\u6bd4\u771f\u683cwiki\u7ae0\u8282 Magolor EX")
         )
 
         self.assertEqual(query, "Magolor EX")
         self.assertEqual(mode, "sections")
         self.assertEqual(section, "")
+        self.assertEqual(output_override, "")
+
+    async def test_explicit_text_card_and_document_modes_are_parsed(self):
+        plugin = self.make_plugin()
+
+        text_parts = plugin._shinkaku_query_parts(
+            FakeEvent("\u5361\u6bd4\u771f\u683c\u6587\u672c Fighter")
+        )
+        card_parts = plugin._shinkaku_query_parts(
+            FakeEvent("\u5361\u6bd4\u771f\u683c\u5361\u7247 Fighter")
+        )
+        document_parts = plugin._shinkaku_query_parts(
+            FakeEvent("\u5361\u6bd4\u771f\u683c\u6587\u6863 Fighter")
+        )
+
+        self.assertEqual(text_parts, ("Fighter", "page", "", "text"))
+        self.assertEqual(card_parts, ("Fighter", "page", "", "card"))
+        self.assertEqual(document_parts, ("Fighter", "page", "", "document"))
+
+    async def test_document_command_returns_generated_html_file(self):
+        with TemporaryDirectory() as temporary:
+            plugin = self.make_plugin()
+            plugin.config["wiki_document_translate_enabled"] = False
+            plugin.store = SimpleNamespace(root=Path(temporary))
+
+            results = [
+                result
+                async for result in plugin._shinkaku_query_impl(
+                    FakeEvent("卡比真格文档 Magolor EX")
+                )
+            ]
+
+            file_component = next(
+                component
+                for component in results[0]
+                if isinstance(component, Comp.File)
+            )
+            document = Path(file_component.file)
+            self.assertTrue(document.exists())
+            self.assertIn("\u884c\u52d5\u30d1\u30bf\u30fc\u30f3", document.read_text(encoding="utf-8"))
 
     async def test_terms_and_llm_tools_are_available(self):
         plugin = self.make_plugin()
@@ -367,6 +485,42 @@ class ShinkakuCommandTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result[0]["rows"][0][1]["text"], "冰")
         self.assertEqual(result[0]["rows"][0][2]["text"], "SS")
         self.assertEqual(result[0]["rows"][0][3]["text"], "34.17")
+
+    async def test_long_table_translation_is_batched_without_losing_rows(self):
+        plugin = self.make_plugin()
+        plugin.config.update(
+            {
+                "shinkaku_translate_enabled": True,
+                "wiki_translation_chunk_chars": 1000,
+            }
+        )
+        plugin.context = BatchTranslationContext()
+        source = [
+            {
+                "kind": "table",
+                "title": "技一覧",
+                "headers": ["技名", "説明", "評価"],
+                "rows": [
+                    [
+                        f"技 {index}",
+                        "長い攻略説明 " * 35,
+                        "SS",
+                    ]
+                    for index in range(14)
+                ],
+            }
+        ]
+
+        translated = await plugin._shinkaku_translate_rich_sections(
+            FakeEvent(""), source
+        )
+
+        self.assertGreater(len(plugin.context.calls), 1)
+        self.assertEqual(len(translated[0]["rows"]), 14)
+        self.assertTrue(
+            all(row[0].startswith("译文：") for row in translated[0]["rows"])
+        )
+        self.assertTrue(all(row[2] == "SS" for row in translated[0]["rows"]))
 
     async def test_card_layout_keeps_table_rows_structured(self):
         layouts = build_card_pages(

@@ -1,9 +1,13 @@
 import json
 import unittest
 from io import BytesIO
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 from urllib.error import HTTPError
+
+import astrbot.api.message_components as Comp
 
 from astrbot_plugin_kirby_catalog.kirby_fandom import (
     KirbyFandomClient,
@@ -169,6 +173,24 @@ class FakeTranslationContext:
     async def llm_generate(self, **kwargs):
         self.calls.append(("generate", kwargs))
         return SimpleNamespace(completion_text=self.completion_text)
+
+
+class BatchTranslationContext:
+    def __init__(self):
+        self.calls = []
+
+    async def get_current_chat_provider_id(self, _umo):
+        return "provider"
+
+    async def llm_generate(self, **kwargs):
+        self.calls.append(kwargs)
+        payload = json.loads(kwargs["prompt"].split("JSON：\n", 1)[1])
+        for section in payload:
+            for quote in section.get("quotes", []) or []:
+                quote["text"] = f"译文：{quote['text']}"
+        return SimpleNamespace(
+            completion_text=json.dumps(payload, ensure_ascii=False)
+        )
 
 
 class FandomNetworkTests(unittest.TestCase):
@@ -475,20 +497,56 @@ class FandomCommandTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(
             plugin._fandom_query_parts(FakeEvent("卡比F Spinni")),
-            ("Spinni", "page", ""),
+            ("Spinni", "page", "", ""),
         )
         self.assertEqual(
             plugin._fandom_query_parts(FakeEvent("卡比F名称 Spinni")),
-            ("Spinni", "names", ""),
+            ("Spinni", "names", "", ""),
         )
         self.assertEqual(
             plugin._fandom_query_parts(FakeEvent("/卡比F章节 Spinni")),
-            ("Spinni", "sections", ""),
+            ("Spinni", "sections", "", ""),
         )
         self.assertEqual(
             plugin._fandom_query_parts(FakeEvent("卡比F Spinni | Games")),
-            ("Spinni", "page", "Games"),
+            ("Spinni", "page", "Games", ""),
         )
+        self.assertEqual(
+            plugin._fandom_query_parts(FakeEvent("卡比F文本 Spinni")),
+            ("Spinni", "page", "", "text"),
+        )
+        self.assertEqual(
+            plugin._fandom_query_parts(FakeEvent("卡比F卡片 Spinni")),
+            ("Spinni", "page", "", "card"),
+        )
+        self.assertEqual(
+            plugin._fandom_query_parts(FakeEvent("卡比F文档 Spinni")),
+            ("Spinni", "page", "", "document"),
+        )
+
+    async def test_document_command_returns_generated_html_file(self):
+        with TemporaryDirectory() as temporary:
+            plugin = self.make_plugin(wiki_document_translate_enabled=False)
+            plugin.store = SimpleNamespace(root=Path(temporary))
+            plugin.fandom.page["rich_sections"] = parse_fandom_rich_sections(
+                FANDOM_RICH_HTML
+            )
+
+            results = [
+                result
+                async for result in plugin._fandom_query_impl(
+                    FakeEvent("卡比F文档 Spinni")
+                )
+            ]
+
+            file_component = next(
+                component
+                for component in results[0]
+                if isinstance(component, Comp.File)
+            )
+            document = Path(file_component.file)
+            self.assertTrue(document.exists())
+            self.assertIn("First quote.", document.read_text(encoding="utf-8"))
 
     async def test_section_query_returns_only_requested_parent_section(self):
         plugin = self.make_plugin()
@@ -567,6 +625,41 @@ class FandomCommandTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(translated, rich_sections)
+
+    async def test_long_structured_translation_is_batched_without_losing_quotes(self):
+        plugin = self.make_plugin(
+            fandom_translate_enabled=True,
+            wiki_translation_chunk_chars=1000,
+        )
+        plugin.context = BatchTranslationContext()
+        rich_sections = [
+            {
+                "kind": "quotes",
+                "title": "Related Quotes",
+                "context": "Kirby",
+                "quotes": [
+                    {
+                        "text": f"Quote {index}: " + ("long text " * 30),
+                        "attribution": "Narrator",
+                        "source": "Kirby Game",
+                    }
+                    for index in range(12)
+                ],
+            }
+        ]
+
+        translated = await plugin._fandom_translate_rich_sections(
+            FakeEvent(""), rich_sections
+        )
+
+        self.assertGreater(len(plugin.context.calls), 1)
+        self.assertEqual(len(translated[0]["quotes"]), 12)
+        self.assertTrue(
+            all(
+                quote["text"].startswith("译文：")
+                for quote in translated[0]["quotes"]
+            )
+        )
 
     async def test_structured_translation_preserves_controls_and_damage(self):
         plugin = self.make_plugin(fandom_translate_enabled=True)

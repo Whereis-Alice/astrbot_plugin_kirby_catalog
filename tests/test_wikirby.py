@@ -1,5 +1,7 @@
 import unittest
 from io import BytesIO
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from textwrap import dedent
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -760,7 +762,7 @@ class WikirbyCommandTests(unittest.IsolatedAsyncioTestCase):
         result = await plugin.wikirby_lookup_page(FakeEvent(""), "Driblee")
 
         self.assertIn("WiKirby：Driblee", result)
-        self.assertIn("简介：", result)
+        self.assertIn("【简介】", result)
         self.assertIn("来源：https://wikirby.com/wiki/Driblee", result)
 
     async def test_full_wikirby_llm_tool_does_not_run_nested_translation(self):
@@ -1077,9 +1079,59 @@ class WikirbyCommandTests(unittest.IsolatedAsyncioTestCase):
             )
         ]
 
-        self.assertIn("简介：\n这是一段中文简介。", results[0][0].text)
+        self.assertIn("【简介】\n这是一段中文简介。", results[0][0].text)
         self.assertEqual(plugin.context.calls[0], ("provider", "test:group:group-1"))
         self.assertEqual(plugin.context.calls[1][0], "generate")
+
+    async def test_explicit_output_mode_suffixes_are_parsed(self):
+        plugin = KirbyCatalogPlugin.__new__(KirbyCatalogPlugin)
+        plugin.config = {}
+
+        self.assertEqual(
+            plugin._wikirby_query_parts(FakeEvent("卡比百科文本 Driblee")),
+            ("Driblee", False, "text"),
+        )
+        self.assertEqual(
+            plugin._wikirby_query_parts(FakeEvent("卡比百科卡片 Driblee")),
+            ("Driblee", False, "card"),
+        )
+        self.assertEqual(
+            plugin._wikirby_query_parts(FakeEvent("卡比百科文档 Driblee")),
+            ("Driblee", False, "document"),
+        )
+
+        plugin.config = {"wiki_text_command_use_forward": True}
+        self.assertEqual(
+            plugin._resolved_wiki_output_mode("card", "text"), "forward"
+        )
+        plugin.config = {"wiki_text_command_use_forward": False}
+        self.assertEqual(plugin._resolved_wiki_output_mode("card", "text"), "text")
+
+    async def test_document_command_returns_generated_html_file(self):
+        with TemporaryDirectory() as temporary:
+            plugin = KirbyCatalogPlugin.__new__(KirbyCatalogPlugin)
+            plugin.config = {
+                "wikirby_enabled": True,
+                "wikirby_show_image": False,
+                "wiki_document_translate_enabled": False,
+            }
+            plugin.wikirby = FakeWikirby()
+            plugin.store = SimpleNamespace(root=Path(temporary))
+
+            results = [
+                result
+                async for result in plugin._wikirby_query_impl(
+                    FakeEvent("卡比百科文档 Driblee")
+                )
+            ]
+
+            file_component = next(
+                component
+                for component in results[0]
+                if isinstance(component, Comp.File)
+            )
+            self.assertTrue(Path(file_component.file).exists())
+            self.assertTrue(file_component.name.endswith(".html"))
 
 
 if __name__ == "__main__":

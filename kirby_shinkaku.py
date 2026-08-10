@@ -10,7 +10,7 @@ from urllib.parse import quote, unquote, urlencode, urljoin, urlparse
 from urllib.request import Request, urlopen
 
 from bs4 import BeautifulSoup
-from bs4.element import Tag
+from bs4.element import NavigableString, Tag
 
 DEFAULT_SHINKAKU_SITE_URL = "https://seesaawiki.jp/kirby_shinkaku"
 SHINKAKU_SITE_LABEL = "卡比真格攻略 Wiki"
@@ -30,6 +30,44 @@ _PROXY_PREFERENCE_SECONDS = 300.0
 _IMAGE_HOST_RE = re.compile(r"^image0[1-9]\.seesaawiki\.jp$", re.IGNORECASE)
 _SECTION_CLASS_RE = re.compile(r"^wiki-section-body-(\d+)$")
 _SKIPPED_PAGE_TITLES = {"menubar1", "トップページ"}
+_INLINE_TAGS = {
+    "a",
+    "abbr",
+    "b",
+    "big",
+    "cite",
+    "code",
+    "del",
+    "em",
+    "font",
+    "i",
+    "ins",
+    "kbd",
+    "mark",
+    "q",
+    "s",
+    "samp",
+    "small",
+    "span",
+    "strike",
+    "strong",
+    "sub",
+    "sup",
+    "time",
+    "tt",
+    "u",
+    "var",
+}
+_UNWANTED_SELECTOR = (
+    "script, style, noscript, .part-edit, .history, .adsense-box, "
+    ".page-social-link, .page-social-link-top, .page-social-link-bottom"
+)
+_MEDIA_HOST_SUFFIXES = (
+    "youtube.com",
+    "youtu.be",
+    "nicovideo.jp",
+    "nico.ms",
+)
 
 
 class KirbyShinkakuError(RuntimeError):
@@ -48,16 +86,59 @@ def _clean_text(element: Tag | None) -> str:
     if element is None:
         return ""
     fragment = BeautifulSoup(str(element), "html.parser")
-    for unwanted in fragment.select(
-        "script, style, noscript, .part-edit, .history, .adsense-box, "
-        ".page-social-link, .page-social-link-top, .page-social-link-bottom"
-    ):
+    for unwanted in fragment.select(_UNWANTED_SELECTOR):
         unwanted.decompose()
     for line_break in fragment.find_all("br"):
         line_break.replace_with("\n")
     text = html.unescape(fragment.get_text(" ", strip=True))
     text = re.sub(r"\s+", " ", text).strip()
     return re.sub(r"\s*(?:編集|履歴)\s*$", "", text).strip()
+
+
+def _normalise_multiline_text(value: str) -> str:
+    value = html.unescape(str(value or "")).replace("\xa0", " ")
+    value = value.replace("\r\n", "\n").replace("\r", "\n")
+    lines: list[str] = []
+    blank_pending = False
+    for raw_line in value.split("\n"):
+        line = re.sub(r"[\t\f\v ]+", " ", raw_line).strip()
+        if not line:
+            blank_pending = bool(lines)
+            continue
+        if blank_pending and lines and lines[-1] != "":
+            lines.append("")
+        lines.append(line)
+        blank_pending = False
+    return "\n".join(lines).strip()
+
+
+def _meaningful_image_urls(root: Tag, base_url: str) -> list[str]:
+    urls: list[str] = []
+    for image in root.select("img[src]"):
+        source = urljoin(base_url, str(image.get("src") or "").strip())
+        parsed = urlparse(source)
+        if not _IMAGE_HOST_RE.fullmatch((parsed.hostname or "").casefold()):
+            continue
+        if not parsed.path.startswith("/k/u/kirby_shinkaku/"):
+            continue
+        if source not in urls:
+            urls.append(source)
+    return urls
+
+
+def _meaningful_media_urls(root: Tag, base_url: str) -> list[str]:
+    urls: list[str] = []
+    for element in root.select("iframe[src], video[src], source[src], a[href]"):
+        raw = str(element.get("src") or element.get("href") or "").strip()
+        if not raw or raw.casefold().startswith("javascript:"):
+            continue
+        source = urljoin(base_url, raw)
+        host = (urlparse(source).hostname or "").casefold()
+        if not any(host == suffix or host.endswith(f".{suffix}") for suffix in _MEDIA_HOST_SUFFIXES):
+            continue
+        if source not in urls:
+            urls.append(source)
+    return urls
 
 
 def _table_cell(cell: Tag, base_url: str) -> dict[str, str]:
@@ -77,23 +158,47 @@ def _table_cell(cell: Tag, base_url: str) -> dict[str, str]:
 
 
 def _table_data(table: Tag, base_url: str) -> dict[str, Any] | None:
-    """Keep Seesaa tables structured so card rendering does not flatten them."""
+    """Keep tables rectangular, including Seesaa rowspan/colspan cells."""
 
-    matrix: list[list[dict[str, str]]] = []
-    for row in table.find_all("tr"):
+    grid: list[list[dict[str, str] | None]] = []
+    for row_index, row in enumerate(table.find_all("tr")):
+        while len(grid) <= row_index:
+            grid.append([])
+        column = 0
         cells = row.find_all(["th", "td"], recursive=False)
-        values = [_table_cell(cell, base_url) for cell in cells]
-        if values:
-            matrix.append(values)
-    if not matrix:
+        for cell in cells:
+            while column < len(grid[row_index]) and grid[row_index][column] is not None:
+                column += 1
+            try:
+                row_span = max(1, int(str(cell.get("rowspan") or "1")))
+            except ValueError:
+                row_span = 1
+            try:
+                column_span = max(1, int(str(cell.get("colspan") or "1")))
+            except ValueError:
+                column_span = 1
+            value = _table_cell(cell, base_url)
+            for target_row in range(row_index, row_index + row_span):
+                while len(grid) <= target_row:
+                    grid.append([])
+                while len(grid[target_row]) < column + column_span:
+                    grid[target_row].append(None)
+                for target_column in range(column, column + column_span):
+                    if grid[target_row][target_column] is None:
+                        grid[target_row][target_column] = dict(value)
+            column += column_span
+
+    if not grid:
         return None
 
-    column_count = max(len(row) for row in matrix)
+    column_count = max(len(row) for row in grid)
     padding = {"text": "", "icon_url": ""}
-    matrix = [
-        row + [dict(padding) for _ in range(column_count - len(row))]
-        for row in matrix
-    ]
+    matrix: list[list[dict[str, str]]] = []
+    for row in grid:
+        row.extend([None] * (column_count - len(row)))
+        matrix.append(
+            [dict(cell) if isinstance(cell, dict) else dict(padding) for cell in row]
+        )
     headers = [
         str(cell.get("text") or f"第 {index + 1} 列").strip()
         for index, cell in enumerate(matrix[0])
@@ -125,58 +230,155 @@ def _table_lines(table_data: dict[str, Any]) -> list[str]:
     return output
 
 
-def _section_content(
-    body: Tag, base_url: str
-) -> tuple[str, str, list[dict[str, Any]]]:
-    """Read a Seesaa section once while retaining paragraphs and source tables."""
+def _toggle_parts(container: Tag) -> tuple[Tag | None, Tag | None]:
+    title = container.find(class_="toggle-title", recursive=False)
+    display = container.find(class_="toggle-display", recursive=False)
+    return (
+        title if isinstance(title, Tag) else None,
+        display if isinstance(display, Tag) else None,
+    )
+
+
+def _section_content(body: Tag, base_url: str) -> dict[str, Any]:
+    """Read a Seesaa section without dropping bare text or hidden toggle data."""
 
     parts: list[str] = []
     narrative_parts: list[str] = []
     tables: list[dict[str, Any]] = []
+    toggles: list[dict[str, Any]] = []
+    inline_buffer: list[str] = []
+
+    def append_block(target: list[str], value: str) -> None:
+        value = _normalise_multiline_text(value)
+        if value:
+            target.append(value)
+
+    def flush_inline() -> None:
+        if not inline_buffer:
+            return
+        value = _normalise_multiline_text("".join(inline_buffer))
+        inline_buffer.clear()
+        if value:
+            parts.append(value)
+            narrative_parts.append(value)
+
     for child in body.children:
+        if isinstance(child, NavigableString):
+            inline_buffer.append(str(child))
+            continue
         if not isinstance(child, Tag):
             continue
-        if child.name == "table":
+        name = str(child.name or "").casefold()
+        classes = {str(value) for value in child.get("class", [])}
+        if name in {"script", "style", "noscript"} or classes.intersection(
+            {
+                "part-edit",
+                "history",
+                "adsense-box",
+                "page-social-link",
+                "page-social-link-top",
+                "page-social-link-bottom",
+            }
+        ):
+            continue
+        if name == "br":
+            flush_inline()
+            continue
+        if name in _INLINE_TAGS:
+            inline_buffer.append(child.get_text("", strip=False))
+            continue
+
+        flush_inline()
+        if name == "table":
             table_data = _table_data(child, base_url)
             if table_data is not None:
                 tables.append(table_data)
                 parts.extend(_table_lines(table_data))
             continue
-        if child.name in {"ul", "ol"}:
-            for item in child.find_all("li", recursive=False):
+        if name in {"ul", "ol"}:
+            ordered = name == "ol"
+            for index, item in enumerate(child.find_all("li", recursive=False), start=1):
                 value = _clean_text(item)
-                if value:
-                    item_text = f"- {value}"
-                    parts.append(item_text)
-                    narrative_parts.append(item_text)
+                if not value:
+                    continue
+                item_text = f"{index}. {value}" if ordered else f"- {value}"
+                parts.append(item_text)
+                narrative_parts.append(item_text)
             continue
-        if child.name == "dl":
-            value = _clean_text(child)
-            if value:
-                parts.append(value)
-                narrative_parts.append(value)
+        if name == "dl":
+            pending_label = ""
+            for item in child.find_all(["dt", "dd"], recursive=False):
+                value = _clean_text(item)
+                if not value:
+                    continue
+                if item.name == "dt":
+                    pending_label = value
+                    continue
+                line = f"{pending_label}：{value}" if pending_label else value
+                parts.append(line)
+                narrative_parts.append(line)
+                pending_label = ""
+            if pending_label:
+                parts.append(pending_label)
+                narrative_parts.append(pending_label)
             continue
-        if child.select_one("table") and child.name in {"div", "section"}:
-            # Nested sections are parsed independently below. Only include the
-            # direct textual content of a wrapper here.
-            direct_text = " ".join(
-                _clean_text(grandchild)
-                for grandchild in child.find_all(recursive=False)
-                if isinstance(grandchild, Tag) and grandchild.name != "table"
-            ).strip()
-            if direct_text:
-                parts.append(direct_text)
-                narrative_parts.append(direct_text)
+
+        toggle_title_element, toggle_display = _toggle_parts(child)
+        if toggle_display is not None:
+            toggle_title = _clean_text(toggle_title_element) or "折叠资料"
+            parsed = _section_content(toggle_display, base_url)
+            toggle_tables: list[dict[str, Any]] = []
+            for index, raw_table in enumerate(parsed["tables"], start=1):
+                table = dict(raw_table)
+                if not str(table.get("title") or "").strip():
+                    table["title"] = (
+                        toggle_title
+                        if len(parsed["tables"]) == 1
+                        else f"{toggle_title}（表 {index}）"
+                    )
+                toggle_tables.append(table)
+            toggle = {
+                "title": toggle_title,
+                "text": parsed["text"],
+                "text_without_tables": parsed["text_without_tables"],
+                "tables": toggle_tables,
+                "images": parsed["images"],
+                "media_urls": parsed["media_urls"],
+            }
+            toggles.append(toggle)
+            heading = f"【{toggle_title}】"
+            append_block(parts, heading)
+            append_block(narrative_parts, heading)
+            append_block(parts, parsed["text"])
+            append_block(narrative_parts, parsed["text_without_tables"])
+            tables.extend(toggle_tables)
             continue
-        value = _clean_text(child)
-        if value:
-            parts.append(value)
-            narrative_parts.append(value)
-    return (
-        "\n".join(dict.fromkeys(parts)).strip(),
-        "\n".join(dict.fromkeys(narrative_parts)).strip(),
-        tables,
-    )
+
+        if name in {"img", "iframe", "video", "source"}:
+            continue
+        if name == "pre":
+            value = _normalise_multiline_text(child.get_text("\n", strip=False))
+            append_block(parts, value)
+            append_block(narrative_parts, value)
+            continue
+        if child.select_one("div[class*='wiki-section-body-']"):
+            continue
+
+        nested = _section_content(child, base_url)
+        append_block(parts, nested["text"])
+        append_block(narrative_parts, nested["text_without_tables"])
+        tables.extend(nested["tables"])
+        toggles.extend(nested["toggles"])
+
+    flush_inline()
+    return {
+        "text": "\n".join(parts).strip(),
+        "text_without_tables": "\n".join(narrative_parts).strip(),
+        "tables": tables,
+        "toggles": toggles,
+        "images": _meaningful_image_urls(body, base_url),
+        "media_urls": _meaningful_media_urls(body, base_url),
+    }
 
 
 def _section_level(body: Tag) -> str:
@@ -189,39 +391,57 @@ def _section_level(body: Tag) -> str:
 
 def _page_sections(root: Tag, base_url: str) -> list[dict[str, Any]]:
     sections: list[dict[str, Any]] = []
-    seen: set[tuple[str, str]] = set()
-    for body in root.select("div[class*='wiki-section-body-']"):
+    heading_stack: dict[int, str] = {}
+    for order, body in enumerate(
+        root.select("div[class*='wiki-section-body-']"), start=1
+    ):
         title_element = body.find_previous(["h3", "h4", "h5", "h6"])
         title = _clean_text(title_element)
-        text, text_without_tables, tables = _section_content(body, base_url)
-        if not title or not text:
+        if not title:
             continue
-        key = (title, text)
-        if key in seen:
-            continue
-        seen.add(key)
+        content = _section_content(body, base_url)
+        try:
+            level = max(1, int(_section_level(body)))
+        except ValueError:
+            level = 1
+        context = " › ".join(
+            heading_stack[index]
+            for index in sorted(heading_stack)
+            if index < level and heading_stack[index]
+        )
+        for index in [value for value in heading_stack if value >= level]:
+            heading_stack.pop(index, None)
+        heading_stack[level] = title
+        group_only = not any(
+            (
+                content["text"],
+                content["tables"],
+                content["toggles"],
+                content["images"],
+                content["media_urls"],
+            )
+        )
         sections.append(
             {
                 "title": title,
-                "text": text,
-                "text_without_tables": text_without_tables,
-                "tables": tables,
-                "level": _section_level(body),
+                "text": content["text"],
+                "text_without_tables": content["text_without_tables"],
+                "tables": content["tables"],
+                "toggles": content["toggles"],
+                "images": content["images"],
+                "media_urls": content["media_urls"],
+                "level": str(level),
+                "context": context,
+                "group_only": group_only,
+                "order": order,
             }
         )
     return sections
 
 
 def _page_image_url(root: Tag, base_url: str) -> str:
-    for image in root.select("img[src]"):
-        source = urljoin(base_url, str(image.get("src") or "").strip())
-        parsed = urlparse(source)
-        if not _IMAGE_HOST_RE.fullmatch((parsed.hostname or "").casefold()):
-            continue
-        if not parsed.path.startswith("/k/u/kirby_shinkaku/"):
-            continue
-        return source
-    return ""
+    images = _meaningful_image_urls(root, base_url)
+    return images[0] if images else ""
 
 
 def _page_title(root: Tag, fallback: str) -> str:
@@ -443,16 +663,24 @@ class KirbyShinkakuClient:
         if not title or "ページが見つかりません" in title:
             return None
         sections = _page_sections(root, source_url)
-        section_titles = [str(row["title"]) for row in sections[:6]]
+        section_titles = [
+            str(row["title"])
+            for row in sections
+            if str(row.get("level") or "1") == "1"
+        ]
         summary = (
             f"真格攻略 Wiki 的「{title}」资料页"
             + (f"，包含{ '、'.join(section_titles) }等内容。" if section_titles else "。")
         )
+        images = _meaningful_image_urls(root, source_url)
+        media_urls = _meaningful_media_urls(root, source_url)
         return {
             "title": title,
             "summary": summary,
             "url": source_url,
-            "image_url": _page_image_url(root, source_url),
+            "image_url": images[0] if images else "",
+            "images": images,
+            "media_urls": media_urls,
             "sections": sections,
             "section_index": [
                 {

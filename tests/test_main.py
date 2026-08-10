@@ -399,15 +399,15 @@ class QuotedWikiQueryTests(unittest.TestCase):
 
         self.assertEqual(
             self.plugin._wikirby_query_parts(FakeEvent("卡比百科", [quoted])),
-            ("Papi", False),
+            ("Papi", False, ""),
         )
         self.assertEqual(
             self.plugin._wikirby_query_parts(FakeEvent("卡比百科名称", [quoted])),
-            ("Papi", True),
+            ("Papi", True, ""),
         )
         self.assertEqual(
             self.plugin._fandom_query_parts(FakeEvent("卡比F", [quoted])),
-            ("Papi", "page", ""),
+            ("Papi", "page", "", ""),
         )
 
     def test_filename_style_quote_skips_english_work_prefix(self):
@@ -418,11 +418,11 @@ class QuotedWikiQueryTests(unittest.TestCase):
 
         self.assertEqual(
             self.plugin._wikirby_query_parts(FakeEvent("卡比百科", [quoted])),
-            ("Benny", False),
+            ("Benny", False, ""),
         )
         self.assertEqual(
             self.plugin._fandom_query_parts(FakeEvent("卡比F", [quoted])),
-            ("Benny", "page", ""),
+            ("Benny", "page", "", ""),
         )
 
     def test_command_text_is_not_mistaken_for_quoted_content(self):
@@ -433,7 +433,7 @@ class QuotedWikiQueryTests(unittest.TestCase):
             self.plugin._wikirby_query_parts(
                 FakeEvent("卡比百科", [quoted, current_command])
             ),
-            ("Driblee", False),
+            ("Driblee", False, ""),
         )
 
 
