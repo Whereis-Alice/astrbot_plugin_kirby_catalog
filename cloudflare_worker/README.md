@@ -47,7 +47,7 @@ curl -i \
 
 ### 已配置 WiKirby Worker
 
-更新 Worker 代码后，通常无需新增配置。Fandom 的“可选 Fandom Cloudflare Worker 中转地址”和“Fandom Cloudflare Worker 中转密钥”留空即可，插件会自动复用已有的 WiKirby Worker 地址与密钥。
+更新 Worker 代码后，通常无需新增配置。Fandom 的 `fandom_proxy_url`（“可选 Fandom Cloudflare Worker 中转地址”）和 `fandom_proxy_token`（“Fandom Cloudflare Worker 中转密钥”）留空即可，插件会自动复用已有的 WiKirby Worker 地址与密钥。
 
 Fandom 始终先直连；只有遇到 `403`、`429`、可重试的服务器错误或网络失败时，才通过 Worker 重试。一次中转成功后，插件会在短时间内优先使用该中转，避免一次查询中的多个 API 请求反复直连失败。首图下载也遵循相同规则。
 
@@ -55,8 +55,8 @@ Fandom 始终先直连；只有遇到 `403`、`429`、可重试的服务器错�
 
 若希望分开部署，可在 AstrBot 的“Kirby Fandom 查询设置”填写：
 
-- `可选 Fandom Cloudflare Worker 中转地址`：Worker 根地址，不要添加 `/api.php`；
-- `Fandom Cloudflare Worker 中转密钥`：该 Worker 的 `WIKIRBY_PROXY_TOKEN`。
+- `fandom_proxy_url`（“可选 Fandom Cloudflare Worker 中转地址”）：Worker 根地址，不要添加 `/api.php`；
+- `fandom_proxy_token`（“Fandom Cloudflare Worker 中转密钥”）：该 Worker 的 `WIKIRBY_PROXY_TOKEN`。
 
 保存后重载插件，测试：
 

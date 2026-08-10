@@ -752,7 +752,7 @@ AstrBot 与 NapCat 运行在同一系统、NapCat 能读取 AstrBot 文件路径
 
 Worker 必须设置 `WIKIRBY_PROXY_TOKEN`。请勿把真实密钥提交到公开仓库、Issue 或日志截图中。
 
-更新 Worker 后，它会通过严格白名单同时支持 WiKirby API/CDN 与 Kirby Fandom API/首图 CDN；不会转发到任意 URL。Fandom 的两项 Worker 配置留空时会自动复用 WiKirby 的地址和密钥，也可单独填写另一套 Worker。详细的升级、测试与安全边界见 [Worker 部署说明](cloudflare_worker/README.md)。
+更新 Worker 后，它会通过严格白名单同时支持 WiKirby API/CDN 与 Kirby Fandom API/首图 CDN；不会转发到任意 URL。Fandom 的 `fandom_proxy_url`、`fandom_proxy_token` 留空时会自动复用 WiKirby 的地址和密钥，也可单独填写另一套 Worker。详细的升级、测试与安全边界见 [Worker 部署说明](cloudflare_worker/README.md)。
 
 ## 数据规则
 
