@@ -32,6 +32,12 @@ from .kirby_fandom import (
     KirbyFandomClient,
     KirbyFandomError,
 )
+from .kirby_shinkaku import (
+    DEFAULT_SHINKAKU_SITE_URL,
+    SHINKAKU_SITE_LABEL,
+    KirbyShinkakuClient,
+    KirbyShinkakuError,
+)
 from .media_delivery import (
     cleanup_staged_media_if_due,
     image_limit_reasons,
@@ -114,7 +120,7 @@ class AllyDrawOutcome:
     PLUGIN_ID,
     "Whereis-Alice",
     "星之卡比盟友抽取、收藏图鉴与双百科查询插件",
-    "3.5.8",
+    "3.6.0",
     "https://github.com/Whereis-Alice/astrbot_plugin_kirby_catalog",
 )
 class KirbyCatalogPlugin(Star):
@@ -179,6 +185,31 @@ class KirbyCatalogPlugin(Star):
             cache_ttl_seconds=int(self._config_value("fandom_cache_ttl_seconds", 3600)),
             proxy_url=fandom_proxy_url,
             proxy_token=fandom_proxy_token,
+        )
+        shinkaku_proxy_url = str(
+            self._config_value("shinkaku_proxy_url", "") or ""
+        ).strip()
+        shinkaku_proxy_token = str(
+            self._config_value("shinkaku_proxy_token", "") or ""
+        ).strip()
+        if not shinkaku_proxy_url:
+            shinkaku_proxy_url = str(
+                self._config_value("wikirby_proxy_url", "") or ""
+            ).strip()
+        if not shinkaku_proxy_token:
+            shinkaku_proxy_token = str(
+                self._config_value("wikirby_proxy_token", "") or ""
+            ).strip()
+        self.shinkaku = KirbyShinkakuClient(
+            site_url=str(
+                self._config_value("shinkaku_site_url", DEFAULT_SHINKAKU_SITE_URL)
+            ),
+            timeout_seconds=float(self._config_value("shinkaku_timeout_seconds", 15)),
+            cache_ttl_seconds=int(
+                self._config_value("shinkaku_cache_ttl_seconds", 3600)
+            ),
+            proxy_url=shinkaku_proxy_url,
+            proxy_token=shinkaku_proxy_token,
         )
 
     def _cancel_guess_timeout(self, group_id: str) -> None:
@@ -256,6 +287,7 @@ class KirbyCatalogPlugin(Star):
             for client in (
                 getattr(self, "wikirby", None),
                 getattr(self, "fandom", None),
+                getattr(self, "shinkaku", None),
             )
             if client is not None
         ]
@@ -343,10 +375,15 @@ class KirbyCatalogPlugin(Star):
         text = (event.message_str or "").strip()
         if text.startswith("/"):
             text = text[1:].lstrip()
+        folded_text = text.casefold()
         for name in sorted(names, key=len, reverse=True):
-            if text == name:
+            folded_name = name.casefold()
+            if folded_text == folded_name:
                 return ""
-            if text.startswith(name) and text[len(name) : len(name) + 1].isspace():
+            if (
+                folded_text.startswith(folded_name)
+                and text[len(name) : len(name) + 1].isspace()
+            ):
                 return text[len(name) :].strip()
         return ""
 
@@ -1462,7 +1499,7 @@ class KirbyCatalogPlugin(Star):
 
         candidates: List[str] = []
         patterns = (
-            r"(?:WiKirby|Kirby Fandom)\s*[:：]\s*([^\n]+)",
+            r"(?:WiKirby|Kirby Fandom|卡比真格攻略 Wiki|真格攻略 Wiki)\s*[:：]\s*([^\n]+)",
             r"(?:名称|盟友)\s*[:：]\s*([^\n]+)",
             r"(?:今天的盟友是|随机盟友\s*[:：])\s*(?:#\s*\d+\s*)?([^\n]+)",
             r"#\s*\d+\s+([^\n]+)",
@@ -1510,6 +1547,14 @@ class KirbyCatalogPlugin(Star):
     def _fandom_translate_enabled(self) -> bool:
         return self._bool_value(self._config_value("fandom_translate_enabled", False))
 
+    def _shinkaku_enabled(self) -> bool:
+        return self._bool_value(self._config_value("shinkaku_enabled", True))
+
+    def _shinkaku_translate_enabled(self) -> bool:
+        return self._bool_value(
+            self._config_value("shinkaku_translate_enabled", False)
+        )
+
     @staticmethod
     def _wiki_output_mode(value: Any) -> str:
         normalized = str(value or "普通消息").strip().casefold()
@@ -1534,6 +1579,11 @@ class KirbyCatalogPlugin(Star):
     def _fandom_output_mode(self) -> str:
         return self._wiki_output_mode(
             self._config_value("fandom_output_mode", "普通消息")
+        )
+
+    def _shinkaku_output_mode(self) -> str:
+        return self._wiki_output_mode(
+            self._config_value("shinkaku_output_mode", "合并转发")
         )
 
     @staticmethod
@@ -1944,6 +1994,25 @@ class KirbyCatalogPlugin(Star):
             reference_label="FANDOM REFERENCE",
         )
 
+    async def _shinkaku_card_components(
+        self,
+        page: Dict[str, Any],
+        summary: str,
+        detail_text: str,
+        image_bytes: bytes | None,
+    ) -> List[Any]:
+        return await self._wiki_card_components(
+            page,
+            summary,
+            detail_text,
+            image_bytes,
+            template_name=self._config_value(
+                "shinkaku_card_template", DEFAULT_CARD_TEMPLATE
+            ),
+            wiki_name=SHINKAKU_SITE_LABEL,
+            reference_label="SHINKAKU BOSS BATTLE GUIDE",
+        )
+
     async def _ally_description_card_component(
         self, entry: Dict[str, Any], description: str
     ) -> Any | None:
@@ -2147,11 +2216,13 @@ class KirbyCatalogPlugin(Star):
         if not provider_id:
             raise RuntimeError("没有找到可用的 AstrBot 文本模型")
 
-        ttl_key = (
-            "fandom_cache_ttl_seconds"
-            if source_name.casefold() == "kirby fandom"
-            else "wikirby_cache_ttl_seconds"
-        )
+        source_key = source_name.casefold()
+        if source_key == "kirby fandom":
+            ttl_key = "fandom_cache_ttl_seconds"
+        elif source_key == SHINKAKU_SITE_LABEL.casefold():
+            ttl_key = "shinkaku_cache_ttl_seconds"
+        else:
+            ttl_key = "wikirby_cache_ttl_seconds"
         try:
             cache_ttl = max(0, int(self._config_value(ttl_key, 3600)))
         except (TypeError, ValueError):
@@ -2215,6 +2286,17 @@ class KirbyCatalogPlugin(Star):
             enabled=self._fandom_translate_enabled(),
             provider_key="fandom_translate_provider_id",
             source_name="Kirby Fandom",
+        )
+
+    async def _shinkaku_translate_text(
+        self, event: AstrMessageEvent, text: str
+    ) -> str:
+        return await self._wiki_translate_text(
+            event,
+            text,
+            enabled=self._shinkaku_translate_enabled(),
+            provider_key="shinkaku_translate_provider_id",
+            source_name=SHINKAKU_SITE_LABEL,
         )
 
     @staticmethod
@@ -3105,6 +3187,374 @@ class KirbyCatalogPlugin(Star):
             logger.exception("[%s] Kirby Fandom 查询异常: %s", PLUGIN_ID, exc)
             yield event.plain_result("Kirby Fandom 查询失败，请稍后再试。")
 
+    def _shinkaku_query_parts(self, event: AstrMessageEvent) -> Tuple[str, str, str]:
+        raw = (event.message_str or "").strip()
+        command_text = raw[1:].lstrip() if raw.startswith("/") else raw
+        folded = command_text.casefold()
+        mode = "page"
+        if folded.startswith(
+            (
+                "卡比真格名称",
+                "卡比真格名",
+                "卡比真格斗名称",
+                "卡比真格斗名",
+                "真格攻略名称",
+                "真格攻略名",
+                "真格wiki名称",
+                "真格wiki名",
+            )
+        ):
+            mode = "terms"
+        elif folded.startswith(
+            (
+                "卡比真格章节",
+                "卡比真格斗章节",
+                "卡比真格wiki章节",
+                "真格攻略章节",
+                "真格wiki章节",
+            )
+        ):
+            mode = "sections"
+        command_names = {
+            "卡比真格名称",
+            "卡比真格名",
+            "卡比真格斗名称",
+            "卡比真格斗名",
+            "真格攻略名称",
+            "真格攻略名",
+            "真格Wiki名称",
+            "真格Wiki名",
+            "卡比真格章节",
+            "卡比真格斗章节",
+            "卡比真格Wiki章节",
+            "真格攻略章节",
+            "真格Wiki章节",
+            "卡比真格",
+            "卡比真格斗",
+            "卡比真格Wiki",
+            "真格攻略",
+            "真格Wiki",
+        }
+        remainder = self._command_remainder(event, command_names)
+        section = ""
+        if mode == "page" and "|" in remainder:
+            remainder, section = (part.strip() for part in remainder.split("|", 1))
+        query = remainder.strip()
+        numeric_target = query.lstrip("#") if query else ""
+        if numeric_target.isdigit():
+            entry, _ = self._entry_or_error(numeric_target)
+            if entry:
+                query = self._entry_wiki_query(entry)
+        elif not query:
+            query = self._quoted_wiki_query(event)
+        return query, mode, section
+
+    def _shinkaku_query_aliases(self, query: str) -> List[str]:
+        """Map an exact catalog Chinese name to its English page-name cue."""
+
+        values = [query.strip()]
+        store = getattr(self, "store", None)
+        finder = getattr(store, "find_entries", None)
+        if not callable(finder) or not query.strip():
+            return values
+        try:
+            matches = finder(query)
+        except Exception:
+            return values
+        normalized_query = self._normalise_guess(query)
+        for entry in matches:
+            profile = store.profile_for(entry) if store is not None else {}
+            candidates = (
+                self._display_name(entry),
+                str(entry.get("name") or ""),
+                str(profile.get("name_zh") or ""),
+                str(profile.get("display_name") or ""),
+                *[str(alias) for alias in entry.get("aliases", [])],
+            )
+            if not any(
+                normalized_query
+                and normalized_query == self._normalise_guess(candidate)
+                for candidate in candidates
+            ):
+                continue
+            values.extend(
+                (
+                    self._entry_wiki_query(entry),
+                    str(profile.get("name_en") or ""),
+                    str(entry.get("page_title") or ""),
+                )
+            )
+        unique: List[str] = []
+        seen: set[str] = set()
+        for value in values:
+            cleaned = str(value or "").strip()
+            key = cleaned.casefold()
+            if cleaned and key not in seen:
+                seen.add(key)
+                unique.append(cleaned)
+        return unique
+
+    @staticmethod
+    def _shinkaku_candidate_text(
+        candidates: List[Dict[str, Any]], mode: str = "page"
+    ) -> str:
+        lines = ["找到多个可能的真格攻略 Wiki 页面，请改用完整日文页面名查询："]
+        for index, page in enumerate(candidates, start=1):
+            lines.append(f"{index}. {page.get('title') or '未命名页面'}")
+        command = "卡比真格章节" if mode == "sections" else "卡比真格"
+        if candidates:
+            lines.append(f"例如：{command} {candidates[0].get('title', '')}")
+        return "\n".join(lines)
+
+    async def _shinkaku_terms_text(self, query: str) -> str:
+        client = getattr(self, "shinkaku", None)
+        if client is None:
+            return "真格攻略 Wiki 查询功能尚未初始化。"
+        rows = await client.lookup_terms(query)
+        if not rows:
+            return (
+                f"没有在真格攻略 Wiki 的日英用语表中找到“{query}”。\n"
+                "可尝试英文、日文，或改用卡比真格查询具体攻略页面。\n"
+                f"来源：{DEFAULT_SHINKAKU_SITE_URL}/"
+            )
+        lines = [f"真格攻略 Wiki 的日英用语对照：{query}"]
+        for row in rows:
+            lines.extend(
+                [f"日文：{row['japanese']}", f"英文：{row['english']}"]
+            )
+        lines.extend(
+            [
+                "说明：该表来自攻略 Wiki，用于检索页面和阅读攻略，不等同于任天堂官方中文译名。",
+                f"来源：{DEFAULT_SHINKAKU_SITE_URL}/d/%b1%d1%b8%ec%a4%ce%a5%b3%a1%bc%a5%ca%a1%bc",
+            ]
+        )
+        return "\n".join(lines)
+
+    async def _shinkaku_sections_text(
+        self, query: str, resolved: Optional[Dict[str, Any]] = None
+    ) -> str:
+        client = getattr(self, "shinkaku", None)
+        if client is None:
+            return "真格攻略 Wiki 查询功能尚未初始化。"
+        resolved = resolved or await client.resolve(
+            query, aliases=self._shinkaku_query_aliases(query)
+        )
+        if resolved.get("kind") == "candidates":
+            return self._shinkaku_candidate_text(
+                resolved.get("candidates", []), "sections"
+            )
+        if resolved.get("kind") != "page":
+            return f"没有找到真格攻略 Wiki 页面：{query}"
+        page = resolved["page"]
+        sections = client.get_section_titles(page)
+        if not sections:
+            return f"“{page['title']}”页面没有可查询的攻略栏目。"
+        lines = [f"真格攻略 Wiki《{page['title']}》的栏目："]
+        for row in sections:
+            indent = "  " * max(0, int(row.get("level", "1") or 1) - 1)
+            lines.append(f"{indent}{row.get('index')}. {row.get('title')}")
+        lines.extend(
+            [
+                f"查询章节：卡比真格 {page['title']} | {sections[0]['title']}",
+                f"来源：{page.get('url') or DEFAULT_SHINKAKU_SITE_URL}",
+            ]
+        )
+        return "\n".join(lines)
+
+    async def _shinkaku_page_content(
+        self,
+        event: AstrMessageEvent,
+        page: Dict[str, Any],
+        *,
+        section: str = "",
+        translate: bool = True,
+    ) -> Tuple[str, str, str]:
+        client = getattr(self, "shinkaku", None)
+        if client is None:
+            return "真格攻略 Wiki 查询功能尚未初始化。", "", ""
+
+        summary = str(page.get("summary") or "").strip()
+        lines = [f"{SHINKAKU_SITE_LABEL}：{page['title']}"]
+        if summary and not section:
+            lines.extend(["页面概览：", summary])
+
+        details = client.get_page_details(page, section)
+        detail_lines: List[str] = []
+        if section:
+            matched = details.get("sections", [])
+            if not matched:
+                return (
+                    f"真格攻略 Wiki《{page['title']}》没有找到栏目“{section}”。",
+                    summary,
+                    "",
+                )
+            for row in matched:
+                detail_lines.extend([f"{row['title']}：", row["text"]])
+        elif self._bool_value(self._config_value("shinkaku_show_details", True)):
+            for row in details.get("sections", []):
+                detail_lines.extend([f"{row['title']}：", row["text"]])
+
+        detail_text = "\n".join(detail_lines).strip()
+        if detail_text and translate and self._shinkaku_translate_enabled():
+            try:
+                detail_text = await self._shinkaku_translate_text(event, detail_text)
+            except Exception as exc:
+                logger.warning(
+                    "[%s] 真格攻略 Wiki AI 翻译失败，保留日文原文: %s",
+                    PLUGIN_ID,
+                    exc,
+                )
+        if detail_text:
+            lines.extend(["攻略资料：", detail_text])
+        lines.append(f"来源：{page.get('url') or DEFAULT_SHINKAKU_SITE_URL}")
+        return "\n".join(lines), summary, detail_text
+
+    @filter.llm_tool(name="kirby_catalog_lookup_shinkaku")
+    async def shinkaku_lookup_page(
+        self, event: AstrMessageEvent, query: str, section: str = ""
+    ) -> str:
+        """查询卡比真格斗竞技场攻略 Wiki 的 Boss、能力和实机攻略资料。
+
+        资料来自日文的星之卡比真 Boss Battle 攻略 Wiki，适合查询真格斗、
+        Boss 行动、攻略法和能力实机记录；工具只读，不会修改图鉴或发送群消息。
+        Args:
+            query(string): Boss、能力、日文页面名、英文名称或图鉴中的中文名称。
+            section(string): 可选的日文栏目标题，只返回指定攻略栏目。
+        """
+        if not self._shinkaku_enabled():
+            return "真格攻略 Wiki 查询功能当前已关闭。"
+        client = getattr(self, "shinkaku", None)
+        if client is None:
+            return "真格攻略 Wiki 查询功能尚未初始化。"
+        try:
+            resolved = await client.resolve(
+                query.strip(), aliases=self._shinkaku_query_aliases(query)
+            )
+            if resolved.get("kind") == "candidates":
+                return self._shinkaku_candidate_text(
+                    resolved.get("candidates", []), "page"
+                )
+            if resolved.get("kind") != "page":
+                return f"没有找到真格攻略 Wiki 页面：{query}"
+            text, _, _ = await self._shinkaku_page_content(
+                event, resolved["page"], section=section.strip(), translate=False
+            )
+            return text
+        except KirbyShinkakuError as exc:
+            logger.warning("[%s] LLM 调用真格攻略 Wiki 失败: %s", PLUGIN_ID, exc)
+            return f"真格攻略 Wiki 查询失败：{exc}"
+        except Exception as exc:
+            logger.exception("[%s] LLM 调用真格攻略 Wiki 异常: %s", PLUGIN_ID, exc)
+            return "真格攻略 Wiki 查询失败，请稍后再试。"
+
+    @filter.llm_tool(name="kirby_catalog_lookup_shinkaku_terms")
+    async def shinkaku_lookup_terms(
+        self, event: AstrMessageEvent, query: str
+    ) -> str:
+        """查询卡比真格攻略 Wiki 的日文、英文用语对照。
+
+        可用于把英文 Boss、能力或招式名转换为 Wiki 使用的日文检索词；
+        这是攻略 Wiki 的用语表，不代表任天堂官方中文译名。
+        Args:
+            query(string): 英文或日文 Boss、能力、招式或攻略术语。
+        """
+        if not self._shinkaku_enabled():
+            return "真格攻略 Wiki 查询功能当前已关闭。"
+        try:
+            return await self._shinkaku_terms_text(query.strip())
+        except KirbyShinkakuError as exc:
+            logger.warning("[%s] LLM 调用真格用语对照失败: %s", PLUGIN_ID, exc)
+            return f"真格攻略 Wiki 查询失败：{exc}"
+        except Exception as exc:
+            logger.exception("[%s] LLM 调用真格用语对照异常: %s", PLUGIN_ID, exc)
+            return "真格攻略 Wiki 查询失败，请稍后再试。"
+
+    async def _shinkaku_query_impl(self, event: AstrMessageEvent):
+        if not self._shinkaku_enabled():
+            yield event.plain_result("真格攻略 Wiki 查询功能当前已关闭。")
+            return
+        client = getattr(self, "shinkaku", None)
+        if client is None:
+            yield event.plain_result("真格攻略 Wiki 查询功能尚未初始化。")
+            return
+        query, mode, section = self._shinkaku_query_parts(event)
+        if not query:
+            yield event.plain_result(
+                "用法：卡比真格 <Boss、能力或页面名>；"
+                "卡比真格名称 <术语>；"
+                "卡比真格章节 <页面名>；"
+                "指定栏目：卡比真格 <页面名> | <日文栏目名>。"
+            )
+            return
+        started_at = time.monotonic()
+        try:
+            if mode == "terms":
+                yield event.plain_result(await self._shinkaku_terms_text(query))
+                return
+            resolved = await client.resolve(
+                query, aliases=self._shinkaku_query_aliases(query)
+            )
+            if resolved.get("kind") == "candidates":
+                yield event.plain_result(
+                    self._shinkaku_candidate_text(
+                        resolved.get("candidates", []), mode
+                    )
+                )
+                return
+            if resolved.get("kind") != "page":
+                yield event.plain_result(
+                    f"没有找到真格攻略 Wiki 页面：{query}\n"
+                    "可尝试英文、日文页面名，或引用 Bot 发出的盟友消息查询。"
+                )
+                return
+            if mode == "sections":
+                yield event.plain_result(
+                    await self._shinkaku_sections_text(query, resolved)
+                )
+                return
+
+            page = resolved["page"]
+            text, summary, detail_text = await self._shinkaku_page_content(
+                event, page, section=section
+            )
+            if section and not detail_text:
+                sections_text = await self._shinkaku_sections_text(query, resolved)
+                yield event.plain_result(f"{text}\n\n{sections_text}")
+                return
+            image_bytes = None
+            if self._bool_value(self._config_value("shinkaku_show_image", True)):
+                image_bytes = await client.get_image_bytes(str(page.get("image_url") or ""))
+            output_mode = self._shinkaku_output_mode()
+            card_components: List[Any] = []
+            if output_mode in {"card", "card_and_text", "card_forward"}:
+                card_components = await self._shinkaku_card_components(
+                    page, summary, detail_text, image_bytes
+                )
+                if not card_components:
+                    output_mode = "forward" if output_mode == "card_forward" else "text"
+            components = self._wiki_response_components(
+                text, image_bytes, output_mode, card_components
+            )
+            self._log_wiki_response_ready(
+                SHINKAKU_SITE_LABEL,
+                query,
+                output_mode,
+                text,
+                components,
+                started_at,
+            )
+            result = await self._chain_result_with_media(
+                event, components, media_profile="wiki_card"
+            )
+            if result is not None:
+                yield result
+        except KirbyShinkakuError as exc:
+            logger.warning("[%s] 真格攻略 Wiki 查询失败: %s", PLUGIN_ID, exc)
+            yield event.plain_result(f"真格攻略 Wiki 查询失败：{exc}")
+        except Exception as exc:
+            logger.exception("[%s] 真格攻略 Wiki 查询异常: %s", PLUGIN_ID, exc)
+            yield event.plain_result("真格攻略 Wiki 查询失败，请稍后再试。")
+
     @staticmethod
     def _normalise_guess(value: str) -> str:
         return re.sub(r"[\s\W_]+", "", value.casefold())
@@ -3974,6 +4424,17 @@ class KirbyCatalogPlugin(Star):
         async for result in self._fandom_query_impl(event):
             yield result
 
+    @filter.regex(
+        r"(?i)^/?(?:卡比真格(?:名称|名|章节)?|卡比真格斗(?:名称|名|章节)?|"
+        r"卡比真格Wiki(?:名称|名|章节)?|真格攻略(?:名称|名|章节)?|"
+        r"真格Wiki(?:名称|名|章节)?)(?:\s+.+)?$"
+    )
+    @filter.event_message_type(EventMessageType.GROUP_MESSAGE)
+    async def shinkaku_query_plain(self, event: AstrMessageEvent):
+        """统一处理真格攻略 Wiki 的页面、日英用语和章节查询。"""
+        async for result in self._shinkaku_query_impl(event):
+            yield result
+
     @filter.command("星之卡比图鉴", alias={"群盟友图鉴"})
     @filter.event_message_type(EventMessageType.GROUP_MESSAGE)
     async def group_gallery(self, event: AstrMessageEvent):
@@ -4262,6 +4723,9 @@ class KirbyCatalogPlugin(Star):
             "卡比F [页面名]：查询 Kirby Fandom 简介、资料、正文栏目和首图\n"
             "卡比F章节 [页面名]：查看可查询栏目；用“页面名 | 栏目名”读取指定栏目\n"
             "卡比F名称 [页面名]：查看各语言社区页面名（不等同于官方译名）\n"
+            "卡比真格 [页面名]：查询真格斗竞技场的 Boss、能力与实机攻略资料\n"
+            "卡比真格章节 [页面名]：查看可查询的日文攻略栏目\n"
+            "卡比真格名称 [术语]：查询攻略 Wiki 的日英用语对照\n"
             "管理员命令：重置今日群抽取次数、增加今日抽取次数，以及图鉴添加、"
             "换图、改名、简介、恢复简介、迁移、清理旧名、删除重复"
         )

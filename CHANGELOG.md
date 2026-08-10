@@ -1,5 +1,26 @@
 # 更新日志
 
+## v3.6.0 - 2026-08-11
+
+### 卡比真格攻略 Wiki
+
+- 新增第三个查询来源：[星のカービィ 真 ボスバトル攻略Wiki](https://seesaawiki.jp/kirby_shinkaku/)。使用 `卡比真格 [页面名]` 查询真格斗、Boss、能力和实机攻略资料；支持 `卡比真格章节` 列出日文栏目，以及 `卡比真格 页面名 | 日文栏目名` 只读取指定栏目。
+- 新增 `卡比真格名称 [术语]`，读取站点的日英术语对照，用于从英文角色、Boss 或能力名定位日文攻略页面。对照仅作检索线索，不声明为官方中文译名。
+- 支持英文、日文、图鉴中文名称和引用 Bot 盟友消息查询；引用时优先使用盟友的英文 `page_title`，多个同名或版本页面会先列出候选项，避免错误匹配。
+- 新增 LLM 只读工具 `kirby_catalog_lookup_shinkaku` 与 `kirby_catalog_lookup_shinkaku_terms`。工具不会发群消息、修改图鉴或消耗抽取次数；页面工具默认返回原始日文，避免 LLM 工具调用嵌套翻译。
+- 新增 `shinkaku_*` 配置组：可控制启用状态、首图、详细攻略、普通消息/合并转发/卡片、卡片模板、LLM 日文翻译、超时和缓存。
+
+### Seesaa 中转兼容
+
+- 现有 `cloudflare_worker/wikirby_proxy.js` 无需新建 Worker 即可增加真格攻略路由；仍使用同一个 `WIKIRBY_PROXY_TOKEN`，严格限制在 Seesaa 的目标页面、站内搜索和该站图片路径。
+- 真格攻略优先直连，只有遭遇 `403`、`429`、网络超时或可重试服务器错误才走 Worker；`shinkaku_proxy_url` 与 `shinkaku_proxy_token` 留空时自动复用 WiKirby 的地址和密钥。
+- 修复 Seesaa 日文搜索使用 EUC-JP 时在 Worker 转发中可能被 UTF-8 重编码的问题，中转搜索现在保留上游原始查询字节。
+
+### 验证与文档
+
+- 新增 EUC-JP URL、Worker 回退、原始搜索编码、日英术语精确匹配、HTML 分栏和表格解析、命令别名、章节模式与 LLM 工具测试。
+- README、Worker 部署说明和第三方资料声明已补充真格攻略 Wiki 的用途、命令、配置、中转测试与归属说明。
+
 ## v3.5.8 - 2026-08-10
 
 ### Kirby Fandom Worker 失败中转

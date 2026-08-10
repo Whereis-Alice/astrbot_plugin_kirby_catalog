@@ -1,10 +1,11 @@
-# WiKirby / Kirby Fandom Cloudflare Worker 中转
+# 星之卡比百科 Cloudflare Worker 中转
 
-这个 Worker 可同时为 WiKirby 与 Kirby Fandom 提供只读中转。它不是开放代理：只接受 `GET`、必须携带 Bearer 密钥，并只允许下列固定资源：
+这个 Worker 可同时为 WiKirby、Kirby Fandom 与真格攻略 Wiki 提供只读中转。它不是开放代理：只接受 `GET`、必须携带 Bearer 密钥，并只允许下列固定资源：
 
 - WiKirby 的 MediaWiki API、REST API、raw 页面与 CDN 图片；
 - `kirby.fandom.com/api.php`；
 - Kirby Fandom 的首图 CDN：`static.wikia.nocookie.net`、`vignette.wikia.nocookie.net` 与受限的 `kirby.fandom.com/images/` 路径。
+- 真格攻略 Wiki 的 `/kirby_shinkaku/d/` 页面、`/kirby_shinkaku/search` 站内搜索，以及 `image01` 至 `image09.seesaawiki.jp` 上受限的该站点首图路径。
 
 未带 `site` 的旧请求默认按 WiKirby 处理，因此已部署的 WiKirby 中转可以直接原地升级，无需新建 Worker 或更换密钥。
 
@@ -41,15 +42,23 @@ curl -i \
   'https://你的-worker.workers.dev/?site=fandom&path=%2Fapi.php&action=query&format=json&formatversion=2&titles=Kirby'
 ```
 
-两个请求均应返回 `HTTP/2 200`，并包含对应页面标题。若 Worker 自己也收到 `403`，表示上游站点同样拒绝 Cloudflare Worker 出口；这时请降低请求频率、等待后重试，或联系上游站点确认可用访问方式。
+最后测试真格攻略 Wiki。日文搜索参数采用 EUC-JP，因此建议直接复制下面的页面请求；它应返回 HTML 页面：
+
+```bash
+curl -i \
+  -H 'Authorization: Bearer 你的密钥' \
+  'https://你的-worker.workers.dev/?site=shinkaku&path=%2Fkirby_shinkaku%2Fd%2F%25A5%25DE%25A5%25DB%25A5%25ED%25A5%25A2EX'
+```
+
+三个请求均应返回 `HTTP/2 200`，并包含对应页面标题。若 Worker 自己也收到 `403`，表示上游站点同样拒绝 Cloudflare Worker 出口；这时请降低请求频率、等待后重试，或联系上游站点确认可用访问方式。
 
 ## AstrBot 插件配置
 
 ### 已配置 WiKirby Worker
 
-更新 Worker 代码后，通常无需新增配置。Fandom 的 `fandom_proxy_url`（“可选 Fandom Cloudflare Worker 中转地址”）和 `fandom_proxy_token`（“Fandom Cloudflare Worker 中转密钥”）留空即可，插件会自动复用已有的 WiKirby Worker 地址与密钥。
+更新 Worker 代码后，通常无需新增配置。Fandom 的 `fandom_proxy_url`（“可选 Fandom Cloudflare Worker 中转地址”）和 `fandom_proxy_token`（“Fandom Cloudflare Worker 中转密钥”）留空即可；真格攻略的 `shinkaku_proxy_url`（“可选真格攻略 Cloudflare Worker 中转地址”）和 `shinkaku_proxy_token`（“真格攻略 Cloudflare Worker 中转密钥”）也保持留空。插件会自动复用已有的 WiKirby Worker 地址与密钥。
 
-Fandom 始终先直连；只有遇到 `403`、`429`、可重试的服务器错误或网络失败时，才通过 Worker 重试。一次中转成功后，插件会在短时间内优先使用该中转，避免一次查询中的多个 API 请求反复直连失败。首图下载也遵循相同规则。
+Fandom 与真格攻略始终先直连；只有遇到 `403`、`429`、可重试的服务器错误或网络失败时，才通过 Worker 重试。一次中转成功后，插件会在短时间内优先使用该中转，避免一次查询中的多个请求反复直连失败。首图下载也遵循相同规则。真格攻略搜索会由插件把原始 EUC-JP 查询串封装在受控字段中，Worker 再原样恢复，不会用 UTF-8 重编码日文检索词。
 
 ### 使用单独的 Fandom Worker
 
@@ -65,4 +74,18 @@ Fandom 始终先直连；只有遇到 `403`、`429`、可重试的服务器错�
 卡比F Driblee
 ```
 
-使用同一个 Worker 时，WiKirby 和 Fandom 共用缓存策略，但缓存键包含完整上游地址，彼此不会混淆。
+### 使用单独的真格攻略 Worker
+
+若希望分开部署，可在 AstrBot 的“卡比真格攻略 Wiki 查询设置”填写：
+
+- `shinkaku_proxy_url`（“可选真格攻略 Cloudflare Worker 中转地址”）：Worker 根地址，不要添加页面路径；
+- `shinkaku_proxy_token`（“真格攻略 Cloudflare Worker 中转密钥”）：该 Worker 的 `WIKIRBY_PROXY_TOKEN`。
+
+保存后重载插件，测试：
+
+```text
+卡比真格 Magolor EX
+卡比真格章节 マホロアEX
+```
+
+使用同一个 Worker 时，三种 Wiki 共用缓存策略，但缓存键包含完整上游地址和路径，彼此不会混淆。

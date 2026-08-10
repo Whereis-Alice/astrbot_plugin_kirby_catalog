@@ -29,9 +29,13 @@ names are trademarks or copyrights of their respective owners.
 
 ## Online encyclopedia queries
 
-The plugin can query WiKirby and [Kirby Wiki | Fandom](https://kirby.fandom.com/)
+The plugin can query WiKirby, [Kirby Wiki | Fandom](https://kirby.fandom.com/),
+and [星のカービィ 真 ボスバトル攻略Wiki](https://seesaawiki.jp/kirby_shinkaku/)
 at runtime. Those responses remain subject to the source site's terms and
-content license. Fandom article content is not bundled in this repository.
+content license. Fandom and Seesaa Wiki article content, tables, and images are
+not bundled in this repository. The Seesaa source is used only for user-initiated
+read-only lookup of publicly available Boss Battle guide pages and its English
+Corner terminology table.
 
 ## Lucide icons
 

@@ -552,6 +552,100 @@
       }
     }
   },
+  "shinkaku_settings": {
+    "description": "卡比真格攻略 Wiki 查询设置",
+    "type": "object",
+    "items": {
+      "shinkaku_enabled": {
+        "description": "启用卡比真格攻略 Wiki 查询",
+        "type": "bool",
+        "default": true,
+        "hint": "读取星之卡比真 Boss Battle 攻略 Wiki 的公开攻略资料；不影响图鉴、抽取和群内解锁数据。"
+      },
+      "shinkaku_show_image": {
+        "description": "真格攻略回复显示页面首图",
+        "type": "bool",
+        "default": true,
+        "hint": "只会使用该攻略 Wiki 页面内的图片；下载失败时仍会正常发送文字或卡片。"
+      },
+      "shinkaku_show_details": {
+        "description": "显示完整攻略栏目和实机记录",
+        "type": "bool",
+        "default": true,
+        "hint": "关闭后只显示页面定位和来源；通过“卡比真格 页面名 | 日文栏目名”指定栏目时仍会读取该栏目。"
+      },
+      "shinkaku_output_mode": {
+        "description": "真格攻略回复形式",
+        "type": "string",
+        "options": [
+          "普通消息",
+          "合并转发",
+          "仅百科卡片",
+          "百科文字+卡片",
+          "文字+卡片合并转发"
+        ],
+        "default": "合并转发",
+        "hint": "真格攻略常含长表格和能力实机记录，默认合并转发以避免刷屏。卡片沿用全局百科卡片分页与图片安全阈值。"
+      },
+      "shinkaku_card_template": {
+        "description": "真格攻略卡片模板",
+        "type": "string",
+        "options": [
+          "梦之泉",
+          "卡比粉彩",
+          "瓦豆鲁迪",
+          "星际档案"
+        ],
+        "default": "星际档案"
+      },
+      "shinkaku_translate_enabled": {
+        "description": "使用 LLM 将真格攻略日文翻译成简体中文",
+        "type": "bool",
+        "default": false,
+        "hint": "开启后会使用 AstrBot 原生文本模型翻译攻略栏目和表格内容；内容很长时会增加等待时间与模型用量。翻译失败会保留日文原文。"
+      },
+      "shinkaku_translate_provider_id": {
+        "description": "真格攻略翻译使用的模型提供商",
+        "type": "string",
+        "_special": "select_provider",
+        "default": "",
+        "hint": "留空时使用当前聊天会话的 AstrBot 文本模型。"
+      },
+      "shinkaku_site_url": {
+        "description": "真格攻略 Wiki 站点地址",
+        "type": "string",
+        "default": "https://seesaawiki.jp/kirby_shinkaku",
+        "hint": "通常无需修改。请填写站点根地址，不要填写 /d/页面名 或 /search。"
+      },
+      "shinkaku_timeout_seconds": {
+        "description": "真格攻略请求超时时间（秒）",
+        "type": "float",
+        "default": 15,
+        "min": 2,
+        "max": 60
+      },
+      "shinkaku_cache_ttl_seconds": {
+        "description": "真格攻略查询缓存时间（秒）",
+        "type": "int",
+        "default": 3600,
+        "min": 0,
+        "max": 604800,
+        "hint": "包括攻略页面、站内搜索结果和日英用语对照表。设为 0 可关闭插件进程内缓存。"
+      },
+      "shinkaku_proxy_url": {
+        "description": "可选真格攻略 Cloudflare Worker 中转地址",
+        "type": "string",
+        "default": "",
+        "hint": "留空时自动复用 WiKirby Worker 地址。真格攻略先直连，遇到 403、429、超时、网络错误或可重试服务器错误才改走中转。填写 Worker 根地址，不要添加页面路径。"
+      },
+      "shinkaku_proxy_token": {
+        "description": "真格攻略 Cloudflare Worker 中转密钥",
+        "type": "string",
+        "default": "",
+        "hint": "对应 Worker 的 WIKIRBY_PROXY_TOKEN。留空时自动复用 WiKirby 中转密钥；只保存在本机配置中，不要提交到公开仓库。"
+      }
+    }
+  },
   "data_settings": {
     "description": "数据兼容设置",
     "type": "object",

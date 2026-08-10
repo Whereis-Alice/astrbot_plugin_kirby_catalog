@@ -4,7 +4,7 @@
 
 面向 AstrBot 群聊的星之卡比盟友抽取、收藏图鉴和百科查询插件。
 
-插件以“年代编号 + 规范名称 + 本地素材”为核心管理盟友，适合数百张以上、仍会持续扩充的素材库。普通角色、卡比能力、特殊形态、EX 版本和其他经过核验的变体都可以作为独立盟友计入图鉴、个人进度与排行榜。1353 项规范图鉴均附有中英文名称、首次登场作品和简体中文简介；插件同时支持每日抽取、猜盟友、引用修改资料，以及 WiKirby 和 Kirby Wiki | Fandom 双百科查询。
+插件以“年代编号 + 规范名称 + 本地素材”为核心管理盟友，适合数百张以上、仍会持续扩充的素材库。普通角色、卡比能力、特殊形态、EX 版本和其他经过核验的变体都可以作为独立盟友计入图鉴、个人进度与排行榜。1353 项规范图鉴均附有中英文名称、首次登场作品和简体中文简介；插件同时支持每日抽取、猜盟友、引用修改资料，以及 WiKirby、Kirby Wiki | Fandom 与真格攻略 Wiki 三种查询来源。
 
 项目仓库：[Whereis-Alice/astrbot_plugin_kirby_catalog](https://github.com/Whereis-Alice/astrbot_plugin_kirby_catalog)
 
@@ -34,6 +34,7 @@
 | 互动玩法 | 中英文猜盟友、引用图片直接作答、超时或猜错公布答案、随机盟友 |
 | WiKirby | 页面简介、资料栏目、多语言名称、首图、LLM 翻译和百科卡片 |
 | Kirby Fandom | 简介、信息框、分类、正文栏目、社区页面名称、相关语录、网页式招式表和首图 |
+| 真格攻略 Wiki | 真 Boss Battle 的日文 Boss、能力、行动规律、攻略法、防御变化、实机记录与日英术语对照；支持可选 LLM 翻译 |
 | 发送稳定性 | 超长百科语义分页、图片尺寸预检、JPEG 标准化，以及可回退的 NapCat 本地文件直发 |
 | 数据兼容 | v3 规范素材迁移、迁移报告、原子替换、自动备份，以及上游 AW 数据增量导入 |
 
@@ -370,7 +371,7 @@ AstrBot 的“未来任务”可以每天自动让爱丽丝抽盟友。创建 Ac
 
 ## 百科查询
 
-插件提供两个彼此独立的英文卡比百科来源。查询失败只会影响当前百科回复，不会影响抽取和图鉴数据。
+插件提供三个彼此独立的卡比资料来源。查询失败只会影响当前百科回复，不会影响抽取和图鉴数据。
 
 ### 来源区别
 
@@ -378,6 +379,7 @@ AstrBot 的“未来任务”可以每天自动让爱丽丝抽盟友。创建 Ac
 | --- | --- | --- |
 | `卡比百科` | [WiKirby](https://wikirby.com/wiki/Kirby_Wiki) | 结构化资料、简介、出现信息、趣闻和页面记录的多语言名称 |
 | `卡比F` | [Kirby Wiki \| Fandom](https://kirby.fandom.com/wiki/Kirby_Wiki) | 作品经历、外观、性格、信息框、相关语录、招式与按章节读取的长篇正文 |
+| `卡比真格` | [星のカービィ 真 ボスバトル攻略Wiki](https://seesaawiki.jp/kirby_shinkaku/) | 真格斗、Boss 行动规律、攻略法、防御力变化、能力实机记录与日英用语 |
 
 > [!CAUTION]
 > `卡比F名称` 返回的是不同语言 Fandom 社区的页面标题，只能作为检索线索，不等同于任天堂官方译名。需要核对官方译名时，请优先使用 `卡比百科名称`，并以任天堂正式发布内容为最终依据。
@@ -404,6 +406,21 @@ AstrBot 的“未来任务”可以每天自动让爱丽丝抽盟友。创建 Ac
 
 `卡比F` 同样支持引用盟友消息查询，并与 WiKirby 命令共用“优先英文角色名、忽略作品前缀”的解析规则。
 
+### 真格攻略 Wiki 命令
+
+真格攻略 Wiki 是日文 Seesaa Wiki，专注于真 Boss Battle 与相关 Boss、能力的实机攻略。它不是任天堂官方资料库，日英术语对照仅用于帮助检索日文页面，不代表官方中文译名。
+
+| 命令 | 作用 |
+| --- | --- |
+| `卡比真格 [页面名]` | 查询 Boss、能力或攻略页面；可使用英文、日文或图鉴中的中文名称检索 |
+| `卡比真格章节 [页面名]` | 列出页面可查询的日文攻略栏目 |
+| `卡比真格 [页面名] \| [日文栏目名]` | 只读取指定栏目，例如行动规律或攻略法 |
+| `卡比真格名称 [术语]` | 查询真格 Wiki 收录的日英术语对照 |
+
+兼容别名：`卡比真格斗`、`卡比真格Wiki`、`真格攻略`、`真格Wiki`，以及它们的 `名称`、`名`、`章节`后缀。命令中的 `Wiki` 不区分大小写。
+
+与另外两部百科一样，引用 Bot 发出的盟友消息后直接发送 `卡比真格`，插件会优先使用该盟友的英文 `page_title` 查询；无法唯一定位页面时会列出候选日文页面名，避免误把不同作品的 Boss 版本混在一起。
+
 ### 查询示例
 
 ```text
@@ -416,13 +433,18 @@ AstrBot 的“未来任务”可以每天自动让爱丽丝抽盟友。创建 Ac
 卡比F Artist | Techniques
 卡比F Blade Knight | Related Quotes
 卡比F名称 Spinni
+
+卡比真格 Magolor EX
+卡比真格章节 マホロアEX
+卡比真格 マホロアEX | 行動パターン
+卡比真格名称 Meta Knight
 ```
 
 查询词对应多个页面时，插件会列出候选项，避免把角色、关卡、作品或续作页面混在一起。
 
 ### 回复形式和卡片
 
-WiKirby 与 Kirby Fandom 都支持以下回复形式：
+WiKirby、Kirby Fandom 与真格攻略 Wiki 都支持以下回复形式：
 
 - 普通消息；
 - 合并转发；
@@ -459,10 +481,12 @@ Kirby Fandom 的特殊栏目会保留网页结构：`Related Quotes` 中每条�
 | `kirby_catalog_lookup_official_names` | 查询 WiKirby 多语言名称 |
 | `kirby_catalog_lookup_fandom` | 查询 Kirby Fandom 页面资料或指定章节 |
 | `kirby_catalog_lookup_fandom_names` | 查询 Fandom 跨语言社区页面名称 |
+| `kirby_catalog_lookup_shinkaku` | 查询真格攻略 Wiki 的 Boss、能力和指定日文攻略栏目 |
+| `kirby_catalog_lookup_shinkaku_terms` | 查询真格攻略 Wiki 的日英术语对照，辅助定位日文页面 |
 | `kirby_catalog_draw_bot_ally` | 使用 Bot 独立身份抽取当前群当天盟友，立即发送文字和素材图片，并让视觉 LLM 查看同图后回复 |
 | `kirby_catalog_view_bot_gallery` | 查看 Bot 在当前群的个人盟友图鉴，立即发送图鉴页，并让视觉 LLM 查看同页后回复 |
 
-前四个百科工具只读，不会发送群消息或修改图鉴。`kirby_catalog_draw_bot_ally` 会写入 Bot 自己在当前群的当天盟友和解锁记录，但不会占用提问者的次数或修改群友数据。`kirby_catalog_view_bot_gallery` 只读取这份当前群 Bot 图鉴，不会消耗次数或解锁新条目。两个 Bot 工具都会主动向当前群发送结果；默认还会把同一份轻量化图片交给视觉 LLM，使爱丽丝能看图后自然回应，但不会重复发送相同内容。
+前六个百科工具只读，不会发送群消息或修改图鉴；真格攻略正文会保留日文，避免工具调用中再次嵌套 LLM 翻译。`kirby_catalog_draw_bot_ally` 会写入 Bot 自己在当前群的当天盟友和解锁记录，但不会占用提问者的次数或修改群友数据。`kirby_catalog_view_bot_gallery` 只读取这份当前群 Bot 图鉴，不会消耗次数或解锁新条目。两个 Bot 工具都会主动向当前群发送结果；默认还会把同一份轻量化图片交给视觉 LLM，使爱丽丝能看图后自然回应，但不会重复发送相同内容。
 
 ## 管理员命令
 
@@ -645,6 +669,7 @@ Kirby： Squeak Squad.怪侠洛切团（Squeaks）.jpg
 | 图片发送与长卡片 | NapCat 本地文件直发、共享目录、失败重试、JPEG 标准化、群图鉴高度、百科分页与图片安全阈值 |
 | WiKirby | 启用状态、首图、详细资料、回复形式、卡片模板、LLM 翻译、缓存和 Worker 中转 |
 | Kirby Fandom | 启用状态、首图、详细栏目、回复形式、卡片模板、LLM 翻译、缓存和 Worker 失败中转 |
+| 真格攻略 Wiki | 启用状态、首图、完整攻略栏目、回复形式、卡片模板、日文 LLM 翻译、缓存和 Worker 失败中转 |
 | 数据兼容 | 旧素材图床地址、上游 AW 或自定义兼容目录 `legacy_data_dir` |
 
 ### 盟友消息编排
@@ -703,7 +728,7 @@ AstrBot v4.26.8 的 aiocqhttp 适配器会把 `Image` 组件统一转换为 base
 | `gallery_max_height_px` | `7600` | 群或个人图鉴超过此高度才分页；`0` 表示关闭 |
 | `wiki_card_auto_paginate` | 开启 | 只分页真正过长的百科卡片 |
 | `wiki_card_page_line_budget` | `110` | 每页内容预算，可配置范围 `60-3000`；复杂页面可从 `500` 或 `600` 开始测试 |
-| `wiki_card_max_width_px` / `wiki_card_max_height_px` | `2160` / `8000` | WiKirby、Kirby Fandom 和简介卡片的独立尺寸保护 |
+| `wiki_card_max_width_px` / `wiki_card_max_height_px` | `2160` / `8000` | WiKirby、Kirby Fandom、真格攻略 Wiki 和简介卡片的独立尺寸保护 |
 | `wiki_card_max_megapixels` / `wiki_card_max_bytes_mb` | `18` / `8` | 百科卡片的独立总像素与文件大小保护 |
 | `wiki_card_resolution` | `高清（推荐）` | 标准、高清或超清 |
 | `wiki_card_image_format` | `JPEG` | JPEG 体积更小；PNG 保留无损文字边缘 |
@@ -725,6 +750,7 @@ AstrBot 与 NapCat 运行在同一系统、NapCat 能读取 AstrBot 文件路径
 - 翻译失败会自动保留原文；
 - 相同来源、相同 Provider 和相同原文的译文会在插件进程内缓存，缓存时间复用对应百科的 TTL 配置；重载插件后缓存会清空；
 - Fandom 语录和招式使用结构化 JSON 翻译，LLM 可以翻译操作中的自然语言，但按键、方向、加号、平台对应关系和换行由插件校验；布局和伤害数字不交给 LLM 决定；
+- 真格攻略的日文正文和表格由 `shinkaku_translate_enabled` 单独控制，默认关闭；开启后会增加模型用量和等待时间，翻译失败会保留日文原文；
 - LLM 工具调用本身不会再次触发嵌套翻译。
 
 ### 合并转发稳定性
@@ -739,11 +765,11 @@ AstrBot 与 NapCat 运行在同一系统、NapCat 能读取 AstrBot 文件路径
 | `forward_retry_delay_seconds` | `0.5` | 单节点转发重试间隔 |
 | `forward_batch_delay_seconds` | `0.2` | 多条转发之间的发送间隔；设为 `0` 更快，但连续上传稳定性可能降低 |
 
-这些设置由 WiKirby、Kirby Fandom 和 `查看简介` 的合并转发共用。普通短正文和一张图片仍会保持为一条转发；只有长正文、多卡片或节点超限时才拆分。通常应保持默认值：把字符数调得过大会重新形成超大节点，调得过小则会制造过多节点，同样可能触发 QQ 或 NapCat 的限制。
+这些设置由 WiKirby、Kirby Fandom、真格攻略 Wiki 和 `查看简介` 的合并转发共用。普通短正文和一张图片仍会保持为一条转发；只有长正文、多卡片或节点超限时才拆分。通常应保持默认值：把字符数调得过大会重新形成超大节点，调得过小则会制造过多节点，同样可能触发 QQ 或 NapCat 的限制。
 
-### WiKirby / Kirby Fandom Cloudflare Worker
+### 百科 Cloudflare Worker
 
-部分云服务器出口 IP 访问 WiKirby 或 Kirby Fandom 时会收到 HTTP 403、429 或网络错误。WiKirby 会尝试官方 API、备用域名、REST API 和静态页面回退；Fandom 会优先直连自己的 API，在 WAF、限流、服务器错误或网络失败时才尝试中转。
+部分云服务器出口 IP 访问 WiKirby、Kirby Fandom 或 Seesaa 真格攻略 Wiki 时会收到 HTTP 403、429 或网络错误。WiKirby 会尝试官方 API、备用域名、REST API 和静态页面回退；Fandom 与真格攻略会优先直连，在 WAF、限流、服务器错误或网络失败时才尝试中转。
 
 如果所有官方入口都不可用，可以部署可选中转：
 
@@ -752,7 +778,7 @@ AstrBot 与 NapCat 运行在同一系统、NapCat 能读取 AstrBot 文件路径
 
 Worker 必须设置 `WIKIRBY_PROXY_TOKEN`。请勿把真实密钥提交到公开仓库、Issue 或日志截图中。
 
-更新 Worker 后，它会通过严格白名单同时支持 WiKirby API/CDN 与 Kirby Fandom API/首图 CDN；不会转发到任意 URL。Fandom 的 `fandom_proxy_url`、`fandom_proxy_token` 留空时会自动复用 WiKirby 的地址和密钥，也可单独填写另一套 Worker。详细的升级、测试与安全边界见 [Worker 部署说明](cloudflare_worker/README.md)。
+更新 Worker 后，它会通过严格白名单同时支持 WiKirby API/CDN、Kirby Fandom API/首图 CDN，以及真格攻略 Wiki 的页面、站内搜索和首图；不会转发到任意 URL。Fandom 与真格攻略的 `*_proxy_url`、`*_proxy_token` 留空时都会自动复用 WiKirby 的地址和密钥，也可单独填写另一套 Worker。真格攻略的站内搜索会保留 EUC-JP 原始编码，避免日文检索词在中转时损坏。详细的升级、测试与安全边界见 [Worker 部署说明](cloudflare_worker/README.md)。
 
 ## 数据规则
 
@@ -843,6 +869,10 @@ Worker 必须设置 `WIKIRBY_PROXY_TOKEN`。请勿把真实密钥提交到公开
 
 Fandom 同样可能限制云服务器出口 IP 或临时限流。先更新同一个 Worker 至仓库中的最新代码；若已配置 WiKirby Worker，Fandom 默认会自动复用它。插件会先直连，只有失败时才中转；首图下载也会走同一兜底。若 Worker 也失败，请等待限流恢复或检查上游站点的访问限制。
 
+### 为什么卡比真格查询失败或日文搜索没有结果？
+
+真格攻略 Wiki 是 Seesaa 的日文 HTML 站点，站内搜索使用 EUC-JP 编码。先更新插件和同一个 Worker 至本版本的完整代码；若已配置 WiKirby Worker，`shinkaku_proxy_url` 与 `shinkaku_proxy_token` 保持留空即可自动复用。插件会先直连，仅在 `403`、`429`、网络超时或可重试服务器错误时中转。仍无法检索时，优先尝试页面显示的日文名，或先执行 `卡比真格名称 英文名` 查找日文线索；不同作品或版本的 Boss 可能会返回多个候选页面。
+
 ### Fandom 名称可以当作官方中文名吗？
 
 不可以。Fandom 名称来自社区页面标题。请使用 `卡比百科名称` 辅助核对，并以任天堂正式发布内容为准。
@@ -873,13 +903,15 @@ python -m unittest discover -s tests -t .. -q
 2. [Rinco304/AnimeWife](https://github.com/Rinco304/AnimeWife)：早期功能灵感来源。
 3. [WiKirby](https://wikirby.com/wiki/Kirby_Wiki)：`卡比百科` 及内置图鉴简介的资料来源和 MediaWiki API 服务。
 4. [Kirby Wiki | Fandom](https://kirby.fandom.com/wiki/Kirby_Wiki)：`卡比F` 的资料来源和 MediaWiki API 服务。
-5. [Lucide](https://lucide.dev/)：图鉴管理台使用的本地图标库。
+5. [星のカービィ 真 ボスバトル攻略Wiki](https://seesaawiki.jp/kirby_shinkaku/)：`卡比真格` 的日文攻略资料与日英术语对照来源。
+6. [Lucide](https://lucide.dev/)：图鉴管理台使用的本地图标库。
 
 感谢上游作者、百科编辑者及所有贡献者的工作。
 
 - 本项目代码采用 [MIT License](LICENSE)。
 - 内置简介是 WiKirby 页面引语和导语的简体中文翻译及术语规范化派生内容，按 GNU Free Documentation License 1.3 或更高版本提供。每条记录保留来源页面与修订号，完整说明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 - Kirby Wiki | Fandom 的站点 API 标注内容许可为 CC BY-SA。
+- 真格攻略 Wiki 仅在用户查询时读取公开页面，不打包其正文、表格或图片；返回内容仍受原站点的使用条款与版权规则约束。
 - 管理台内置 Lucide `v1.28.0`，按 ISC License 提供；其中源自 Feather 的图标保留 MIT License，完整声明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 - 百科页面图片、盟友素材和星之卡比相关角色版权归各自权利人所有。
 
