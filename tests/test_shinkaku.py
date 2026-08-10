@@ -128,6 +128,26 @@ class ShinkakuClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("%EF%BF%BD", proxy_request.full_url)
         self.assertEqual(proxy_request.headers["Authorization"], "Bearer test-token")
 
+    async def test_preferred_worker_404_stays_a_normal_missing_page(self):
+        client = KirbyShinkakuClient(
+            cache_ttl_seconds=0,
+            proxy_url="https://kirby-proxy.example.workers.dev",
+            proxy_token="test-token",
+        )
+        client._proxy_preferred_until = 10**12
+        target = client._page_url("Magolor EX")
+        proxy_url = client._proxy_url_for(target, image=False)
+        missing = HTTPError(proxy_url, 404, "Not Found", {}, BytesIO())
+
+        with patch(
+            "astrbot_plugin_kirby_catalog.kirby_shinkaku.urlopen",
+            side_effect=[missing],
+        ) as open_url:
+            page = client._get_page_sync("Magolor EX")
+
+        self.assertIsNone(page)
+        self.assertEqual(open_url.call_count, 1)
+
     async def test_page_parser_extracts_sections_tables_and_first_image(self):
         client = KirbyShinkakuClient(cache_ttl_seconds=0)
         html = """

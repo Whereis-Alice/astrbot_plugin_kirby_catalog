@@ -305,7 +305,16 @@ class KirbyShinkakuClient:
         if proxy_url and time.monotonic() < self._proxy_preferred_until:
             try:
                 return self._read_url_sync(proxy_url, proxy_headers)
-            except (HTTPError, URLError, TimeoutError):
+            except HTTPError as proxy_error:
+                self._proxy_preferred_until = 0.0
+                # A preferred Worker is an equivalent read-only upstream. Its
+                # 404 is definitive for this page title, so keep it instead of
+                # retrying a cloud-server direct request that may be blocked
+                # with 403 and hide the normal "not found" result.
+                if proxy_error.code == 404:
+                    raise
+                proxy_failed = True
+            except (URLError, TimeoutError):
                 self._proxy_preferred_until = 0.0
                 proxy_failed = True
 
