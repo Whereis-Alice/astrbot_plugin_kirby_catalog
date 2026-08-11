@@ -1,3 +1,4 @@
+import json
 import unittest
 from io import BytesIO
 from pathlib import Path
@@ -11,6 +12,11 @@ import astrbot.api.message_components as Comp
 from jinja2 import BaseLoader, Environment
 
 from astrbot_plugin_kirby_catalog.main import KirbyCatalogPlugin
+from astrbot_plugin_kirby_catalog.terminology import (
+    KirbyTerminologyStore,
+    TerminologyEntry,
+    terminology_document,
+)
 from astrbot_plugin_kirby_catalog.wikirby import (
     WikirbyClient,
     WikirbyError,
@@ -79,6 +85,19 @@ class FakeTranslationContext:
     async def llm_generate(self, **kwargs):
         self.calls.append(("generate", kwargs))
         return SimpleNamespace(completion_text="这是一段中文简介。")
+
+
+class TerminologyTranslationContext:
+    def __init__(self):
+        self.calls = []
+
+    async def get_current_chat_provider_id(self, _umo):
+        return "provider"
+
+    async def llm_generate(self, **kwargs):
+        self.calls.append(kwargs)
+        source = kwargs["prompt"].split("原文：\n", 1)[1]
+        return SimpleNamespace(completion_text=source.replace(" met ", " 遇见 "))
 
 
 class FakeResponse:
@@ -947,6 +966,65 @@ class WikirbyCommandTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(second, first)
         generate_calls = [call for call in plugin.context.calls if call[0] == "generate"]
         self.assertEqual(len(generate_calls), 1)
+
+    async def test_translation_protects_and_restores_terminology(self):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            bundled_path = root / "terms.json"
+            bundled_path.write_text(
+                json.dumps(
+                    terminology_document(
+                        [
+                            TerminologyEntry.from_mapping(
+                                {
+                                    "term_id": "character:kirby",
+                                    "category": "character",
+                                    "zh_cn": "卡比",
+                                    "en": "Kirby",
+                                    "ja": "カービィ",
+                                    "zh_status": "official",
+                                }
+                            ),
+                            TerminologyEntry.from_mapping(
+                                {
+                                    "term_id": "character:meta-knight",
+                                    "category": "character",
+                                    "zh_cn": "魅塔骑士",
+                                    "en": "Meta Knight",
+                                    "ja": "メタナイト",
+                                    "zh_status": "official",
+                                }
+                            ),
+                        ]
+                    ),
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            plugin = KirbyCatalogPlugin.__new__(KirbyCatalogPlugin)
+            plugin.config = {
+                "wikirby_translate_provider_id": "provider",
+                "wikirby_cache_ttl_seconds": 3600,
+                "terminology_enabled": True,
+                "terminology_strict_placeholders": True,
+            }
+            plugin.terminology = KirbyTerminologyStore(
+                bundled_path, root / "overrides.json"
+            )
+            plugin.context = TerminologyTranslationContext()
+
+            result = await plugin._wiki_translate_text(
+                FakeEvent("卡比百科 Kirby"),
+                "Kirby met Meta Knight.",
+                enabled=True,
+                provider_key="wikirby_translate_provider_id",
+                source_name="WiKirby",
+            )
+
+            self.assertIn("卡比（Kirby）", result)
+            self.assertIn("魅塔骑士（Meta Knight）", result)
+            self.assertIn("遇见", result)
+            self.assertIn("__KTERM_", plugin.context.calls[0]["prompt"])
 
     async def test_card_mode_uses_astrbot_html_renderer(self):
         plugin = KirbyCatalogPlugin.__new__(KirbyCatalogPlugin)

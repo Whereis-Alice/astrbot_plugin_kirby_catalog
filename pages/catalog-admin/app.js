@@ -19,6 +19,15 @@ const state = {
   },
   activeEntry: null,
   entryDescriptionDirty: false,
+  terminology: { items: [], page: 1, pages: 1, total: 0, page_size: 30, categories: [] },
+  terminologyFilters: {
+    query: "",
+    category: "",
+    origin: "",
+    status: "all",
+    sort: "category",
+  },
+  activeTerminology: null,
   groups: { items: [], page: 1, pages: 1, total: 0, page_size: 30 },
   groupQuery: "",
   selectedGroup: "",
@@ -30,7 +39,7 @@ const state = {
   trash: [],
   audit: [],
   addUpload: null,
-  requestSequence: { entries: 0, groups: 0, users: 0, current: 0, unlock: 0 },
+  requestSequence: { entries: 0, groups: 0, users: 0, terminology: 0, current: 0, unlock: 0 },
 };
 
 const numberFormat = new Intl.NumberFormat("zh-CN");
@@ -50,6 +59,9 @@ const actionLabels = {
   "group.unlock.add": "增加解锁",
   "group.unlock.remove": "移除解锁",
   "group.draws.reset": "重置群抽取次数",
+  "terminology.update": "更新名称库术语",
+  "terminology.restore": "恢复名称库内置版本",
+  "terminology.import": "导入名称库",
 };
 
 const kindLabels = {
@@ -62,6 +74,33 @@ const kindLabels = {
   phase: "阶段形态",
   manual: "手动新增",
   legacy: "历史条目",
+};
+
+const terminologyCategoryLabels = {
+  character: "角色",
+  form: "形态",
+  ability: "能力",
+  work: "作品",
+  location: "地点",
+  mechanic: "机制",
+  mode: "模式",
+  title: "称号",
+  special: "专有名词",
+};
+
+const terminologyOriginLabels = {
+  bundled: "内置",
+  override: "已覆盖",
+  custom: "自定义",
+};
+
+const terminologyStatusLabels = {
+  official: "官方译名",
+  official_reused: "沿用官译",
+  project: "项目自译",
+  transliterated: "音译",
+  unchanged: "原文保留",
+  unknown: "未标注",
 };
 
 function escapeHtml(value) {
@@ -372,6 +411,7 @@ function renderOverview() {
 
   byId("recentAudit").innerHTML = renderAuditItems(summary.recent_audit || [], true) ||
     '<div class="empty-state"><strong>暂无管理操作</strong></div>';
+  renderTerminologyMetrics(summary.terminology);
   populateEntryFilters();
   refreshIcons();
 }
@@ -458,6 +498,321 @@ function renderEntries() {
   }
   renderPagination(byId("entryPagination"), state.entries, "entries");
   refreshIcons();
+}
+
+function terminologyCategoryLabel(value) {
+  return terminologyCategoryLabels[String(value || "")] || String(value || "专有名词");
+}
+
+function terminologyOriginLabel(value) {
+  return terminologyOriginLabels[String(value || "")] || String(value || "未知");
+}
+
+function terminologyListText(values) {
+  return (Array.isArray(values) ? values : []).join("\n");
+}
+
+function parseTerminologyList(value) {
+  return String(value || "")
+    .split(/[\n|]/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function renderTerminologyMetrics(stats = state.summary?.terminology) {
+  const target = byId("terminologyMetrics");
+  if (!target || !stats) return;
+  const metrics = [
+    { label: "词条总数", value: stats.entries, note: `启用 ${formatNumber(stats.enabled)}`, color: "var(--cyan)", icon: "languages" },
+    { label: "已覆盖", value: stats.overrides, note: `自定义 ${formatNumber(stats.custom)}`, color: "var(--accent)", icon: "pencil-line" },
+    { label: "缺少中文", value: stats.missing_zh, note: "优先补全显示名称", color: "var(--orange)", icon: "languages" },
+    { label: "缺少英文", value: stats.missing_en, note: "影响双语输出", color: "var(--yellow)", icon: "text" },
+    { label: "缺少日文", value: stats.missing_ja, note: "影响原文检索", color: "var(--green)", icon: "text-cursor-input" },
+    { label: "匹配冲突", value: stats.conflicts, note: "优先级决定胜出项", color: "var(--red)", icon: "triangle-alert" },
+  ];
+  target.innerHTML = metrics
+    .map(
+      (item) => `
+        <article class="metric" style="--metric-color:${item.color}">
+          <div class="metric-label">${icon(item.icon)}<span>${escapeHtml(item.label)}</span></div>
+          <strong class="metric-value">${formatNumber(item.value)}</strong>
+          <span class="metric-note">${escapeHtml(item.note)}</span>
+        </article>
+      `,
+    )
+    .join("");
+  refreshIcons();
+}
+
+function renderTerminologyFilters(categories = state.terminology.categories) {
+  const select = byId("terminologyCategoryFilter");
+  if (!select) return;
+  const selected = state.terminologyFilters.category;
+  select.innerHTML = `<option value="">全部分类</option>${(categories || [])
+    .map(
+      (category) => `<option value="${escapeHtml(category)}">${escapeHtml(terminologyCategoryLabel(category))}</option>`,
+    )
+    .join("")}`;
+  select.value = selected;
+}
+
+function renderTerminology() {
+  const body = byId("terminologyRows");
+  const empty = byId("terminologyEmpty");
+  if (!state.terminology.items.length) {
+    body.innerHTML = "";
+    empty.hidden = false;
+  } else {
+    empty.hidden = true;
+    body.innerHTML = state.terminology.items
+      .map(
+        (entry) => `
+          <tr class="is-clickable" data-term-id="${escapeHtml(entry.term_id)}" tabindex="0">
+            <td>
+              <div class="primary-cell">
+                <strong>${escapeHtml(entry.canonical_label)}</strong>
+                <span>${escapeHtml(entry.term_id)}</span>
+              </div>
+            </td>
+            <td>
+              <div class="secondary-cell terminology-languages">
+                <strong>${escapeHtml(entry.zh_cn || "未收录中文")}</strong>
+                <span>${escapeHtml(entry.en || "未收录英文")} · ${escapeHtml(entry.ja || "未收录日文")}</span>
+              </div>
+            </td>
+            <td><span class="badge info">${escapeHtml(terminologyCategoryLabel(entry.category))}</span></td>
+            <td>
+              <div class="badge-row">
+                <span class="badge ${entry.enabled ? "good" : "bad"}">${entry.enabled ? "启用" : "停用"}</span>
+                <span class="badge">优先 ${escapeHtml(entry.priority)}</span>
+                ${entry.conflict ? '<span class="badge warn">冲突</span>' : ""}
+              </div>
+            </td>
+            <td><span class="badge ${entry.origin === "bundled" ? "" : "info"}">${escapeHtml(terminologyOriginLabel(entry.origin))}</span></td>
+            <td><button class="icon-button small row-action" type="button" title="编辑术语" aria-label="编辑术语" data-open-term="${escapeHtml(entry.term_id)}">${icon("pencil")}</button></td>
+          </tr>
+        `,
+      )
+      .join("");
+  }
+  renderPagination(byId("terminologyPagination"), state.terminology, "terminology");
+  refreshIcons();
+}
+
+async function loadTerminology(page = state.terminology.page || 1) {
+  const sequence = ++state.requestSequence.terminology;
+  renderTableSkeleton(byId("terminologyRows"), 6, 8);
+  byId("terminologyEmpty").hidden = true;
+  try {
+    const data = await apiGet("admin/terminology", {
+      ...state.terminologyFilters,
+      page,
+      page_size: 30,
+    });
+    if (sequence !== state.requestSequence.terminology) return;
+    state.terminology = data;
+    renderTerminologyFilters(data.categories || []);
+    state.loaded.add("terminology");
+    renderTerminology();
+  } catch (error) {
+    if (sequence !== state.requestSequence.terminology) return;
+    byId("terminologyRows").innerHTML = "";
+    byId("terminologyEmpty").hidden = false;
+    toast("名称库加载失败", error.message, "error");
+  }
+}
+
+async function openTerminology(termId) {
+  const drawer = byId("terminologyDrawer");
+  byId("terminologyDrawerBody").innerHTML = '<div class="drawer-loading">正在读取名称库条目</div>';
+  byId("terminologyDrawerFooter").hidden = true;
+  openDrawer(drawer);
+  try {
+    state.activeTerminology = await apiGet(`admin/terminology/${encodeURIComponent(termId)}`);
+    renderTerminologyDrawer();
+  } catch (error) {
+    byId("terminologyDrawerBody").innerHTML = `<div class="empty-state"><strong>读取失败</strong><span>${escapeHtml(error.message)}</span></div>`;
+    toast("名称库条目加载失败", error.message, "error");
+  }
+}
+
+function openNewTerminology() {
+  state.activeTerminology = {
+    term_id: "",
+    category: "special",
+    zh_cn: "",
+    en: "",
+    ja: "",
+    aliases_zh: [],
+    aliases_en: [],
+    aliases_ja: [],
+    zh_status: "project",
+    sources: [],
+    notes: "",
+    priority: 100,
+    enabled: true,
+    match_case: false,
+    origin: "custom",
+    has_override: false,
+    conflicts: [],
+  };
+  renderTerminologyDrawer();
+  openDrawer(byId("terminologyDrawer"));
+}
+
+function renderTerminologyDrawer() {
+  const entry = state.activeTerminology;
+  if (!entry) return;
+  const isNew = !entry.term_id;
+  byId("terminologyDrawerTitle").textContent = isNew ? "新增名称库条目" : entry.canonical_label || entry.term_id;
+  byId("terminologyDrawerBody").innerHTML = `
+    <section class="form-section" style="padding-top:0">
+      <div class="form-section-title"><h3>基本信息</h3><span>${escapeHtml(isNew ? "保存后自动生成自定义 ID" : `${terminologyOriginLabel(entry.origin)} · ${entry.term_id}`)}</span></div>
+      <div class="form-grid two-columns">
+        <label class="field"><span>术语 ID</span><input id="termIdInput" maxlength="180" value="${escapeHtml(entry.term_id)}" ${isNew ? "" : "readonly"} placeholder="例如 character:driblee" /></label>
+        <label class="field"><span>分类</span><input id="termCategoryInput" maxlength="80" value="${escapeHtml(entry.category)}" placeholder="character / work / ability" /></label>
+      </div>
+    </section>
+    <section class="form-section">
+      <div class="form-section-title"><h3>规范名称</h3><span>输出格式为 中文（English）</span></div>
+      <div class="form-grid">
+        <label class="field"><span>简体中文</span><input id="termZhInput" maxlength="240" value="${escapeHtml(entry.zh_cn)}" /></label>
+        <label class="field"><span>English</span><input id="termEnInput" maxlength="240" value="${escapeHtml(entry.en)}" /></label>
+        <label class="field"><span>日本語</span><input id="termJaInput" maxlength="240" value="${escapeHtml(entry.ja)}" /></label>
+      </div>
+    </section>
+    <section class="form-section">
+      <div class="form-section-title"><h3>别名与来源</h3><span>每行一个，也支持 | 分隔</span></div>
+      <div class="form-grid two-columns">
+        <label class="field"><span>中文别名</span><textarea id="termAliasesZhInput" rows="4">${escapeHtml(terminologyListText(entry.aliases_zh))}</textarea></label>
+        <label class="field"><span>英文别名</span><textarea id="termAliasesEnInput" rows="4">${escapeHtml(terminologyListText(entry.aliases_en))}</textarea></label>
+        <label class="field"><span>日文别名</span><textarea id="termAliasesJaInput" rows="4">${escapeHtml(terminologyListText(entry.aliases_ja))}</textarea></label>
+        <label class="field"><span>资料来源</span><textarea id="termSourcesInput" rows="4">${escapeHtml(terminologyListText(entry.sources))}</textarea></label>
+      </div>
+    </section>
+    <section class="form-section">
+      <div class="form-section-title"><h3>匹配策略</h3><span>数值越高越优先</span></div>
+      <div class="form-grid two-columns">
+        <label class="field"><span>中文名称状态</span><select id="termStatusInput">
+          ${["official", "official_reused", "project", "transliterated", "unchanged", "unknown"].map((status) => `<option value="${status}" ${entry.zh_status === status ? "selected" : ""}>${terminologyStatusLabels[status]}</option>`).join("")}
+        </select></label>
+        <label class="field"><span>优先级</span><input id="termPriorityInput" type="number" min="-1000" max="1000" value="${escapeHtml(entry.priority)}" /></label>
+      </div>
+      <label class="check-field"><input id="termEnabledInput" type="checkbox" ${entry.enabled ? "checked" : ""} /><span>启用该条目匹配</span></label>
+      <label class="check-field"><input id="termMatchCaseInput" type="checkbox" ${entry.match_case ? "checked" : ""} /><span>英文/日文匹配区分大小写</span></label>
+    </section>
+    <section class="form-section">
+      <div class="form-section-title"><h3>维护备注</h3><span>不会发送给用户</span></div>
+      <label class="field"><textarea id="termNotesInput" maxlength="5000" rows="5">${escapeHtml(entry.notes)}</textarea></label>
+    </section>
+    ${entry.conflicts?.length ? `<section class="form-section"><div class="form-section-title"><h3>匹配冲突</h3><span class="badge warn">${entry.conflicts.length} 项</span></div><div class="conflict-list">${entry.conflicts.map((conflict) => `<div class="conflict-item"><strong>${escapeHtml(conflict.alias)}</strong><span>${escapeHtml(conflict.entries.map((item) => item.label).join(" · "))}</span></div>`).join("")}</div></section>` : ""}
+  `;
+  byId("terminologyDrawerFooter").hidden = false;
+  byId("restoreTerminologyButton").hidden = !entry.has_override;
+  byId("restoreTerminologyButton").innerHTML = entry.origin === "custom"
+    ? `${icon("trash-2")}删除自定义`
+    : `${icon("rotate-ccw")}恢复内置`;
+  refreshIcons();
+}
+
+async function saveTerminology() {
+  if (!state.activeTerminology) return;
+  const button = byId("saveTerminologyButton");
+  setButtonBusy(button, true, "保存中");
+  try {
+    state.activeTerminology = await apiPost("admin/terminology/save", {
+      term_id: byId("termIdInput").value.trim(),
+      category: byId("termCategoryInput").value.trim(),
+      zh_cn: byId("termZhInput").value.trim(),
+      en: byId("termEnInput").value.trim(),
+      ja: byId("termJaInput").value.trim(),
+      aliases_zh: parseTerminologyList(byId("termAliasesZhInput").value),
+      aliases_en: parseTerminologyList(byId("termAliasesEnInput").value),
+      aliases_ja: parseTerminologyList(byId("termAliasesJaInput").value),
+      sources: parseTerminologyList(byId("termSourcesInput").value),
+      zh_status: byId("termStatusInput").value,
+      priority: Number(byId("termPriorityInput").value || 100),
+      enabled: byId("termEnabledInput").checked,
+      match_case: byId("termMatchCaseInput").checked,
+      notes: byId("termNotesInput").value,
+    });
+    renderTerminologyDrawer();
+    await Promise.all([loadTerminology(1), refreshSummary()]);
+    toast("名称库条目已保存", state.activeTerminology.canonical_label);
+  } catch (error) {
+    toast("名称库保存失败", error.message, "error");
+  } finally {
+    setButtonBusy(button, false);
+  }
+}
+
+async function restoreTerminology() {
+  const entry = state.activeTerminology;
+  if (!entry?.term_id || !entry.has_override) return;
+  const accepted = await confirmAction({
+    title: entry.origin === "custom" ? "删除自定义名称" : "恢复内置名称",
+    message: entry.origin === "custom"
+      ? `删除自定义术语 ${entry.term_id}，该操作不会影响内置名称库。`
+      : `删除 ${entry.term_id} 的管理员覆盖，恢复插件内置名称库版本。`,
+    accept: entry.origin === "custom" ? "删除自定义" : "恢复内置",
+    tone: "warning",
+  });
+  if (!accepted) return;
+  try {
+    const result = await apiPost("admin/terminology/restore", { term_id: entry.term_id });
+    if (result.deleted) {
+      closeDrawers();
+      state.activeTerminology = null;
+      await Promise.all([loadTerminology(state.terminology.page), refreshSummary()]);
+      toast("自定义术语已删除", entry.term_id);
+      return;
+    }
+    state.activeTerminology = result;
+    renderTerminologyDrawer();
+    await Promise.all([loadTerminology(state.terminology.page), refreshSummary()]);
+    toast("已恢复内置名称", state.activeTerminology.canonical_label);
+  } catch (error) {
+    toast("恢复名称失败", error.message, "error");
+  }
+}
+
+function downloadTerminologyExport(payload) {
+  const binary = atob(payload.content_base64 || "");
+  const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+  const blob = new Blob([bytes], { type: payload.mime_type || "application/octet-stream" });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = payload.filename || "kirby_terminology.json";
+  anchor.click();
+  URL.revokeObjectURL(url);
+}
+
+async function exportTerminology(format) {
+  try {
+    const payload = await apiGet("admin/terminology/export", { format, scope: "merged" });
+    downloadTerminologyExport(payload);
+    toast("名称库已导出", payload.filename);
+  } catch (error) {
+    toast("名称库导出失败", error.message, "error");
+  }
+}
+
+async function importTerminology(file) {
+  if (!file) return;
+  const button = byId("terminologyImportButton");
+  setButtonBusy(button, true, "导入中");
+  try {
+    const result = await apiUpload("admin/terminology/import", file);
+    state.loaded.delete("terminology");
+    await Promise.all([loadTerminology(1), refreshSummary()]);
+    toast("名称库导入完成", `写入 ${formatNumber(result.imported)} 条覆盖记录`);
+  } catch (error) {
+    toast("名称库导入失败", error.message, "error");
+  } finally {
+    setButtonBusy(button, false);
+    byId("terminologyImportInput").value = "";
+  }
 }
 
 function renderPagination(container, data, scope) {
@@ -1237,7 +1592,7 @@ async function refreshSummary() {
 }
 
 async function switchView(view, updateHash = true) {
-  if (!["overview", "catalog", "groups", "trash", "audit"].includes(view)) view = "overview";
+  if (!["overview", "catalog", "terminology", "groups", "trash", "audit"].includes(view)) view = "overview";
   state.view = view;
   all("[data-view-panel]").forEach((panel) => {
     const active = panel.dataset.viewPanel === view;
@@ -1252,6 +1607,7 @@ async function switchView(view, updateHash = true) {
     history.replaceState(null, "", `#${view}`);
   }
   if (view === "catalog" && !state.loaded.has("catalog")) await loadEntries(1);
+  if (view === "terminology" && !state.loaded.has("terminology")) await loadTerminology(1);
   if (view === "groups" && !state.loaded.has("groups")) await loadGroups(1);
   if (view === "trash" && !state.loaded.has("trash")) await loadTrash();
   if (view === "audit" && !state.loaded.has("audit")) await loadAudit();
@@ -1290,6 +1646,40 @@ function bindEvents() {
   byId("entryRows").addEventListener("keydown", (event) => {
     if (event.key === "Enter" || event.key === " ") handleEntryRowActivation(event);
   });
+  byId("terminologyRows").addEventListener("click", (event) => {
+    const button = event.target.closest("[data-open-term]");
+    const row = event.target.closest("[data-term-id]");
+    const termId = button?.dataset.openTerm || row?.dataset.termId;
+    if (termId) openTerminology(termId);
+  });
+  byId("terminologyRows").addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" && event.key !== " ") return;
+    const row = event.target.closest("[data-term-id]");
+    if (row) openTerminology(row.dataset.termId);
+  });
+  const terminologySearch = debounce(() => {
+    state.terminologyFilters.query = byId("terminologySearch").value;
+    loadTerminology(1);
+  });
+  byId("terminologySearch").addEventListener("input", terminologySearch);
+  for (const [id, key] of [
+    ["terminologyCategoryFilter", "category"],
+    ["terminologyOriginFilter", "origin"],
+    ["terminologyStatusFilter", "status"],
+    ["terminologySort", "sort"],
+  ]) {
+    byId(id).addEventListener("change", (event) => {
+      state.terminologyFilters[key] = event.target.value;
+      loadTerminology(1);
+    });
+  }
+  byId("terminologyAddButton").addEventListener("click", openNewTerminology);
+  byId("saveTerminologyButton").addEventListener("click", saveTerminology);
+  byId("restoreTerminologyButton").addEventListener("click", restoreTerminology);
+  byId("terminologyExportJsonButton").addEventListener("click", () => exportTerminology("json"));
+  byId("terminologyExportCsvButton").addEventListener("click", () => exportTerminology("csv"));
+  byId("terminologyImportButton").addEventListener("click", () => byId("terminologyImportInput").click());
+  byId("terminologyImportInput").addEventListener("change", (event) => importTerminology(event.target.files?.[0]));
   byId("saveEntryButton").addEventListener("click", saveEntry);
   byId("deleteEntryButton").addEventListener("click", deleteActiveEntry);
 
@@ -1353,6 +1743,7 @@ function bindEvents() {
       if (scope === "entries") loadEntries(page);
       if (scope === "groups") loadGroups(page);
       if (scope === "users") loadUsers(page);
+      if (scope === "terminology") loadTerminology(page);
     }
     if (!event.target.closest(".combo-wrap")) hideComboResults();
   });

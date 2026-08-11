@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import json
 import tempfile
 import unittest
 from io import BytesIO
@@ -16,6 +18,11 @@ from astrbot_plugin_kirby_catalog.webui import (
     PLUGIN_ID,
     CatalogAdminService,
     KirbyCatalogWebUI,
+)
+from astrbot_plugin_kirby_catalog.terminology import (
+    KirbyTerminologyStore,
+    TerminologyEntry,
+    terminology_document,
 )
 
 
@@ -323,6 +330,78 @@ class CatalogAdminServiceTests(unittest.TestCase):
             reloaded_service = CatalogAdminService(reloaded)
             self.assertEqual(reloaded_service.preferences("alice"), {"theme": "dark"})
 
+    def test_manages_terminology_overrides_and_does_not_create_group_data(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = CatalogStore(root / "data", image_base_url="")
+            bundled_path = root / "bundled-terminology.json"
+            bundled_path.write_text(
+                json.dumps(
+                    terminology_document(
+                        [
+                            TerminologyEntry.from_mapping(
+                                {
+                                "term_id": "character:kirby",
+                                "category": "character",
+                                "zh_cn": "卡比",
+                                "en": "Kirby",
+                                "ja": "カービィ",
+                                "zh_status": "official",
+                                }
+                            )
+                        ]
+                    ),
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            terminology = KirbyTerminologyStore(
+                bundled_path,
+                store.config_dir / "terminology_overrides.json",
+            )
+            service = CatalogAdminService(store, terminology)
+
+            listed = service.list_terminology({"query": "Kirby", "page": 1})
+            self.assertEqual(listed["total"], 1)
+            self.assertEqual(store.group_ids(), [])
+
+            saved = service.save_terminology(
+                {
+                    "term_id": "character:kirby",
+                    "category": "character",
+                    "zh_cn": "星之卡比",
+                    "en": "Kirby",
+                    "ja": "カービィ",
+                    "zh_status": "official",
+                    "priority": 200,
+                    "enabled": True,
+                },
+                "admin",
+            )
+            self.assertEqual(saved["canonical_label"], "星之卡比（Kirby）")
+            self.assertEqual(saved["origin"], "override")
+            self.assertEqual(terminology.canonicalize("Kirby"), "星之卡比（Kirby）")
+
+            exported = service.export_terminology("json")
+            self.assertIn("星之卡比", base64.b64decode(exported["content_base64"]).decode("utf-8"))
+
+            service.restore_terminology("character:kirby", "admin")
+            self.assertEqual(terminology.canonicalize("Kirby"), "卡比（Kirby）")
+            self.assertEqual(service.terminology_detail("character:kirby")["origin"], "bundled")
+
+            custom = service.save_terminology(
+                {
+                    "category": "special",
+                    "zh_cn": "自定义术语",
+                    "en": "Custom Term",
+                    "ja": "カスタム用語",
+                },
+                "admin",
+            )
+            deleted = service.restore_terminology(custom["term_id"], "admin")
+            self.assertTrue(deleted["deleted"])
+            self.assertIsNone(terminology.entry(custom["term_id"]))
+
 
 class KirbyCatalogWebUiRegistrationTests(unittest.TestCase):
     def test_registers_all_routes_with_plugin_prefix(self):
@@ -336,7 +415,7 @@ class KirbyCatalogWebUiRegistrationTests(unittest.TestCase):
 
             webui.register()
 
-            self.assertEqual(len(routes), 19)
+            self.assertEqual(len(routes), 25)
             self.assertTrue(
                 all(route[0].startswith(f"/{PLUGIN_ID}/admin/") for route in routes)
             )
@@ -344,6 +423,7 @@ class KirbyCatalogWebUiRegistrationTests(unittest.TestCase):
             self.assertIn(f"/{PLUGIN_ID}/admin/entries/<entry_id>/image", paths)
             self.assertIn(f"/{PLUGIN_ID}/admin/groups/user/save", paths)
             self.assertIn(f"/{PLUGIN_ID}/admin/trash/restore", paths)
+            self.assertIn(f"/{PLUGIN_ID}/admin/terminology/save", paths)
 
     def test_page_bundle_uses_bridge_local_icons_and_responsive_themes(self):
         plugin_root = Path(__file__).parents[1]
@@ -361,6 +441,8 @@ class KirbyCatalogWebUiRegistrationTests(unittest.TestCase):
         self.assertIn('apiPost("admin/entries/add"', script)
         self.assertIn('apiPost("admin/entries/delete"', script)
         self.assertIn('apiPost("admin/trash/restore"', script)
+        self.assertIn('apiPost("admin/terminology/save"', script)
+        self.assertIn('apiUpload("admin/terminology/import"', script)
         self.assertIn("confirmAction({", script)
         self.assertIn(':root[data-theme="kirby"]', styles)
         self.assertIn(':root[data-effective-theme="dark"]', styles)
@@ -388,7 +470,7 @@ class KirbyCatalogWebUiRegistrationTests(unittest.TestCase):
                 plugin = plugin_main.KirbyCatalogPlugin(context, {})
 
             self.assertIsNotNone(plugin.webui)
-            self.assertEqual(len(routes), 19)
+            self.assertEqual(len(routes), 25)
             self.assertIs(plugin.webui.write_lock, plugin._draw_lock)
 
 

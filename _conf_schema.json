@@ -729,6 +729,36 @@
       }
     }
   },
+  "terminology_settings": {
+    "description": "卡比百科名称库设置",
+    "type": "object",
+    "items": {
+      "terminology_enabled": {
+        "description": "启用卡比百科名称库",
+        "type": "bool",
+        "default": true,
+        "hint": "统一用于 WiKirby、Kirby Fandom、真格攻略 Wiki、普通指令和 LLM 工具。名称库会把角色、作品、能力、地点和机制等专有名词规范为“中文（English）”。"
+      },
+      "terminology_normalize_without_translation": {
+        "description": "未开启 LLM 翻译时仍规范化名称",
+        "type": "bool",
+        "default": true,
+        "hint": "关闭 LLM 翻译也会快速匹配内置名称库，不消耗模型调用；关闭后才完全保留 Wiki 原文。"
+      },
+      "terminology_strict_placeholders": {
+        "description": "严格保护翻译中的专有名词",
+        "type": "bool",
+        "default": true,
+        "hint": "模型漏掉、修改或增加名称占位符时，该段回退为已规范化的原文，避免角色名被机翻改坏。建议保持开启。"
+      },
+      "terminology_log_matches": {
+        "description": "在日志记录名称库匹配统计",
+        "type": "bool",
+        "default": false,
+        "hint": "开启后记录每个百科文本块匹配到的术语数和出现次数，便于维护名称库；不会记录完整百科正文。"
+      }
+    }
+  },
   "data_settings": {
     "description": "数据兼容设置",
     "type": "object",

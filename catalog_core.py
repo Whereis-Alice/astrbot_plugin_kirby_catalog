@@ -33,11 +33,17 @@ CATALOG_METADATA_KEYS = (
     "kind",
 )
 DESCRIPTION_OVERRIDES_FILENAME = "description_overrides.json"
+TERMINOLOGY_OVERRIDES_FILENAME = "terminology_overrides.json"
 WEBUI_DATA_DIRNAME = "webui"
 WEBUI_AUDIT_FILENAME = "audit.json"
 WEBUI_TOMBSTONES_FILENAME = "catalog_tombstones.json"
 NON_GROUP_CONFIG_FILENAMES = frozenset(
-    {"draw_limits.json", "draw_bonuses.json", DESCRIPTION_OVERRIDES_FILENAME}
+    {
+        "draw_limits.json",
+        "draw_bonuses.json",
+        DESCRIPTION_OVERRIDES_FILENAME,
+        TERMINOLOGY_OVERRIDES_FILENAME,
+    }
 )
 _UNSET = object()
 

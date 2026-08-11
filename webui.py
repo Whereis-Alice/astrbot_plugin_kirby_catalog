@@ -7,7 +7,6 @@ import threading
 import time
 import uuid
 from collections import Counter, OrderedDict
-from datetime import datetime
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional
@@ -17,13 +16,13 @@ from PIL import Image, ImageOps
 from astrbot.api import logger
 
 from .catalog_core import (
-    SHANGHAI,
     CatalogStore,
     _atomic_write_bytes,
     _atomic_write_json,
     _read_json,
     get_today,
 )
+from .terminology import KirbyTerminologyStore, TerminologyError
 
 PLUGIN_ID = "astrbot_plugin_kirby_catalog"
 MAX_UPLOAD_BYTES = 16 * 1024 * 1024
@@ -131,8 +130,13 @@ def _page_values(payload: Mapping[str, Any] | None = None) -> tuple[int, int]:
 class CatalogAdminService:
     """Read and mutate catalogue data for the authenticated plugin Page."""
 
-    def __init__(self, store: CatalogStore):
+    def __init__(
+        self,
+        store: CatalogStore,
+        terminology: Optional[KirbyTerminologyStore] = None,
+    ):
         self.store = store
+        self.terminology = terminology
         self.upload_dir = store.webui_dir / "uploads"
         self.preferences_path = store.webui_dir / "preferences.json"
         self.upload_dir.mkdir(parents=True, exist_ok=True)
@@ -352,7 +356,224 @@ class CatalogAdminService:
             "recent_audit": self.store.audit_entries(8),
             "preferences": self.preferences(username),
             "today": get_today(),
+            "terminology": self.terminology.stats() if self.terminology else None,
         }
+
+    def _terminology_store(self) -> KirbyTerminologyStore:
+        if self.terminology is None:
+            raise ValueError("名称库尚未初始化")
+        return self.terminology
+
+    @staticmethod
+    def _terminology_payload(entry: Any, store: KirbyTerminologyStore) -> Dict[str, Any]:
+        payload = entry.to_mapping()
+        payload.update(
+            {
+                "origin": store.origin(entry.term_id),
+                "has_override": store.has_override(entry.term_id),
+                "canonical_label": entry.canonical_label,
+                "missing_languages": [
+                    language
+                    for language, value in (
+                        ("zh", entry.zh_cn),
+                        ("en", entry.en),
+                        ("ja", entry.ja),
+                    )
+                    if not value
+                ],
+            }
+        )
+        return payload
+
+    def terminology_summary(self) -> Dict[str, Any]:
+        store = self._terminology_store()
+        stats = store.stats()
+        stats["conflict_items"] = store.conflicts()[:100]
+        return stats
+
+    def list_terminology(self, params: Mapping[str, Any]) -> Dict[str, Any]:
+        store = self._terminology_store()
+        query = str(params.get("query") or "").strip().casefold()[:240]
+        category = str(params.get("category") or "").strip()
+        origin = str(params.get("origin") or "").strip()
+        status = str(params.get("status") or "all").strip()
+        sort = str(params.get("sort") or "category").strip()
+        page, page_size = _page_values(params)
+        conflict_ids = {
+            term_id
+            for conflict in store.conflicts()
+            for item in conflict.get("entries", [])
+            if (term_id := str(item.get("term_id") or "").strip())
+        }
+        rows = []
+        for entry in store.entries():
+            entry_origin = store.origin(entry.term_id)
+            missing = {
+                "zh": not entry.zh_cn,
+                "en": not entry.en,
+                "ja": not entry.ja,
+            }
+            if category and entry.category != category:
+                continue
+            if origin and entry_origin != origin:
+                continue
+            if status == "enabled" and not entry.enabled:
+                continue
+            if status == "disabled" and entry.enabled:
+                continue
+            if status in {"missing_zh", "missing_en", "missing_ja"} and not missing[
+                status.rsplit("_", 1)[1]
+            ]:
+                continue
+            if status == "conflict" and entry.term_id not in conflict_ids:
+                continue
+            if query:
+                haystack = "\n".join(
+                    [
+                        entry.term_id,
+                        entry.category,
+                        entry.zh_cn,
+                        entry.en,
+                        entry.ja,
+                        entry.notes,
+                        *entry.aliases_zh,
+                        *entry.aliases_en,
+                        *entry.aliases_ja,
+                        *entry.sources,
+                    ]
+                ).casefold()
+                if query not in haystack:
+                    continue
+            rows.append(entry)
+
+        if sort == "label":
+            rows.sort(key=lambda item: (item.canonical_label.casefold(), item.term_id))
+        elif sort == "priority":
+            rows.sort(key=lambda item: (-item.priority, item.term_id))
+        elif sort == "updated":
+            rows.sort(key=lambda item: item.term_id, reverse=True)
+        else:
+            rows.sort(key=lambda item: (item.category, item.zh_cn.casefold(), item.term_id))
+
+        total = len(rows)
+        start = (page - 1) * page_size
+        selected = rows[start : start + page_size]
+        return {
+            "items": [
+                {
+                    **self._terminology_payload(entry, store),
+                    "conflict": entry.term_id in conflict_ids,
+                }
+                for entry in selected
+            ],
+            "page": page,
+            "page_size": page_size,
+            "total": total,
+            "pages": max(1, (total + page_size - 1) // page_size),
+            "categories": sorted({entry.category for entry in store.entries()}),
+            "revision": store.revision,
+        }
+
+    def terminology_detail(self, term_id: Any) -> Dict[str, Any]:
+        store = self._terminology_store()
+        key = str(term_id or "").strip()
+        entry = store.entry(key)
+        if entry is None:
+            raise ValueError("名称库条目不存在")
+        conflicts = [
+            conflict
+            for conflict in store.conflicts()
+            if any(item.get("term_id") == key for item in conflict.get("entries", []))
+        ]
+        payload = self._terminology_payload(entry, store)
+        payload["conflict"] = bool(conflicts)
+        payload["conflicts"] = conflicts
+        return payload
+
+    def save_terminology(
+        self, payload: Mapping[str, Any], username: str
+    ) -> Dict[str, Any]:
+        store = self._terminology_store()
+        entry = store.upsert(payload)
+        self._audit(
+            "terminology.update",
+            entry.term_id,
+            f"更新 {entry.canonical_label}",
+            username,
+        )
+        return self.terminology_detail(entry.term_id)
+
+    def restore_terminology(self, term_id: Any, username: str) -> Dict[str, Any]:
+        store = self._terminology_store()
+        key = str(term_id or "").strip()
+        entry = store.entry(key)
+        if entry is None:
+            raise ValueError("名称库条目不存在")
+        if not store.has_override(key):
+            raise ValueError("该条目没有可恢复的覆盖版本")
+        was_custom = store.origin(key) == "custom"
+        restored = store.restore(key)
+        self._audit(
+            "terminology.restore",
+            key,
+            (
+                f"删除自定义术语 {key}"
+                if was_custom
+                else f"恢复 {restored.canonical_label if restored else key} 的内置版本"
+            ),
+            username,
+        )
+        if was_custom:
+            return {"deleted": True, "term_id": key, "revision": store.revision}
+        return self.terminology_detail(key)
+
+    def export_terminology(self, format_name: str = "json", scope: str = "merged") -> Dict[str, Any]:
+        store = self._terminology_store()
+        normalized_format = str(format_name or "json").strip().casefold()
+        if normalized_format not in {"json", "csv"}:
+            raise ValueError("名称库导出格式只能是 JSON 或 CSV")
+        overrides_only = str(scope or "merged").strip().casefold() in {
+            "override",
+            "overrides",
+        }
+        data = (
+            store.export_json(overrides_only=overrides_only)
+            if normalized_format == "json"
+            else store.export_csv(overrides_only=overrides_only)
+        )
+        return {
+            "filename": f"kirby_terminology_{'overrides' if overrides_only else 'merged'}.{normalized_format}",
+            "mime_type": (
+                "application/json; charset=utf-8"
+                if normalized_format == "json"
+                else "text/csv; charset=utf-8"
+            ),
+            "content_base64": base64.b64encode(data).decode("ascii"),
+            "revision": store.revision,
+        }
+
+    def import_terminology(
+        self, data: bytes, filename: str, username: str
+    ) -> Dict[str, Any]:
+        store = self._terminology_store()
+        if len(data) > 8 * 1024 * 1024:
+            raise ValueError("名称库文件不能超过 8 MB")
+        name = str(filename or "").casefold()
+        try:
+            result = (
+                store.import_csv(data)
+                if name.endswith(".csv")
+                else store.import_json(data)
+            )
+        except TerminologyError:
+            raise
+        self._audit(
+            "terminology.import",
+            "名称库",
+            f"导入 {result['imported']} 条覆盖记录",
+            username,
+        )
+        return {**result, "revision": store.revision, "stats": store.stats()}
 
     def list_entries(self, params: Mapping[str, Any]) -> Dict[str, Any]:
         query = str(params.get("query") or "").strip().casefold()[:200]
@@ -902,9 +1123,10 @@ class KirbyCatalogWebUI:
         context: Any,
         store: CatalogStore,
         write_lock: Optional[asyncio.Lock] = None,
+        terminology: Optional[KirbyTerminologyStore] = None,
     ) -> None:
         self.context = context
-        self.service = CatalogAdminService(store)
+        self.service = CatalogAdminService(store, terminology)
         self.write_lock = write_lock or asyncio.Lock()
 
     def register(self) -> None:
@@ -958,6 +1180,37 @@ class KirbyCatalogWebUI:
                 "Reset group draws",
             ),
             ("admin/audit", self.audit, ["GET"], "List WebUI audit records"),
+            ("admin/terminology", self.terminology, ["GET"], "List terminology entries"),
+            (
+                "admin/terminology/<term_id>",
+                self.terminology_entry,
+                ["GET"],
+                "Get terminology entry",
+            ),
+            (
+                "admin/terminology/save",
+                self.save_terminology,
+                ["POST"],
+                "Save terminology entry",
+            ),
+            (
+                "admin/terminology/restore",
+                self.restore_terminology,
+                ["POST"],
+                "Restore terminology entry",
+            ),
+            (
+                "admin/terminology/export",
+                self.export_terminology,
+                ["GET"],
+                "Export terminology",
+            ),
+            (
+                "admin/terminology/import",
+                self.import_terminology,
+                ["POST"],
+                "Import terminology",
+            ),
         ]
         for path, handler, methods, description in routes:
             self.context.register_web_api(
@@ -1117,6 +1370,59 @@ class KirbyCatalogWebUI:
         limit = _query_value("limit", 100, int)
         return await self._read(
             lambda: {"items": self.service.store.audit_entries(limit)}
+        )
+
+    async def terminology(self):
+        params = {
+            key: _query_value(key, default)
+            for key, default in {
+                "query": "",
+                "category": "",
+                "origin": "",
+                "status": "all",
+                "sort": "category",
+                "page": 1,
+                "page_size": 30,
+            }.items()
+        }
+        return await self._read(self.service.list_terminology, params)
+
+    async def terminology_entry(self, term_id: str):
+        return await self._read(self.service.terminology_detail, term_id)
+
+    async def save_terminology(self):
+        return await self._write(
+            self.service.save_terminology,
+            await _request_json(),
+            _request_username(),
+        )
+
+    async def restore_terminology(self):
+        payload = await _request_json()
+        return await self._write(
+            self.service.restore_terminology,
+            payload.get("term_id"),
+            _request_username(),
+        )
+
+    async def export_terminology(self):
+        return await self._read(
+            self.service.export_terminology,
+            _query_value("format", "json"),
+            _query_value("scope", "merged"),
+        )
+
+    async def import_terminology(self):
+        upload = await _request_upload()
+        if upload is None:
+            return error_response("没有收到名称库文件", status_code=400)
+        data = await _upload_bytes(upload)
+        filename = str(getattr(upload, "filename", "") or "名称库.json")
+        return await self._write(
+            self.service.import_terminology,
+            data,
+            filename,
+            _request_username(),
         )
 
 

@@ -23,6 +23,7 @@ from mcp.types import CallToolResult, ImageContent, TextContent
 
 from .catalog_core import (
     CatalogStore,
+    TERMINOLOGY_OVERRIDES_FILENAME,
     extract_image_bytes_from_value,
     get_today,
     plain_text_from_component,
@@ -56,6 +57,7 @@ from .shinkaku_reference import (
     DEFAULT_ENTRIES_PER_PAGE as _REFERENCE_DEFAULT_ENTRIES_PER_PAGE,
 )
 from .shinkaku_reference import render_shinkaku_reference_pages, shinkaku_reference_text
+from .terminology import KirbyTerminologyStore, TerminologyPlaceholderError
 from .webui import KirbyCatalogWebUI
 from .wiki_content import inline_markup_plain
 from .wiki_document import build_wiki_document, cleanup_wiki_documents
@@ -131,6 +133,9 @@ WIKI_EXPLICIT_OUTPUT_SUFFIXES = {
     "文档": "document",
 }
 CATALOG_PROFILES_PATH = Path(__file__).parent / "resources" / "catalog_profiles.json"
+BUNDLED_TERMINOLOGY_PATH = (
+    Path(__file__).parent / "resources" / "kirby_terminology.json"
+)
 
 
 @dataclass(frozen=True)
@@ -146,7 +151,7 @@ class AllyDrawOutcome:
     PLUGIN_ID,
     "Whereis-Alice",
     "星之卡比盟友抽取、收藏图鉴与三百科查询插件",
-    "3.9.3",
+    "3.10.0",
     "https://github.com/Whereis-Alice/astrbot_plugin_kirby_catalog",
 )
 class KirbyCatalogPlugin(Star):
@@ -163,6 +168,21 @@ class KirbyCatalogPlugin(Star):
             image_base_url=self._config_value("image_base_url", IMAGE_BASE_URL),
             profiles_path=CATALOG_PROFILES_PATH,
         )
+        self.terminology = KirbyTerminologyStore(
+            BUNDLED_TERMINOLOGY_PATH,
+            self.store.config_dir / TERMINOLOGY_OVERRIDES_FILENAME,
+        )
+        terminology_stats = self.terminology.stats()
+        logger.info(
+            "[%s] 卡比百科名称库已加载: entries=%d, enabled=%d, "
+            "overrides=%d, conflicts=%d, revision=%s",
+            PLUGIN_ID,
+            terminology_stats["entries"],
+            terminology_stats["enabled"],
+            terminology_stats["overrides"],
+            terminology_stats["conflicts"],
+            terminology_stats["revision"],
+        )
         self._draw_lock = asyncio.Lock()
         self.webui: Optional[KirbyCatalogWebUI] = None
         try:
@@ -170,6 +190,7 @@ class KirbyCatalogPlugin(Star):
                 self.context,
                 self.store,
                 self._draw_lock,
+                self.terminology,
             )
             self.webui.register()
         except Exception as exc:
@@ -181,7 +202,9 @@ class KirbyCatalogPlugin(Star):
         self._bot_identity_cache: Dict[str, str] = {}
         self._guess_sessions: Dict[str, Dict[str, Any]] = {}
         self._guess_timeout_tasks: Dict[str, asyncio.Task[None]] = {}
-        self._wiki_translation_cache: Dict[Tuple[str, str, str], Tuple[float, str]] = {}
+        self._wiki_translation_cache: Dict[
+            Tuple[str, str, str, str], Tuple[float, str]
+        ] = {}
         self._shinkaku_table_icon_cache: Dict[str, str] = {}
         self.wikirby = WikirbyClient(
             api_url=str(self._config_value("wikirby_api_url", DEFAULT_API_URL)),
@@ -358,6 +381,7 @@ class KirbyCatalogPlugin(Star):
                 "wikirby_settings",
                 "fandom_settings",
                 "shinkaku_settings",
+                "terminology_settings",
             ):
                 section = self.config.get(section_name, {})
                 if hasattr(section, "get") and key in section:
@@ -1585,6 +1609,99 @@ class KirbyCatalogPlugin(Star):
             self._config_value("shinkaku_translate_enabled", False)
         )
 
+    def _terminology_enabled(self) -> bool:
+        return self._bool_value(
+            self._config_value("terminology_enabled", True)
+        ) and getattr(self, "terminology", None) is not None
+
+    def _terminology_normalize_without_translation(self) -> bool:
+        return self._bool_value(
+            self._config_value(
+                "terminology_normalize_without_translation", True
+            )
+        )
+
+    def _terminology_strict_placeholders(self) -> bool:
+        return self._bool_value(
+            self._config_value("terminology_strict_placeholders", True)
+        )
+
+    def _terminology_log_matches(self) -> bool:
+        return self._bool_value(
+            self._config_value("terminology_log_matches", False)
+        )
+
+    def _terminology_revision(self) -> str:
+        if not self._terminology_enabled():
+            return "disabled"
+        return str(self.terminology.revision)
+
+    def _log_terminology_matches(
+        self,
+        protected: Any,
+        *,
+        source_name: str,
+        stage: str,
+    ) -> None:
+        if not self._terminology_log_matches() or not protected.bindings:
+            return
+        logger.info(
+            "[%s] %s 名称库匹配: stage=%s, terms=%d, occurrences=%d, "
+            "revision=%s",
+            PLUGIN_ID,
+            source_name,
+            stage,
+            protected.matched_terms,
+            protected.matched_occurrences,
+            protected.revision,
+        )
+
+    def _wiki_canonicalize_text(self, text: str, *, source_name: str = "Wiki") -> str:
+        source = str(text or "")
+        if not source or not self._terminology_enabled():
+            return source
+        protected = self.terminology.protect(source)
+        self._log_terminology_matches(
+            protected, source_name=source_name, stage="canonicalize"
+        )
+        return protected.canonical_source()
+
+    def _wiki_canonicalize_object(
+        self, value: Any, *, source_name: str = "Wiki"
+    ) -> Any:
+        if value is None or not self._terminology_enabled():
+            return value
+        binary_or_url_keys = {
+            "icon_data_uri",
+            "icon_url",
+            "image_data_uri",
+            "image_url",
+            "media_url",
+            "source_url",
+            "url",
+        }
+
+        def canonicalize_item(item: Any) -> Any:
+            if isinstance(item, str):
+                return self._wiki_canonicalize_text(item, source_name=source_name)
+            if isinstance(item, list):
+                return [canonicalize_item(child) for child in item]
+            if isinstance(item, tuple):
+                return tuple(canonicalize_item(child) for child in item)
+            if isinstance(item, dict):
+                return {
+                    key: (
+                        child
+                        if str(key).casefold() in binary_or_url_keys
+                        or str(key).casefold().endswith("_data_uri")
+                        else canonicalize_item(child)
+                    )
+                    for key, child in item.items()
+                }
+            return item
+
+        return canonicalize_item(value)
+
     def _wiki_text_command_use_forward(self) -> bool:
         return self._bool_value(
             self._config_value("wiki_text_command_use_forward", True)
@@ -2230,6 +2347,44 @@ class KirbyCatalogPlugin(Star):
             cursor += cut
         return chunks
 
+    def _wiki_translation_chunks(self, text: str, max_chars: int) -> List[str]:
+        """Split translation input without cutting through a known term."""
+
+        chunks = self._split_forward_text(text, max_chars)
+        if len(chunks) <= 1 or not self._terminology_enabled():
+            return chunks
+        matches = self.terminology.find(text)
+        if not matches:
+            return chunks
+
+        desired_boundaries: List[int] = []
+        cursor = 0
+        for chunk in chunks:
+            cursor += len(chunk)
+            desired_boundaries.append(cursor)
+
+        safe_chunks: List[str] = []
+        cursor = 0
+        for desired_end in desired_boundaries:
+            if cursor >= len(text):
+                break
+            if desired_end <= cursor:
+                continue
+            end = max(cursor + 1, desired_end)
+            crossing = [
+                match.end
+                for match in matches
+                if match.start < end < match.end
+            ]
+            if crossing:
+                end = max(end, *crossing)
+            end = min(len(text), end)
+            safe_chunks.append(text[cursor:end])
+            cursor = end
+        if cursor < len(text):
+            safe_chunks.append(text[cursor:])
+        return safe_chunks
+
     def _forward_nodes(
         self, text: str, trailing_components: Optional[List[Any]] = None
     ) -> List[Comp.Nodes]:
@@ -2388,7 +2543,11 @@ class KirbyCatalogPlugin(Star):
         source_name: str,
     ) -> str:
         """Translate external wiki text with AstrBot's configured provider."""
-        if not text or not enabled:
+        if not text:
+            return text
+        if not enabled:
+            if self._terminology_normalize_without_translation():
+                return self._wiki_canonicalize_text(text, source_name=source_name)
             return text
 
         provider_id = str(self._config_value(provider_key, "") or "").strip()
@@ -2412,6 +2571,7 @@ class KirbyCatalogPlugin(Star):
         cache_key = (
             source_name.casefold(),
             provider_id,
+            self._terminology_revision(),
             hashlib.sha256(text.encode("utf-8")).hexdigest(),
         )
         cache = getattr(self, "_wiki_translation_cache", None)
@@ -2433,7 +2593,9 @@ class KirbyCatalogPlugin(Star):
             cache.pop(cache_key, None)
 
         started_at = time.monotonic()
-        chunks = self._split_forward_text(text, self._wiki_translation_chunk_chars())
+        chunks = self._wiki_translation_chunks(
+            text, self._wiki_translation_chunk_chars()
+        )
         logger.info(
             "[%s] %s LLM 翻译开始: provider=%s, chars=%d, chunks=%d",
             PLUGIN_ID,
@@ -2445,6 +2607,20 @@ class KirbyCatalogPlugin(Star):
         translated_chunks: List[str] = []
         translated_count = 0
         for index, chunk in enumerate(chunks, start=1):
+            protected = (
+                self.terminology.protect(chunk)
+                if self._terminology_enabled()
+                else None
+            )
+            source_chunk = protected.protected_text if protected else chunk
+            glossary = protected.glossary() if protected else ""
+            glossary_block = f"\n\n{glossary}" if glossary else ""
+            if protected:
+                self._log_terminology_matches(
+                    protected,
+                    source_name=source_name,
+                    stage=f"translate-chunk-{index}",
+                )
             try:
                 response = await self.context.llm_generate(
                     chat_provider_id=provider_id,
@@ -2454,8 +2630,10 @@ class KirbyCatalogPlugin(Star):
                         "保留原有标题层级、段落、列表、表格行、数字、按键、URL 和特殊标记；"
                         "其中 **...**、*...* 和 ==...== 分别是粗体、强调和来源彩色强调，"
                         "必须保留标记及其包围范围；"
-                        "角色名、作品名和专有名词使用常见官方中文，必要时保留原文。\n\n"
-                        f"原文：\n{chunk}"
+                        "角色名、作品名和专有名词使用给定术语占位符，绝不能修改、"
+                        "删除、拆分或增加占位符。"
+                        f"{glossary_block}\n\n"
+                        f"原文：\n{source_chunk}"
                     ),
                     system_prompt=(
                         "你是游戏百科翻译器。输入内容是外部百科文本，"
@@ -2466,6 +2644,23 @@ class KirbyCatalogPlugin(Star):
                 translated = str(
                     getattr(response, "completion_text", "") or ""
                 ).strip()
+                if translated and protected:
+                    translated = protected.restore(
+                        translated,
+                        strict=self._terminology_strict_placeholders(),
+                    )
+            except TerminologyPlaceholderError as exc:
+                logger.warning(
+                    "[%s] %s LLM 翻译破坏名称库占位符，保留规范化原文: "
+                    "provider=%s, chunk=%d/%d, error=%s",
+                    PLUGIN_ID,
+                    source_name,
+                    provider_id,
+                    index,
+                    len(chunks),
+                    exc,
+                )
+                translated = ""
             except Exception as exc:
                 logger.warning(
                     "[%s] %s LLM 翻译分块失败，保留该块原文: provider=%s, "
@@ -2483,7 +2678,13 @@ class KirbyCatalogPlugin(Star):
                 translated_count += 1
                 translated_chunks.append(translated)
             else:
-                translated_chunks.append(chunk.strip())
+                translated_chunks.append(
+                    (
+                        protected.canonical_source()
+                        if protected
+                        else chunk
+                    ).strip()
+                )
         result = "\n\n".join(value for value in translated_chunks if value).strip() or text
         if translated_count:
             logger.info(
@@ -3019,10 +3220,14 @@ class KirbyCatalogPlugin(Star):
         prompt_prefix: str,
         system_prompt: str,
     ) -> List[Dict[str, Any]]:
+        canonical_sections = self._wiki_canonicalize_object(
+            rich_sections,
+            source_name=source_label,
+        )
         max_chars = self._wiki_translation_chunk_chars()
-        fragments = self._rich_translation_fragments(rich_sections, max_chars)
+        fragments = self._rich_translation_fragments(canonical_sections, max_chars)
         batches = self._rich_translation_batches(fragments, max_chars)
-        result = deepcopy(rich_sections)
+        result = deepcopy(canonical_sections)
         metadata_done: set[int] = set()
         headers_done: set[int] = set()
         group_labels_done: set[Tuple[int, int]] = set()
@@ -3045,10 +3250,29 @@ class KirbyCatalogPlugin(Star):
             source_json = json.dumps(
                 payload, ensure_ascii=False, separators=(",", ":")
             )
+            protected = (
+                self.terminology.protect(source_json)
+                if self._terminology_enabled()
+                else None
+            )
+            protected_json = protected.protected_text if protected else source_json
+            glossary = protected.glossary() if protected else ""
+            glossary_block = f"\n\n{glossary}" if glossary else ""
+            if protected:
+                self._log_terminology_matches(
+                    protected,
+                    source_name=source_label,
+                    stage=f"structured-batch-{batch_index}",
+                )
             try:
                 response = await self.context.llm_generate(
                     chat_provider_id=provider_id,
-                    prompt=f"{prompt_prefix}\n\nJSON：\n{source_json}",
+                    prompt=(
+                        f"{prompt_prefix}"
+                        " 名称库占位符必须逐字、逐次保留，不能翻译、改写、"
+                        "拆分、删除或增加。"
+                        f"{glossary_block}\n\nJSON：\n{protected_json}"
+                    ),
                     system_prompt=system_prompt,
                 )
                 raw = str(getattr(response, "completion_text", "") or "").strip()
@@ -3059,6 +3283,11 @@ class KirbyCatalogPlugin(Star):
                 if start >= 0 and end >= start:
                     raw = raw[start : end + 1]
                 translated_payload = json.loads(raw)
+                if protected:
+                    translated_payload = protected.restore_object(
+                        translated_payload,
+                        strict=self._terminology_strict_placeholders(),
+                    )
                 if not isinstance(translated_payload, list) or len(
                     translated_payload
                 ) != len(batch):
@@ -3137,7 +3366,13 @@ class KirbyCatalogPlugin(Star):
             if enabled_override is None
             else enabled_override
         )
-        if not rich_sections or not enabled:
+        if not rich_sections:
+            return rich_sections
+        if not enabled:
+            if self._terminology_normalize_without_translation():
+                return self._wiki_canonicalize_object(
+                    rich_sections, source_name="真格攻略表格"
+                )
             return rich_sections
 
         provider_id = str(
@@ -3350,7 +3585,13 @@ class KirbyCatalogPlugin(Star):
             if enabled_override is None
             else enabled_override
         )
-        if not rich_sections or not enabled:
+        if not rich_sections:
+            return rich_sections
+        if not enabled:
+            if self._terminology_normalize_without_translation():
+                return self._wiki_canonicalize_object(
+                    rich_sections, source_name="Kirby Fandom 语录/招式"
+                )
             return rich_sections
 
         provider_id = str(
@@ -3554,7 +3795,9 @@ class KirbyCatalogPlugin(Star):
                 value += f"（{row['romanisation']}）"
             lines.append(f"{row['language']}：{value}")
         lines.append(f"来源：{page.get('url') or 'https://wikirby.com'}")
-        return "\n".join(lines)
+        return self._wiki_canonicalize_text(
+            "\n".join(lines), source_name="WiKirby 名称表"
+        )
 
     async def _wikirby_page_content(
         self,
@@ -3575,7 +3818,10 @@ class KirbyCatalogPlugin(Star):
             if translation_enabled_override is None
             else translation_enabled_override
         )
-        lines = [f"WiKirby：{page['title']}", ""]
+        page_title = self._wiki_canonicalize_text(
+            str(page.get("title") or ""), source_name="WiKirby"
+        )
+        lines = [f"WiKirby：{page_title}", ""]
         summary = str(page.get("summary", "") or "").strip()
         if summary:
             if translate and translation_enabled:
@@ -3587,6 +3833,13 @@ class KirbyCatalogPlugin(Star):
                     logger.warning(
                         "[%s] WiKirby AI 翻译失败，保留原文: %s", PLUGIN_ID, exc
                     )
+                    summary = self._wiki_canonicalize_text(
+                        summary, source_name="WiKirby"
+                    )
+            elif self._terminology_normalize_without_translation():
+                summary = self._wiki_canonicalize_text(
+                    summary, source_name="WiKirby"
+                )
             lines.extend(["【简介】", summary, ""])
 
         show_details = force_details or self._bool_value(
@@ -3625,6 +3878,13 @@ class KirbyCatalogPlugin(Star):
                             PLUGIN_ID,
                             exc,
                         )
+                        detail_text = self._wiki_canonicalize_text(
+                            detail_text, source_name="WiKirby"
+                        )
+                elif self._terminology_normalize_without_translation():
+                    detail_text = self._wiki_canonicalize_text(
+                        detail_text, source_name="WiKirby"
+                    )
                 lines.extend([detail_text, ""])
         lines.append(f"来源：{page.get('url') or 'https://wikirby.com'}")
         return "\n".join(lines).strip(), summary, detail_text
@@ -3920,7 +4180,9 @@ class KirbyCatalogPlugin(Star):
                 f"来源：{page.get('url') or 'https://kirby.fandom.com'}",
             ]
         )
-        return "\n".join(lines)
+        return self._wiki_canonicalize_text(
+            "\n".join(lines), source_name="Kirby Fandom 名称表"
+        )
 
     async def _fandom_sections_text(
         self, query: str, resolved: Optional[Dict[str, Any]] = None
@@ -3949,7 +4211,9 @@ class KirbyCatalogPlugin(Star):
                 f"来源：{page.get('url') or 'https://kirby.fandom.com'}",
             ]
         )
-        return "\n".join(lines)
+        return self._wiki_canonicalize_text(
+            "\n".join(lines), source_name="Kirby Fandom 章节"
+        )
 
     async def _fandom_page_content(
         self,
@@ -3970,7 +4234,10 @@ class KirbyCatalogPlugin(Star):
             if translation_enabled_override is None
             else translation_enabled_override
         )
-        lines = [f"Kirby Fandom：{page['title']}", ""]
+        page_title = self._wiki_canonicalize_text(
+            str(page.get("title") or ""), source_name="Kirby Fandom"
+        )
+        lines = [f"Kirby Fandom：{page_title}", ""]
         summary = str(page.get("summary", "") or "").strip()
         if summary and translate and translation_enabled:
             try:
@@ -3983,6 +4250,13 @@ class KirbyCatalogPlugin(Star):
                     PLUGIN_ID,
                     exc,
                 )
+                summary = self._wiki_canonicalize_text(
+                    summary, source_name="Kirby Fandom"
+                )
+        elif summary and self._terminology_normalize_without_translation():
+            summary = self._wiki_canonicalize_text(
+                summary, source_name="Kirby Fandom"
+            )
         if summary and not section:
             lines.extend(["【简介】", summary, ""])
 
@@ -4056,13 +4330,20 @@ class KirbyCatalogPlugin(Star):
                     PLUGIN_ID,
                     exc,
                 )
+                detail_text = self._wiki_canonicalize_text(
+                    detail_text, source_name="Kirby Fandom"
+                )
+        elif detail_text and self._terminology_normalize_without_translation():
+            detail_text = self._wiki_canonicalize_text(
+                detail_text, source_name="Kirby Fandom"
+            )
 
-        if rich_sections and translate and translation_enabled:
+        if rich_sections:
             try:
                 rich_sections = await self._fandom_translate_rich_sections(
                     event,
                     rich_sections,
-                    enabled_override=translation_enabled,
+                    enabled_override=bool(translate and translation_enabled),
                 )
             except Exception as exc:
                 logger.warning(
@@ -4083,6 +4364,10 @@ class KirbyCatalogPlugin(Star):
                 detail_text = "\n".join(
                     part for part in (detail_text, "\n".join(name_lines)) if part
                 )
+        if detail_text and self._terminology_normalize_without_translation():
+            detail_text = self._wiki_canonicalize_text(
+                detail_text, source_name="Kirby Fandom"
+            )
         rich_text = self._fandom_rich_sections_text(rich_sections)
         response_detail_text = "\n\n".join(
             part for part in (detail_text, rich_text) if part
@@ -4567,7 +4852,9 @@ class KirbyCatalogPlugin(Star):
                     f"来源：{DEFAULT_SHINKAKU_SITE_URL}/l/",
                 ]
             )
-            return "\n".join(lines).strip()
+            return self._wiki_canonicalize_text(
+                "\n".join(lines).strip(), source_name="真格攻略名称表"
+            )
         rows = await client.lookup_terms(query)
         if not rows:
             return (
@@ -4586,7 +4873,9 @@ class KirbyCatalogPlugin(Star):
                 f"来源：{DEFAULT_SHINKAKU_SITE_URL}/d/%b1%d1%b8%ec%a4%ce%a5%b3%a1%bc%a5%ca%a1%bc",
             ]
         )
-        return "\n".join(lines)
+        return self._wiki_canonicalize_text(
+            "\n".join(lines), source_name="真格攻略日英用语"
+        )
 
     def _shinkaku_reference_entries(self) -> list[dict[str, Any]]:
         client = getattr(self, "shinkaku", None)
@@ -4732,7 +5021,9 @@ class KirbyCatalogPlugin(Star):
                 f"来源：{page.get('url') or DEFAULT_SHINKAKU_SITE_URL}",
             ]
         )
-        return "\n".join(lines)
+        return self._wiki_canonicalize_text(
+            "\n".join(lines), source_name="真格攻略章节"
+        )
 
     @staticmethod
     def _shinkaku_narrative_text(details: Dict[str, Any]) -> str:
@@ -4793,7 +5084,17 @@ class KirbyCatalogPlugin(Star):
                     PLUGIN_ID,
                     exc,
                 )
-        lines = [f"{SHINKAKU_SITE_LABEL}：{page['title']}", ""]
+                summary = self._wiki_canonicalize_text(
+                    summary, source_name=SHINKAKU_SITE_LABEL
+                )
+        elif summary and self._terminology_normalize_without_translation():
+            summary = self._wiki_canonicalize_text(
+                summary, source_name=SHINKAKU_SITE_LABEL
+            )
+        page_title = self._wiki_canonicalize_text(
+            str(page.get("title") or ""), source_name=SHINKAKU_SITE_LABEL
+        )
+        lines = [f"{SHINKAKU_SITE_LABEL}：{page_title}", ""]
         if summary and not section:
             lines.extend(["【页面概览】", inline_markup_plain(summary), ""])
 
@@ -4840,12 +5141,19 @@ class KirbyCatalogPlugin(Star):
                     PLUGIN_ID,
                     exc,
                 )
-        if rich_sections and translate and translation_enabled:
+                detail_text = self._wiki_canonicalize_text(
+                    detail_text, source_name=SHINKAKU_SITE_LABEL
+                )
+        elif detail_text and self._terminology_normalize_without_translation():
+            detail_text = self._wiki_canonicalize_text(
+                detail_text, source_name=SHINKAKU_SITE_LABEL
+            )
+        if rich_sections:
             try:
                 rich_sections = await self._shinkaku_translate_rich_sections(
                     event,
                     rich_sections,
-                    enabled_override=translation_enabled,
+                    enabled_override=bool(translate and translation_enabled),
                 )
             except Exception as exc:
                 logger.warning(

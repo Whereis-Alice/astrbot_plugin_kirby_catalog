@@ -30,7 +30,7 @@
 | 盟友抽取 | 每日限次抽取、Bot 独立抽取、简体中文简介、可配置长度与回复形式、冷却时间、连续未出新保底、纯文本 `今日盟友` 触发 |
 | 收藏图鉴 | 按首次登场作品排序的固定编号、独立能力与形态、个人与群图鉴、按需分页、生成缓存、有效进度和群内排行榜 |
 | 素材管理 | 管理员可引用 Bot 消息改名、换图或编辑简介，也可手动添加素材；历史记录同步更新 |
-| WebUI 管理台 | 在 AstrBot Dashboard 集中管理素材资料、全部群成员图鉴、今日次数、回收站和操作记录 |
+| WebUI 管理台 | 在 AstrBot Dashboard 集中管理素材资料、名称库、全部群成员图鉴、今日次数、回收站和操作记录 |
 | 互动玩法 | 中英文猜盟友、引用图片直接作答、超时或猜错公布答案、随机盟友 |
 | WiKirby | 页面简介、资料栏目、多语言名称、首图、LLM 翻译，以及文本、卡片和 HTML 文档三种查询形式 |
 | Kirby Fandom | 简介、信息框、分类、正文栏目、社区页面名称、相关语录、网页式招式表、首图和完整 HTML 文档 |
@@ -88,6 +88,7 @@ python -m pip install -r requirements.txt
 | --- | --- |
 | 概览 | 查看图鉴总数、缺图/缺简介、群组与成员规模、今日抽取、作品分布和最近操作 |
 | 素材库 | 按编号、名称、英文名或作品搜索；按作品、类型和资料状态筛选；新增素材、换图、改名、修改首次登场作品和简介 |
+| 名称库 | 管理角色、形态、能力、作品、地点和机制的中英文日名称、别名、优先级与匹配开关；查看缺失语言和冲突；导入导出 JSON/CSV；恢复内置版本 |
 | 群数据 | 查看全部群和成员；编辑昵称、当前盟友、当前日期、连续未解锁次数、今日已用次数和额外次数；增删个人解锁、重置群今日次数或删除成员记录 |
 | 回收站 | 查看已删除条目，并恢复固定编号、素材、简介覆盖和仍可恢复的群成员引用 |
 | 操作记录 | 查看 Dashboard 中的素材和群数据管理记录，包含操作者、时间、对象和变更摘要 |
@@ -152,6 +153,14 @@ data/plugin_data/astrbot_plugin_kirby_catalog/webui/
 ├── trash/                     # 已删除素材、资料和用户引用快照
 └── uploads/                   # 尚未提交的临时上传，24 小时后自动清理
 ```
+
+名称库的内置版本随插件发布，管理员修改只保存为覆盖层：
+
+```text
+data/plugin_data/astrbot_plugin_kirby_catalog/config/terminology_overrides.json
+```
+
+覆盖层不会改写 `resources/kirby_terminology.json`，也不会被误识别为群数据。升级插件时内置名称库可以继续补充；管理台的“恢复内置”只删除指定条目的覆盖版本。
 
 这些文件和 `catalog.json`、`config/*.json`、`img/allies/*` 共同组成完整图鉴数据。迁移、备份或服务器搬迁时应复制整个 `astrbot_plugin_kirby_catalog` 数据目录，而不是只复制图片。
 
@@ -823,6 +832,36 @@ AstrBot 与 NapCat 运行在同一系统、NapCat 能读取 AstrBot 文件路径
 - Fandom 语录和招式使用结构化 JSON 翻译，LLM 可以翻译操作中的自然语言，但按键、方向、加号、平台对应关系和换行由插件校验；布局和伤害数字不交给 LLM 决定；
 - 真格攻略的日文正文和表格由 `shinkaku_translate_enabled` 单独控制，默认关闭；文档模式可以由 `wiki_document_translate_enabled` 单独要求翻译；单批翻译失败时只保留该批日文原文，其他成功栏目不会被丢弃；
 - LLM 工具调用本身不会再次触发嵌套翻译。
+
+#### 名称库与翻译
+
+三个 Wiki 和对应的 LLM 查询工具共用 `resources/kirby_terminology.json` 名称库。正文交给模型前，插件会用 Aho-Corasick 匹配器快速识别专有名词，并将匹配结果替换为不可改写的临时占位符；模型只翻译普通句子，返回后恢复为统一的 `中文（English）`。真格攻略的日文原文也按同一规则输出中文双语名称。
+
+名称库修改后会自动生成新的 revision，旧翻译缓存不会误复用。模型漏掉或改写占位符时，该批内容回退为已经规范化名称的原文，不会把错误机翻名称写进结果。没有开启 LLM 翻译时，默认仍会执行一次快速名称规范化，不产生模型调用。
+
+| 配置项 | 默认值 | 说明 |
+| --- | ---: | --- |
+| `terminology_enabled` | 开启 | 启用三个 Wiki、普通指令和 LLM 工具的名称库 |
+| `terminology_normalize_without_translation` | 开启 | 关闭 LLM 翻译时仍匹配并输出双语名称；关闭后完全保留原文 |
+| `terminology_strict_placeholders` | 开启 | 模型破坏术语占位符时回退该批规范化原文，建议保持开启 |
+| `terminology_log_matches` | 关闭 | 在日志中记录匹配数量，便于维护词库；不记录百科正文 |
+
+名称库维护建议优先使用 WebUI。导入 JSON/CSV 会写入覆盖层，适合批量修订；导出的 merged 文件包含当前内置版本与覆盖结果，可作为审核或版本控制材料。名称库当前覆盖 2389 条记录，并在管理台显示 7 条缺少英文、154 条缺少日文和 41 个别名冲突，便于后续补齐，不会静默把不确定的名称当成官方译名。
+
+维护者需要更新内置名称库时，可准备新的 WiKirby 页面缓存、能力形态清单或 BWIKI 缓存后运行：
+
+```bash
+python tools/build_kirby_terminology.py \
+  --catalog resources/catalog_profiles.json \
+  --forms path/to/catalog_forms.json \
+  --wikirby-cache path/to/wikirby_pages.json.gz \
+  --shinkaku resources/shinkaku_page_names.json \
+  --output-json resources/kirby_terminology.json \
+  --output-csv resources/kirby_terminology.csv \
+  --audit resources/kirby_terminology_audit.json
+```
+
+不需要 BWIKI 网络抓取时可附加 `--skip-bwiki`；脚本默认使用插件目录下的 `.tmp/terminology/`，不会依赖任何维护者的个人电脑路径。生成后应检查审计文件中的缺失语言和冲突，再提交 JSON、CSV 与审计文件。
 
 ### 合并转发稳定性
 

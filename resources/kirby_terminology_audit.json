@@ -1,0 +1,1365 @@
+{
+  "schema_version": 1,
+  "summary": {
+    "entries": 2389,
+    "enabled": 2389,
+    "input_records": 8075,
+    "alias_conflicts": 41,
+    "missing_zh": 0,
+    "missing_en": 7,
+    "missing_ja": 154
+  },
+  "input_counts": {
+    "bwiki-infobox": 2056,
+    "bwiki-table": 700,
+    "catalog-forms": 550,
+    "catalog-profiles": 2706,
+    "curated-official-notes": 73,
+    "shinkaku-page-names": 898,
+    "wikirby-names": 1092
+  },
+  "source_counts": {
+    "bwiki-infobox": 1879,
+    "bwiki-table": 667,
+    "catalog-forms": 281,
+    "catalog-profiles": 1316,
+    "curated-official-notes": 65,
+    "shinkaku-page-names": 172,
+    "wikirby-names": 1058
+  },
+  "category_counts": {
+    "ability": 84,
+    "character": 1200,
+    "form": 213,
+    "location": 4,
+    "mode": 12,
+    "special": 693,
+    "title": 11,
+    "work": 172
+  },
+  "zh_status_counts": {
+    "official": 505,
+    "official_reused": 925,
+    "project": 308,
+    "unchanged": 651
+  },
+  "missing": {
+    "zh_cn": [],
+    "en": [
+      {
+        "term_id": "character:1000-100",
+        "label": "翻滚的1000/100个瓦豆鲁迪球"
+      },
+      {
+        "term_id": "character:cfb225a2a0a8b8ad",
+        "label": "滚动的100/1000个瓦豆鲁迪！"
+      },
+      {
+        "term_id": "special:68882febc8b0f48f",
+        "label": "破坏方块"
+      },
+      {
+        "term_id": "special:230e832b08692e10",
+        "label": "魔法袜子"
+      },
+      {
+        "term_id": "character:4add3ca0b13416cf",
+        "label": "炮台者瓦豆鲁迪！"
+      },
+      {
+        "term_id": "character:a844aa08962b20e1",
+        "label": "螺旋桨瓦豆鲁迪"
+      },
+      {
+        "term_id": "character:8fe898c25b689ae1",
+        "label": "影武者瓦豆鲁迪"
+      }
+    ],
+    "ja": [
+      {
+        "term_id": "special:ability-bubble",
+        "label": "能力泡泡（Ability bubble）"
+      },
+      {
+        "term_id": "special:ability-star",
+        "label": "能力之星（Ability Star）"
+      },
+      {
+        "term_id": "character:ant-doom",
+        "label": "Ant Doom"
+      },
+      {
+        "term_id": "work:arena",
+        "label": "斗技场（Arena）"
+      },
+      {
+        "term_id": "form:baton",
+        "label": "Baton"
+      },
+      {
+        "term_id": "character:big-cappy",
+        "label": "Big Cappy"
+      },
+      {
+        "term_id": "character:big-squishy",
+        "label": "Big Squishy"
+      },
+      {
+        "term_id": "character:bitestatue",
+        "label": "半人鱼像！（BiteStatue）"
+      },
+      {
+        "term_id": "form:bomb-bomb",
+        "label": "Bomb-Bomb"
+      },
+      {
+        "term_id": "form:bomb-cutter",
+        "label": "Bomb-Cutter"
+      },
+      {
+        "term_id": "form:bomb-spark",
+        "label": "Bomb-Spark"
+      },
+      {
+        "term_id": "work:bonus-chance",
+        "label": "奖励游戏（Bonus Chance）"
+      },
+      {
+        "term_id": "character:boulder",
+        "label": "滚石（Boulder）"
+      },
+      {
+        "term_id": "form:burn-bomb",
+        "label": "Burn-Bomb"
+      },
+      {
+        "term_id": "form:burn-burn",
+        "label": "Burn-Burn"
+      },
+      {
+        "term_id": "form:burn-cutter",
+        "label": "Burn-Cutter"
+      },
+      {
+        "term_id": "character:burner-guardian",
+        "label": "喷火眼镜蛇！（Burner Guardian）"
+      },
+      {
+        "term_id": "form:burn-ice",
+        "label": "Burn-Ice"
+      },
+      {
+        "term_id": "form:burning-stone",
+        "label": "燃烧石块（Burning Stone）"
+      },
+      {
+        "term_id": "form:burn-needle",
+        "label": "Burn-Needle"
+      },
+      {
+        "term_id": "form:burn-spark",
+        "label": "Burn-Spark"
+      },
+      {
+        "term_id": "character:butterfly",
+        "label": "Butterfly"
+      },
+      {
+        "term_id": "character:capsule-j2-f30b37d1",
+        "label": "Capsule J2"
+      },
+      {
+        "term_id": "character:capsule-j3",
+        "label": "Capsule J3"
+      },
+      {
+        "term_id": "character:captain-waddle-doo",
+        "label": "Captain Waddle Doo"
+      },
+      {
+        "term_id": "special:cell-phone",
+        "label": "便携通信机（Cell Phone）"
+      },
+      {
+        "term_id": "character:chain-flamer",
+        "label": "Chain Flamer"
+      },
+      {
+        "term_id": "form:chumbrella",
+        "label": "相亲相爱伞（Chumbrella）"
+      },
+      {
+        "term_id": "character:combo-cannon",
+        "label": "Combo Cannon"
+      },
+      {
+        "term_id": "form:cook-potluck",
+        "label": "炖锅盟友（Cook Potluck）"
+      },
+      {
+        "term_id": "form:crash-rush",
+        "label": "慌乱爆裂（Crash Rush）"
+      },
+      {
+        "term_id": "character:cron",
+        "label": "Cron"
+      },
+      {
+        "term_id": "special:crystal-clear-crossing",
+        "label": "结晶街道（Crystal-Clear Crossing）"
+      },
+      {
+        "term_id": "form:cupid",
+        "label": "天使（Cupid）"
+      },
+      {
+        "term_id": "form:curling",
+        "label": "扫把冰壶（Curling）"
+      },
+      {
+        "term_id": "special:current",
+        "label": "水流（Current）"
+      },
+      {
+        "term_id": "form:cutter-cutter",
+        "label": "Cutter-Cutter"
+      },
+      {
+        "term_id": "special:decisive-battlefield",
+        "label": "大决战（Decisive Battlefield）"
+      },
+      {
+        "term_id": "character:dedede-doll",
+        "label": "Dedede Doll"
+      },
+      {
+        "term_id": "special:deep-dive-drive",
+        "label": "深海5000（Deep-Dive Drive）"
+      },
+      {
+        "term_id": "character:delivery-man",
+        "label": "Delivery Man"
+      },
+      {
+        "term_id": "character:doctor-moro",
+        "label": "Doctor Moro"
+      },
+      {
+        "term_id": "character:dream-land-princess",
+        "label": "Dream Land princess"
+      },
+      {
+        "term_id": "special:dreamscape",
+        "label": "梦幻异界（Dreamscape）"
+      },
+      {
+        "term_id": "character:driver-waddle-dee",
+        "label": "Driver Waddle Dee"
+      },
+      {
+        "term_id": "special:drop-star",
+        "label": "掉落星星（Drop Star）"
+      },
+      {
+        "term_id": "character:electro-saw",
+        "label": "Electro Saw"
+      },
+      {
+        "term_id": "character:escargoon-s-mother",
+        "label": "Escargoon's mother"
+      },
+      {
+        "term_id": "character:fairy",
+        "label": "Fairy"
+      },
+      {
+        "term_id": "form:fatal-chorus",
+        "label": "死亡之声合唱团（Fatal Chorus）"
+      },
+      {
+        "term_id": "form:festival-dance",
+        "label": "热情庆典（Festival Dance）"
+      },
+      {
+        "term_id": "form:flash",
+        "label": "闪光（Flash）"
+      },
+      {
+        "term_id": "special:food-bubble",
+        "label": "食物泡泡（Food bubble）"
+      },
+      {
+        "term_id": "form:friend-bounce",
+        "label": "弹跳盟友（Friend Bounce）"
+      },
+      {
+        "term_id": "form:friend-super-vac",
+        "label": "吸尘器盟友（Friend Super-Vac）"
+      },
+      {
+        "term_id": "form:friend-throw",
+        "label": "力投盟友（Friend Throw）"
+      },
+      {
+        "term_id": "character:galactic-nova-nucleus",
+        "label": "Galactic Nova Nucleus"
+      },
+      {
+        "term_id": "special:gathering-of-the-beast-council",
+        "label": "干部招集（Gathering of the Beast Council）"
+      },
+      {
+        "term_id": "special:gear",
+        "label": "齿轮（gear）"
+      },
+      {
+        "term_id": "form:geokinesis",
+        "label": "念力移物（Geokinesis）"
+      },
+      {
+        "term_id": "character:girl-blob",
+        "label": "Girl blob"
+      },
+      {
+        "term_id": "special:grass",
+        "label": "草丛（Grass）"
+      },
+      {
+        "term_id": "character:halberd-cannon",
+        "label": "Halberd cannon"
+      },
+      {
+        "term_id": "character:hb-002",
+        "label": "哔奇妈妈（HB-002）"
+      },
+      {
+        "term_id": "character:hb-007",
+        "label": "HB-007"
+      },
+      {
+        "term_id": "character:hr-h",
+        "label": "HR-H"
+      },
+      {
+        "term_id": "form:ice-cutter",
+        "label": "Ice-Cutter"
+      },
+      {
+        "term_id": "character:ice-dragon-robot",
+        "label": "Ice Dragon Robot"
+      },
+      {
+        "term_id": "form:ice-ice",
+        "label": "Ice-Ice"
+      },
+      {
+        "term_id": "form:ice-needle",
+        "label": "Ice-Needle"
+      },
+      {
+        "term_id": "form:ice-spark",
+        "label": "Ice-Spark"
+      },
+      {
+        "term_id": "character:icicle",
+        "label": "Icicle"
+      },
+      {
+        "term_id": "form:icicle-lance",
+        "label": "冰柱弹（Icicle Lance）"
+      },
+      {
+        "term_id": "form:iron",
+        "label": "Iron"
+      },
+      {
+        "term_id": "character:iron-ball",
+        "label": "旋转铁球！（Iron Ball）"
+      },
+      {
+        "term_id": "character:iron-hammer",
+        "label": "Iron Hammer"
+      },
+      {
+        "term_id": "form:jelly",
+        "label": "果凍（Jelly）"
+      },
+      {
+        "term_id": "character:j-j",
+        "label": "J.J."
+      },
+      {
+        "term_id": "form:kabuki",
+        "label": "Kabuki"
+      },
+      {
+        "term_id": "work:kirby-and-the-big-panic-in-gloomy-woods",
+        "label": "Kirby and the Big Panic in Gloomy Woods!"
+      },
+      {
+        "term_id": "work:kirby-and-the-dangerous-gourmet-mansion",
+        "label": "Kirby and the Dangerous Gourmet Mansion?!"
+      },
+      {
+        "term_id": "work:kirby-and-the-search-for-the-dreamy-gears",
+        "label": "Kirby and the Search for the Dreamy Gears!"
+      },
+      {
+        "term_id": "character:kirby-ball",
+        "label": "Kirby Ball"
+      },
+      {
+        "term_id": "work:kirby-big-race-in-pupupu-land",
+        "label": "Kirby: Big Race in Pupupu Land!"
+      },
+      {
+        "term_id": "work:kirby-meets-the-squeak-squad",
+        "label": "Kirby Meets the Squeak Squad!"
+      },
+      {
+        "term_id": "work:kirby-meta-knight-and-the-knight-of-yomi",
+        "label": "Kirby: Meta Knight and the Knight of Yomi"
+      },
+      {
+        "term_id": "work:kirby-meta-knight-and-the-puppet-princess",
+        "label": "Kirby: Meta Knight and the Puppet Princess"
+      },
+      {
+        "term_id": "work:kirby-portal-april-fools-2019",
+        "label": "Kirby Portal April Fools 2019"
+      },
+      {
+        "term_id": "work:kirby-s-avalanche",
+        "label": "卡比雪崩（Kirby's Avalanche）"
+      },
+      {
+        "term_id": "work:kirby-save-the-rainbow-islands",
+        "label": "Kirby: Save the Rainbow Islands!"
+      },
+      {
+        "term_id": "character:kirby-s-characteristics",
+        "label": "Kirby's characteristics"
+      },
+      {
+        "term_id": "work:kirby-s-decisive-battle-battle-royale",
+        "label": "Kirby's Decisive Battle! Battle Royale!!"
+      },
+      {
+        "term_id": "work:kirby-sever-evil-with-a-slash-in-a-flash",
+        "label": "Kirby: Sever Evil with a Slash in a Flash!"
+      },
+      {
+        "term_id": "work:kirby-s-labyrinth-rescue",
+        "label": "Kirby's Labyrinth Rescue!"
+      },
+      {
+        "term_id": "character:kirby-species",
+        "label": "Kirby (species)"
+      },
+      {
+        "term_id": "work:kirby-s-star-stacker-game-boy",
+        "label": "Kirby's Star Stacker (Game Boy)"
+      },
+      {
+        "term_id": "work:kirby-s-star-stacker-super-famicom",
+        "label": "Kirby's Star Stacker (Super Famicom)"
+      },
+      {
+        "term_id": "character:large-enemy",
+        "label": "Large enemy"
+      },
+      {
+        "term_id": "character:lololo-lalala",
+        "label": "箩箩箩＆菈菈菈（Lololo & Lalala）"
+      },
+      {
+        "term_id": "character:lumberjack-waddle-dee",
+        "label": "Lumberjack Waddle Dee"
+      },
+      {
+        "term_id": "special:machine-planet-mekkai",
+        "label": "机械之星 麦凯（Machine Planet MEKKAI）"
+      },
+      {
+        "term_id": "form:magoloran-launch",
+        "label": "飞吧 魔法帆洛亚（Magoloran Launch）"
+      },
+      {
+        "term_id": "character:magu",
+        "label": "Magu"
+      },
+      {
+        "term_id": "character:merman-statue",
+        "label": "Merman Statue"
+      },
+      {
+        "term_id": "character:meteor",
+        "label": "Meteor"
+      },
+      {
+        "term_id": "character:monsieur-goan",
+        "label": "Monsieur Goan"
+      },
+      {
+        "term_id": "character:monster",
+        "label": "Monster"
+      },
+      {
+        "term_id": "character:mr-chip-58c4ed70",
+        "label": "Mr. Chip"
+      },
+      {
+        "term_id": "form:needle-bomb",
+        "label": "Needle-Bomb"
+      },
+      {
+        "term_id": "form:needle-cutter",
+        "label": "Needle-Cutter"
+      },
+      {
+        "term_id": "form:needle-needle",
+        "label": "Needle-Needle"
+      },
+      {
+        "term_id": "form:needle-spark",
+        "label": "Needle-Spark"
+      },
+      {
+        "term_id": "character:neichel",
+        "label": "NEICHEL"
+      },
+      {
+        "term_id": "character:nightmare-0ffa9326",
+        "label": "梦魇（Nightmare）"
+      },
+      {
+        "term_id": "special:outfit",
+        "label": "装扮（Outfit）"
+      },
+      {
+        "term_id": "work:play-coin",
+        "label": "游戏币（Play Coin）"
+      },
+      {
+        "term_id": "character:poison-apple",
+        "label": "Poison apple"
+      },
+      {
+        "term_id": "character:prism-ball",
+        "label": "棱镜球！（Prism Ball）"
+      },
+      {
+        "term_id": "character:queen",
+        "label": "Queen"
+      },
+      {
+        "term_id": "character:red-buttonbee",
+        "label": "Red Buttonbee"
+      },
+      {
+        "term_id": "form:ribbon-s-crystal",
+        "label": "莉宝水晶（Ribbon's Crystal）"
+      },
+      {
+        "term_id": "form:rising-sizzler",
+        "label": "火焰风射（Rising Sizzler）"
+      },
+      {
+        "term_id": "form:rock-painter",
+        "label": "乱涂物体（Rock Painter）"
+      },
+      {
+        "term_id": "special:roulette-bubble",
+        "label": "神秘泡泡（Roulette bubble）"
+      },
+      {
+        "term_id": "form:saucer",
+        "label": "Saucer"
+      },
+      {
+        "term_id": "special:seaside",
+        "label": "海岸（Seaside）"
+      },
+      {
+        "term_id": "character:security-laser",
+        "label": "Security Laser"
+      },
+      {
+        "term_id": "character:sizzle-yo-yo-kirby",
+        "label": "火焰溜溜球卡比（Sizzle Yo-Yo Kirby）"
+      },
+      {
+        "term_id": "form:spark-cutter",
+        "label": "Spark-Cutter"
+      },
+      {
+        "term_id": "form:spark-spark",
+        "label": "Spark-Spark"
+      },
+      {
+        "term_id": "special:spin-panel",
+        "label": "旋转面板（Spin Panel）"
+      },
+      {
+        "term_id": "character:spring-note",
+        "label": "音符弹簧！（Spring Note）"
+      },
+      {
+        "term_id": "form:steel-ball",
+        "label": "钢球（Steel Ball）"
+      },
+      {
+        "term_id": "form:still-life",
+        "label": "食物具体化（Still Life）"
+      },
+      {
+        "term_id": "form:stone-bomb",
+        "label": "Stone-Bomb"
+      },
+      {
+        "term_id": "form:stone-cutter",
+        "label": "Stone-Cutter"
+      },
+      {
+        "term_id": "form:stone-ice",
+        "label": "Stone-Ice"
+      },
+      {
+        "term_id": "form:stone-needle",
+        "label": "Stone-Needle"
+      },
+      {
+        "term_id": "form:stone-spark",
+        "label": "Stone-Spark"
+      },
+      {
+        "term_id": "form:stone-stone",
+        "label": "Stone-Stone"
+      },
+      {
+        "term_id": "special:switch-panel",
+        "label": "开关（Switch Panel）"
+      },
+      {
+        "term_id": "special:the-dunes",
+        "label": "沙丘（The Dunes）"
+      },
+      {
+        "term_id": "special:the-empyrean",
+        "label": "天空（The Empyrean）"
+      },
+      {
+        "term_id": "special:the-grasslands",
+        "label": "草原（The Grasslands）"
+      },
+      {
+        "term_id": "work:the-great-cave-offensive",
+        "label": "洞窟大作战（The Great Cave Offensive）"
+      },
+      {
+        "term_id": "form:thundersplash",
+        "label": "电气水弹（Thundersplash）"
+      },
+      {
+        "term_id": "form:top",
+        "label": "Top"
+      },
+      {
+        "term_id": "character:traitor-magolor-ex",
+        "label": "魔法洛亚EX（Traitor Magolor EX）"
+      },
+      {
+        "term_id": "special:trophy",
+        "label": "奖杯（Trophy）"
+      },
+      {
+        "term_id": "character:waddle-dee-portrait",
+        "label": "Waddle Dee portrait"
+      },
+      {
+        "term_id": "character:whales",
+        "label": "Whales"
+      },
+      {
+        "term_id": "character:woodkeeper",
+        "label": "Woodkeeper"
+      },
+      {
+        "term_id": "character:yarn-mole",
+        "label": "Yarn mole"
+      },
+      {
+        "term_id": "form:zap-splasher",
+        "label": "冲击电波（Zap Splasher）"
+      }
+    ]
+  },
+  "conflicts": [
+    {
+      "alias": "Capsule J2",
+      "languages": [
+        "en",
+        "zh"
+      ],
+      "entries": [
+        {
+          "term_id": "character:capsule-j2",
+          "label": "卡普索 J3！（Capsule J2）"
+        },
+        {
+          "term_id": "character:capsule-j2-f30b37d1",
+          "label": "Capsule J2"
+        }
+      ]
+    },
+    {
+      "alias": "Capsule J3",
+      "languages": [
+        "en",
+        "zh"
+      ],
+      "entries": [
+        {
+          "term_id": "character:capsule-j2",
+          "label": "卡普索 J3！（Capsule J2）"
+        },
+        {
+          "term_id": "character:capsule-j3",
+          "label": "Capsule J3"
+        }
+      ]
+    },
+    {
+      "alias": "Cron",
+      "languages": [
+        "en",
+        "zh"
+      ],
+      "entries": [
+        {
+          "term_id": "character:carrie",
+          "label": "运运隆（Carrie）"
+        },
+        {
+          "term_id": "character:cron",
+          "label": "Cron"
+        }
+      ]
+    },
+    {
+      "alias": "Cupid",
+      "languages": [
+        "en"
+      ],
+      "entries": [
+        {
+          "term_id": "character:angel",
+          "label": "天使（Angel）"
+        },
+        {
+          "term_id": "form:cupid",
+          "label": "天使（Cupid）"
+        }
+      ]
+    },
+    {
+      "alias": "Deepsee",
+      "languages": [
+        "en",
+        "zh"
+      ],
+      "entries": [
+        {
+          "term_id": "character:anemonee",
+          "label": "海葵（Anemonee）"
+        },
+        {
+          "term_id": "character:deepsee",
+          "label": "Deepsee"
+        }
+      ]
+    },
+    {
+      "alias": "Dekabu",
+      "languages": [
+        "en",
+        "zh"
+      ],
+      "entries": [
+        {
+          "term_id": "character:big-kabu",
+          "label": "大石像怪（Big Kabu）"
+        },
+        {
+          "term_id": "character:dekabu",
+          "label": "Dekabu"
+        }
+      ]
+    },
+    {
+      "alias": "Doomer",
+      "languages": [
+        "en"
+      ],
+      "entries": [
+        {
+          "term_id": "character:darpa",
+          "label": "啦啪（Darpa）"
+        },
+        {
+          "term_id": "character:doomer",
+          "label": "洛啪（Doomer）"
+        }
+      ]
+    },
+    {
+      "alias": "Galactic Nova Nucleus",
+      "languages": [
+        "en",
+        "zh"
+      ],
+      "entries": [
+        {
+          "term_id": "character:galactic-nova-nucleus",
+          "label": "Galactic Nova Nucleus"
+        },
+        {
+          "term_id": "character:heart-of-nova-kirby-super-star",
+          "label": "银河·新星（Heart of Nova (Kirby Super Star)）"
+        }
+      ]
+    },
+    {
+      "alias": "Great Gear's SpikeWeight",
+      "languages": [
+        "en"
+      ],
+      "entries": [
+        {
+          "term_id": "character:rolling-pawn",
+          "label": "砝转转（Rolling Pawn）"
+        },
+        {
+          "term_id": "character:rolling-spike",
+          "label": "刺转转（Rolling Spike）"
+        }
+      ]
+    },
+    {
+      "alias": "Grumples",
+      "languages": [
+        "en",
+        "zh"
+      ],
+      "entries": [
+        {
+          "term_id": "character:blatzy",
+          "label": "怨念石像怪（Blatzy）"
+        },
+        {
+          "term_id": "character:grumples",
+          "label": "Grumples"
+        }
+      ]
+    },
+    {
+      "alias": "Lololo & Lalala",
+      "languages": [
+        "en"
+      ],
+      "entries": [
+        {
+          "term_id": "character:fololo-falala",
+          "label": "羅羅與拉拉（Fololo & Falala）"
+        },
+        {
+          "term_id": "character:lololo-lalala",
+          "label": "箩箩箩＆菈菈菈（Lololo & Lalala）"
+        }
+      ]
+    },
+    {
+      "alias": "Magoo",
+      "languages": [
+        "en"
+      ],
+      "entries": [
+        {
+          "term_id": "character:batamon",
+          "label": "冒牌怪（Batamon）"
+        },
+        {
+          "term_id": "character:magoo",
+          "label": "熔熔浆（Magoo）"
+        }
+      ]
+    },
+    {
+      "alias": "Magu",
+      "languages": [
+        "en",
+        "zh"
+      ],
+      "entries": [
+        {
+          "term_id": "character:magoo",
+          "label": "熔熔浆（Magoo）"
+        },
+        {
+          "term_id": "character:magu",
+          "label": "Magu"
+        }
+      ]
+    },
+    {
+      "alias": "Mr. Chip",
+      "languages": [
+        "en",
+        "zh"
+      ],
+      "entries": [
+        {
+          "term_id": "character:mr-chip",
+          "label": "奇普（Mr. Chip）"
+        },
+        {
+          "term_id": "character:mr-chip-58c4ed70",
+          "label": "Mr. Chip"
+        }
+      ]
+    },
+    {
+      "alias": "Nightmare",
+      "languages": [
+        "en"
+      ],
+      "entries": [
+        {
+          "term_id": "character:nightmare",
+          "label": "梦魇（Nightmare）"
+        },
+        {
+          "term_id": "character:nightmare-0ffa9326",
+          "label": "梦魇（Nightmare）"
+        }
+      ]
+    },
+    {
+      "alias": "Pluid",
+      "languages": [
+        "en"
+      ],
+      "entries": [
+        {
+          "term_id": "character:drop",
+          "label": "水滴（Drop）"
+        },
+        {
+          "term_id": "character:pluid",
+          "label": "液滴！（Pluid）"
+        }
+      ]
+    },
+    {
+      "alias": "Sectra Burt",
+      "languages": [
+        "en"
+      ],
+      "entries": [
+        {
+          "term_id": "character:bronto-burt",
+          "label": "飞翅球球（Bronto Burt）"
+        },
+        {
+          "term_id": "character:sectra-knight",
+          "label": "塞昆托骑士（Sectra Knight）"
+        }
+      ]
+    },
+    {
+      "alias": "Shadow Dedede",
+      "languages": [
+        "en",
+        "zh"
+      ],
+      "entries": [
+        {
+          "term_id": "character:noir-dedede",
+          "label": "暗影帝帝帝（Noir Dedede）"
+        },
+        {
+          "term_id": "character:shadow-dedede",
+          "label": "Shadow Dedede"
+        }
+      ]
+    },
+    {
+      "alias": "Traitor Magolor",
+      "languages": [
+        "en"
+      ],
+      "entries": [
+        {
+          "term_id": "character:magolor",
+          "label": "魔法洛亚（Magolor）"
+        },
+        {
+          "term_id": "character:traitor-magolor-ex",
+          "label": "魔法洛亚EX（Traitor Magolor EX）"
+        }
+      ]
+    },
+    {
+      "alias": "Traitor Magolor EX",
+      "languages": [
+        "en"
+      ],
+      "entries": [
+        {
+          "term_id": "character:magolor",
+          "label": "魔法洛亚（Magolor）"
+        },
+        {
+          "term_id": "character:traitor-magolor-ex",
+          "label": "魔法洛亚EX（Traitor Magolor EX）"
+        }
+      ]
+    },
+    {
+      "alias": "アイスダス",
+      "languages": [
+        "ja"
+      ],
+      "entries": [
+        {
+          "term_id": "character:dice",
+          "label": "冻冻兽（Dice）"
+        },
+        {
+          "term_id": "character:ice-dice",
+          "label": "Ice Dice"
+        }
+      ]
+    },
+    {
+      "alias": "アイストン",
+      "languages": [
+        "ja"
+      ],
+      "entries": [
+        {
+          "term_id": "character:ice-block",
+          "label": "冰方块（Ice Block）"
+        },
+        {
+          "term_id": "character:iceton",
+          "label": "Iceton"
+        }
+      ]
+    },
+    {
+      "alias": "エニラム",
+      "languages": [
+        "ja"
+      ],
+      "entries": [
+        {
+          "term_id": "character:anemonee",
+          "label": "海葵（Anemonee）"
+        },
+        {
+          "term_id": "character:deepsee",
+          "label": "Deepsee"
+        }
+      ]
+    },
+    {
+      "alias": "グランプルス",
+      "languages": [
+        "ja"
+      ],
+      "entries": [
+        {
+          "term_id": "character:blatzy",
+          "label": "怨念石像怪（Blatzy）"
+        },
+        {
+          "term_id": "character:grumples",
+          "label": "Grumples"
+        }
+      ]
+    },
+    {
+      "alias": "グルスパイク",
+      "languages": [
+        "ja"
+      ],
+      "entries": [
+        {
+          "term_id": "character:rolling-pawn",
+          "label": "砝转转（Rolling Pawn）"
+        },
+        {
+          "term_id": "character:rolling-spike",
+          "label": "刺转转（Rolling Spike）"
+        }
+      ]
+    },
+    {
+      "alias": "セクトラナイト",
+      "languages": [
+        "ja"
+      ],
+      "entries": [
+        {
+          "term_id": "character:bronto-burt",
+          "label": "飞翅球球（Bronto Burt）"
+        },
+        {
+          "term_id": "character:sectra-knight",
+          "label": "塞昆托骑士（Sectra Knight）"
+        }
+      ]
+    },
+    {
+      "alias": "デカブー",
+      "languages": [
+        "ja"
+      ],
+      "entries": [
+        {
+          "term_id": "character:big-kabu",
+          "label": "大石像怪（Big Kabu）"
+        },
+        {
+          "term_id": "character:dekabu",
+          "label": "Dekabu"
+        }
+      ]
+    },
+    {
+      "alias": "ブラックデデデ",
+      "languages": [
+        "ja"
+      ],
+      "entries": [
+        {
+          "term_id": "character:noir-dedede",
+          "label": "暗影帝帝帝（Noir Dedede）"
+        },
+        {
+          "term_id": "character:shadow-dedede",
+          "label": "Shadow Dedede"
+        }
+      ]
+    },
+    {
+      "alias": "プルイド",
+      "languages": [
+        "ja"
+      ],
+      "entries": [
+        {
+          "term_id": "character:drop",
+          "label": "水滴（Drop）"
+        },
+        {
+          "term_id": "character:pluid",
+          "label": "液滴！（Pluid）"
+        }
+      ]
+    },
+    {
+      "alias": "ボビン",
+      "languages": [
+        "ja"
+      ],
+      "entries": [
+        {
+          "term_id": "character:bobin",
+          "label": "啵滨鱼（Bobin）"
+        },
+        {
+          "term_id": "form:bobbin",
+          "label": "线轴（Bobbin）"
+        }
+      ]
+    },
+    {
+      "alias": "ワドルディ",
+      "languages": [
+        "ja"
+      ],
+      "entries": [
+        {
+          "term_id": "character:raft-waddle-dee",
+          "label": "划船瓦豆鲁迪（Raft Waddle Dee）"
+        },
+        {
+          "term_id": "character:waddle-dee",
+          "label": "瓦豆鲁迪（Waddle Dee）"
+        }
+      ]
+    },
+    {
+      "alias": "哔奇妈妈",
+      "languages": [
+        "zh"
+      ],
+      "entries": [
+        {
+          "term_id": "character:hb-002",
+          "label": "哔奇妈妈（HB-002）"
+        },
+        {
+          "term_id": "character:pitch-mama",
+          "label": "哔奇妈妈（Pitch Mama）"
+        }
+      ]
+    },
+    {
+      "alias": "天使",
+      "languages": [
+        "zh"
+      ],
+      "entries": [
+        {
+          "term_id": "character:angel",
+          "label": "天使（Angel）"
+        },
+        {
+          "term_id": "form:cupid",
+          "label": "天使（Cupid）"
+        }
+      ]
+    },
+    {
+      "alias": "梦魇",
+      "languages": [
+        "zh"
+      ],
+      "entries": [
+        {
+          "term_id": "character:nightmare",
+          "label": "梦魇（Nightmare）"
+        },
+        {
+          "term_id": "character:nightmare-0ffa9326",
+          "label": "梦魇（Nightmare）"
+        }
+      ]
+    },
+    {
+      "alias": "梦魇 (Nightmare)",
+      "languages": [
+        "zh"
+      ],
+      "entries": [
+        {
+          "term_id": "character:nightmare",
+          "label": "梦魇（Nightmare）"
+        },
+        {
+          "term_id": "character:nightmare-0ffa9326",
+          "label": "梦魇（Nightmare）"
+        }
+      ]
+    },
+    {
+      "alias": "梦魇（Nightmare）",
+      "languages": [
+        "zh"
+      ],
+      "entries": [
+        {
+          "term_id": "character:nightmare",
+          "label": "梦魇（Nightmare）"
+        },
+        {
+          "term_id": "character:nightmare-0ffa9326",
+          "label": "梦魇（Nightmare）"
+        }
+      ]
+    },
+    {
+      "alias": "火热象象",
+      "languages": [
+        "zh"
+      ],
+      "entries": [
+        {
+          "term_id": "character:heat-phanphan",
+          "label": "火热象象（Heat Phanphan）"
+        },
+        {
+          "term_id": "special:heat-phanphan",
+          "label": "火热象象（英： Heat Phanphan）"
+        }
+      ]
+    },
+    {
+      "alias": "电离子团",
+      "languages": [
+        "zh"
+      ],
+      "entries": [
+        {
+          "term_id": "character:plasma-wisp",
+          "label": "電離子團（Plasma Wisp）"
+        },
+        {
+          "term_id": "special:plasma-wisp",
+          "label": "电离子团（英： Plasma Wisp）"
+        }
+      ]
+    },
+    {
+      "alias": "箩箩箩的城堡",
+      "languages": [
+        "zh"
+      ],
+      "entries": [
+        {
+          "term_id": "character:1-png",
+          "label": "箩箩箩的城堡（|图片=帕菲云1.png）"
+        },
+        {
+          "term_id": "special:castle-lololo",
+          "label": "箩箩箩的城堡（Castle Lololo）"
+        }
+      ]
+    },
+    {
+      "alias": "箩箩箩＆菈菈菈",
+      "languages": [
+        "zh"
+      ],
+      "entries": [
+        {
+          "term_id": "character:fololo-falala",
+          "label": "羅羅與拉拉（Fololo & Falala）"
+        },
+        {
+          "term_id": "character:lololo-lalala",
+          "label": "箩箩箩＆菈菈菈（Lololo & Lalala）"
+        }
+      ]
+    },
+    {
+      "alias": "魔法洛亚EX",
+      "languages": [
+        "zh"
+      ],
+      "entries": [
+        {
+          "term_id": "character:magolor",
+          "label": "魔法洛亚（Magolor）"
+        },
+        {
+          "term_id": "character:traitor-magolor-ex",
+          "label": "魔法洛亚EX（Traitor Magolor EX）"
+        }
+      ]
+    }
+  ]
+}
