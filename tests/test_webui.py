@@ -423,6 +423,8 @@ class KirbyCatalogWebUiRegistrationTests(unittest.TestCase):
             self.assertIn(f"/{PLUGIN_ID}/admin/entries/<entry_id>/image", paths)
             self.assertIn(f"/{PLUGIN_ID}/admin/groups/user/save", paths)
             self.assertIn(f"/{PLUGIN_ID}/admin/trash/restore", paths)
+            self.assertIn(f"/{PLUGIN_ID}/admin/terminology/entry", paths)
+            self.assertNotIn(f"/{PLUGIN_ID}/admin/terminology/<term_id>", paths)
             self.assertIn(f"/{PLUGIN_ID}/admin/terminology/save", paths)
 
     def test_page_bundle_uses_bridge_local_icons_and_responsive_themes(self):
@@ -441,6 +443,7 @@ class KirbyCatalogWebUiRegistrationTests(unittest.TestCase):
         self.assertIn('apiPost("admin/entries/add"', script)
         self.assertIn('apiPost("admin/entries/delete"', script)
         self.assertIn('apiPost("admin/trash/restore"', script)
+        self.assertIn('apiGet("admin/terminology/entry"', script)
         self.assertIn('apiPost("admin/terminology/save"', script)
         self.assertIn('apiUpload("admin/terminology/import"', script)
         self.assertIn("confirmAction({", script)

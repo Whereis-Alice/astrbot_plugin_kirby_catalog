@@ -1182,7 +1182,7 @@ class KirbyCatalogWebUI:
             ("admin/audit", self.audit, ["GET"], "List WebUI audit records"),
             ("admin/terminology", self.terminology, ["GET"], "List terminology entries"),
             (
-                "admin/terminology/<term_id>",
+                "admin/terminology/entry",
                 self.terminology_entry,
                 ["GET"],
                 "Get terminology entry",
@@ -1387,8 +1387,13 @@ class KirbyCatalogWebUI:
         }
         return await self._read(self.service.list_terminology, params)
 
-    async def terminology_entry(self, term_id: str):
-        return await self._read(self.service.terminology_detail, term_id)
+    async def terminology_entry(self):
+        # Terminology IDs contain characters that dynamic Page API routes do
+        # not preserve reliably, so read the ID from the query string instead.
+        return await self._read(
+            self.service.terminology_detail,
+            _query_value("term_id", ""),
+        )
 
     async def save_terminology(self):
         return await self._write(
