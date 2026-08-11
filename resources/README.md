@@ -47,9 +47,10 @@ python tools/audit_shinkaku_page_names.py
 ```
 
 `catalog_index` 是公开速查编号：按作品、原站栏目和页面列表顺序连续排列，
-供群内 `卡比真格速查图` 与 `卡比真格文档 88` 共用。速查图由插件首次执行命令
-时在插件数据目录生成并缓存，不把临时 PNG 提交到仓库；需要程序读取时请使用
-JSON，人工查找时可使用 Markdown 或 CSV。
+供群内 `卡比真格速查图` 与 `卡比真格文档 88` 共用。速查图默认把全部页面
+渲染为一张五列分组总览图，也可通过配置恢复旧版分页；图片在插件首次执行命令
+时生成并缓存，不把临时 PNG 提交到仓库。需要程序读取时请使用 JSON，人工查找
+时可使用 Markdown 或 CSV。
 
 维护者取得新的页面列表快照后，可附加
 `--source-snapshot path/to/shinkaku_pages_raw.json` 做逐 URL 覆盖比对。

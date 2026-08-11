@@ -11,7 +11,8 @@ from PIL import Image, ImageDraw, ImageFont
 
 DEFAULT_ENTRIES_PER_PAGE = 50
 DEFAULT_COLUMNS = 2
-REFERENCE_RENDER_VERSION = 2
+DEFAULT_COMPACT_COLUMNS = 5
+REFERENCE_RENDER_VERSION = 3
 
 _GROUP_PALETTE = (
     ((255, 228, 236), (154, 54, 91), (255, 241, 246)),
@@ -170,6 +171,22 @@ def _paginate_rows(
     return pages
 
 
+def _compact_rows(
+    entries: Sequence[dict[str, Any]], columns: int
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for group_key, group_entries in _grouped_entries(entries):
+        rows.append({"kind": "group", "group": group_key})
+        for row_start in range(0, len(group_entries), columns):
+            rows.append(
+                {
+                    "kind": "entries",
+                    "entries": group_entries[row_start : row_start + columns],
+                }
+            )
+    return rows
+
+
 def _entry_height(
     draw: ImageDraw.ImageDraw,
     entry: dict[str, Any],
@@ -182,22 +199,47 @@ def _entry_height(
     return max(112, 64 + len(zh_lines) * 28 + len(ja_lines) * 25)
 
 
+def _compact_entry_names(entry: dict[str, Any]) -> tuple[str, str]:
+    chinese = str(entry.get("base_zh") or entry.get("title_zh") or "未命名页面")
+    japanese = str(entry.get("base_ja") or entry.get("title_ja") or "未命名页面")
+    return chinese.strip(), japanese.strip()
+
+
+def _compact_entry_height(
+    draw: ImageDraw.ImageDraw,
+    entry: dict[str, Any],
+    name_font: ImageFont.ImageFont,
+    japanese_font: ImageFont.ImageFont,
+    name_width: int,
+) -> int:
+    chinese, japanese = _compact_entry_names(entry)
+    zh_lines = _wrap_text(draw, chinese, name_font, name_width)
+    ja_lines = _wrap_text(draw, japanese, japanese_font, name_width)
+    return max(56, 16 + len(zh_lines) * 21 + len(ja_lines) * 17)
+
+
 def _safe_stem(value: str) -> str:
     return re.sub(r"[^0-9A-Za-z_-]+", "_", value).strip("._") or "reference"
 
 
 def _signature(
-    entries: Sequence[dict[str, Any]], entries_per_page: int, columns: int
+    entries: Sequence[dict[str, Any]],
+    entries_per_page: int,
+    columns: int,
+    single_image: bool,
 ) -> str:
     payload = {
         "version": REFERENCE_RENDER_VERSION,
         "entries_per_page": entries_per_page,
         "columns": columns,
+        "single_image": single_image,
         "entries": [
             {
                 "catalog_index": entry.get("catalog_index"),
                 "title_zh": entry.get("title_zh"),
                 "title_ja": entry.get("title_ja"),
+                "base_zh": entry.get("base_zh"),
+                "base_ja": entry.get("base_ja"),
                 "game_zh": entry.get("game_zh"),
                 "game_ja": entry.get("game_ja"),
                 "section_zh": entry.get("section_zh"),
@@ -358,12 +400,182 @@ def _draw_reference_page(
     canvas.save(output_path, format="PNG", optimize=True)
 
 
+def _draw_compact_reference(
+    output_path: Path,
+    entries: Sequence[dict[str, Any]],
+    *,
+    columns: int,
+) -> None:
+    canvas_width = 2160
+    margin_x = 24
+    top_height = 118
+    footer_height = 32
+    row_gap = 2
+    column_gap = 6
+    group_height = 46
+    cell_width = (
+        canvas_width - margin_x * 2 - column_gap * (columns - 1)
+    ) // columns
+    title_font = _font(34, True)
+    subtitle_font = _font(17)
+    group_font = _font(18, True)
+    group_subtitle_font = _font(12)
+    index_font = _font(14, True)
+    name_font = _font(16, True)
+    japanese_font = _font(13)
+    draw_probe = Image.new("RGB", (1, 1), "white")
+    probe = ImageDraw.Draw(draw_probe)
+    rows = _compact_rows(entries, columns)
+
+    prepared_rows: list[tuple[dict[str, Any], int]] = []
+    for row in rows:
+        if row.get("kind") == "group":
+            prepared_rows.append((row, group_height))
+            continue
+        row_entries = list(row.get("entries", []) or [])
+        row_height = max(
+            _compact_entry_height(
+                probe,
+                entry,
+                name_font,
+                japanese_font,
+                cell_width - 70,
+            )
+            for entry in row_entries
+        )
+        prepared_rows.append((row, row_height))
+
+    canvas_height = top_height + footer_height
+    if prepared_rows:
+        canvas_height += sum(height for _, height in prepared_rows)
+        canvas_height += row_gap * (len(prepared_rows) - 1)
+    canvas = Image.new("RGB", (canvas_width, canvas_height), (245, 247, 250))
+    draw = ImageDraw.Draw(canvas)
+
+    draw.rectangle(
+        (0, 0, canvas_width, top_height - 8),
+        fill=(255, 255, 255),
+        outline=(225, 230, 236),
+        width=1,
+    )
+    draw.rectangle((0, 0, 12, top_height - 8), fill=(232, 103, 145))
+    draw.text(
+        (34, 24),
+        "真格攻略 Wiki 名称速查",
+        fill=(45, 50, 58),
+        font=title_font,
+    )
+    draw.text(
+        (36, 72),
+        "中文名称 / 日本語名称  ·  按作品、资料类型与原站顺序编号",
+        fill=(99, 108, 119),
+        font=subtitle_font,
+    )
+    range_label = f"共 {len(entries)} 个页面  ·  #1-#{len(entries)}"
+    range_box = draw.textbbox((0, 0), range_label, font=subtitle_font)
+    draw.text(
+        (canvas_width - 34 - (range_box[2] - range_box[0]), 34),
+        range_label,
+        fill=(38, 104, 137),
+        font=subtitle_font,
+    )
+
+    y = top_height
+    palette_index = 0
+    entry_row_index = 0
+    for row, row_height in prepared_rows:
+        if row.get("kind") == "group":
+            game_zh, game_ja, section_zh, section_ja = row["group"]
+            soft, dark, _ = _GROUP_PALETTE[palette_index % len(_GROUP_PALETTE)]
+            palette_index += 1
+            draw.rectangle(
+                (margin_x, y, canvas_width - margin_x, y + row_height),
+                fill=soft,
+            )
+            draw.text(
+                (margin_x + 12, y + 5),
+                f"{game_zh}  ·  {section_zh}",
+                fill=dark,
+                font=group_font,
+            )
+            subtitle = " / ".join(
+                value for value in (game_ja, section_ja) if value
+            )
+            if subtitle:
+                draw.text(
+                    (margin_x + 13, y + 28),
+                    subtitle,
+                    fill=dark,
+                    font=group_subtitle_font,
+                )
+        else:
+            row_fill = (
+                (255, 255, 255)
+                if entry_row_index % 2 == 0
+                else (239, 242, 246)
+            )
+            entry_row_index += 1
+            row_entries = list(row.get("entries", []) or [])
+            for column in range(columns):
+                x = margin_x + column * (cell_width + column_gap)
+                draw.rectangle(
+                    (x, y, x + cell_width, y + row_height),
+                    fill=row_fill,
+                    outline=(226, 231, 237),
+                    width=1,
+                )
+                if column >= len(row_entries):
+                    continue
+                entry = row_entries[column]
+                badge = f"#{int(entry.get('catalog_index') or entry.get('source_index') or 0)}"
+                draw.text(
+                    (x + 8, y + 8),
+                    badge,
+                    fill=(38, 104, 137),
+                    font=index_font,
+                )
+                chinese, japanese = _compact_entry_names(entry)
+                text_x = x + 62
+                text_width = cell_width - 70
+                zh_lines = _wrap_text(draw, chinese, name_font, text_width)
+                ja_lines = _wrap_text(draw, japanese, japanese_font, text_width)
+                text_y = y + 5
+                for line in zh_lines:
+                    draw.text(
+                        (text_x, text_y),
+                        line,
+                        fill=(48, 53, 61),
+                        font=name_font,
+                    )
+                    text_y += 21
+                for line in ja_lines:
+                    draw.text(
+                        (text_x, text_y),
+                        line,
+                        fill=(102, 111, 121),
+                        font=japanese_font,
+                    )
+                    text_y += 17
+        y += row_height + row_gap
+
+    footer = "完整名称、译名来源与页面 URL：resources/shinkaku_page_names.json / .csv / .md"
+    draw.text(
+        (margin_x, canvas_height - footer_height + 8),
+        footer,
+        fill=(119, 128, 138),
+        font=group_subtitle_font,
+    )
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    canvas.save(output_path, format="PNG", optimize=True)
+
+
 def render_shinkaku_reference_pages(
     output_dir: Path,
     entries: Iterable[dict[str, Any]],
     *,
     entries_per_page: int = DEFAULT_ENTRIES_PER_PAGE,
     columns: int = DEFAULT_COLUMNS,
+    single_image: bool = True,
 ) -> list[Path]:
     """Render the bundled Chinese/Japanese page-name index into cached PNGs."""
 
@@ -371,11 +583,16 @@ def render_shinkaku_reference_pages(
     if not normalised:
         raise ValueError("真格攻略 Wiki 名称索引为空")
     entries_per_page = max(1, int(entries_per_page))
-    columns = max(1, min(3, int(columns)))
-    pages = _paginate_rows(normalised, entries_per_page, columns)
+    single_image = bool(single_image)
+    columns = max(1, min(7 if single_image else 3, int(columns)))
+    pages = [] if single_image else _paginate_rows(
+        normalised, entries_per_page, columns
+    )
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    signature = _signature(normalised, entries_per_page, columns)
+    signature = _signature(
+        normalised, entries_per_page, columns, single_image
+    )
     manifest_path = output_dir / "manifest.json"
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -392,18 +609,25 @@ def render_shinkaku_reference_pages(
 
     stem = _safe_stem("shinkaku_reference")
     outputs: list[Path] = []
-    page_total = len(pages)
-    for page_number, rows in enumerate(pages, start=1):
-        output = output_dir / f"{stem}_p{page_number:02d}-of-{page_total:02d}.png"
-        _draw_reference_page(
-            output,
-            rows,
-            page_number=page_number,
-            page_total=page_total,
-            total_entries=len(normalised),
-            columns=columns,
-        )
+    if single_image:
+        output = output_dir / f"{stem}_compact.png"
+        _draw_compact_reference(output, normalised, columns=columns)
         outputs.append(output)
+    else:
+        page_total = len(pages)
+        for page_number, rows in enumerate(pages, start=1):
+            output = output_dir / (
+                f"{stem}_p{page_number:02d}-of-{page_total:02d}.png"
+            )
+            _draw_reference_page(
+                output,
+                rows,
+                page_number=page_number,
+                page_total=page_total,
+                total_entries=len(normalised),
+                columns=columns,
+            )
+            outputs.append(output)
 
     for old_name in manifest.get("outputs", []) if isinstance(manifest, dict) else []:
         old_path = output_dir / Path(str(old_name)).name
@@ -419,6 +643,7 @@ def render_shinkaku_reference_pages(
                 "entries": len(normalised),
                 "entries_per_page": entries_per_page,
                 "columns": columns,
+                "single_image": single_image,
                 "outputs": [path.name for path in outputs],
             },
             ensure_ascii=False,

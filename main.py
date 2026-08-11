@@ -50,6 +50,9 @@ from .media_delivery import (
 )
 from .shinkaku_reference import DEFAULT_COLUMNS as _REFERENCE_DEFAULT_COLUMNS
 from .shinkaku_reference import (
+    DEFAULT_COMPACT_COLUMNS as _REFERENCE_DEFAULT_COMPACT_COLUMNS,
+)
+from .shinkaku_reference import (
     DEFAULT_ENTRIES_PER_PAGE as _REFERENCE_DEFAULT_ENTRIES_PER_PAGE,
 )
 from .shinkaku_reference import render_shinkaku_reference_pages, shinkaku_reference_text
@@ -117,6 +120,7 @@ DEFAULT_WIKI_TRANSLATION_CHUNK_CHARS = 6000
 DEFAULT_WIKI_DOCUMENT_RETENTION_MINUTES = 1440.0
 DEFAULT_SHINKAKU_REFERENCE_ENTRIES_PER_PAGE = _REFERENCE_DEFAULT_ENTRIES_PER_PAGE
 DEFAULT_SHINKAKU_REFERENCE_COLUMNS = _REFERENCE_DEFAULT_COLUMNS
+DEFAULT_SHINKAKU_REFERENCE_COMPACT_COLUMNS = _REFERENCE_DEFAULT_COMPACT_COLUMNS
 WIKI_EXPLICIT_OUTPUT_SUFFIXES = {
     "文本": "text",
     "卡片": "card",
@@ -138,7 +142,7 @@ class AllyDrawOutcome:
     PLUGIN_ID,
     "Whereis-Alice",
     "星之卡比盟友抽取、收藏图鉴与三百科查询插件",
-    "3.9.0",
+    "3.9.1",
     "https://github.com/Whereis-Alice/astrbot_plugin_kirby_catalog",
 )
 class KirbyCatalogPlugin(Star):
@@ -1664,6 +1668,12 @@ class KirbyCatalogPlugin(Star):
         return self._wiki_output_mode(
             self._config_value("shinkaku_output_mode", "合并转发")
         )
+
+    def _shinkaku_candidate_output_mode(self) -> str:
+        mode = self._wiki_output_mode(
+            self._config_value("shinkaku_candidate_output_mode", "合并转发")
+        )
+        return "forward" if mode == "forward" else "text"
 
     @staticmethod
     def _ally_description_view_mode_value(value: Any) -> str:
@@ -4458,10 +4468,10 @@ class KirbyCatalogPlugin(Star):
         return unique
 
     @staticmethod
-    def _shinkaku_candidate_text(
+    def _shinkaku_candidate_parts(
         candidates: List[Dict[str, Any]], mode: str = "page"
-    ) -> str:
-        lines = [
+    ) -> List[str]:
+        parts = [
             "找到多个可能的真格攻略 Wiki 页面，请改用完整中文、英文或日文页面名查询："
         ]
         for index, page in enumerate(candidates, start=1):
@@ -4470,12 +4480,14 @@ class KirbyCatalogPlugin(Star):
             english = page.get("title_en") or "English name unavailable"
             catalog_index = int(page.get("catalog_index") or 0)
             number = f"#{catalog_index} " if catalog_index else ""
-            lines.extend(
-                [
-                    f"{index}. {number}{chinese}",
-                    f"   English: {english}",
-                    f"   日本語：{japanese}",
-                ]
+            parts.append(
+                "\n".join(
+                    [
+                        f"{index}. {number}{chinese}",
+                        f"English: {english}",
+                        f"日本語：{japanese}",
+                    ]
+                )
             )
         command = "卡比真格章节" if mode == "sections" else "卡比真格"
         if candidates:
@@ -4485,8 +4497,31 @@ class KirbyCatalogPlugin(Star):
                 or candidates[0].get("title")
                 or ""
             )
-            lines.append(f"例如：{command} {example}")
-        return "\n".join(lines)
+            parts.append(f"例如：{command} {example}")
+        return parts
+
+    @classmethod
+    def _shinkaku_candidate_text(
+        cls, candidates: List[Dict[str, Any]], mode: str = "page"
+    ) -> str:
+        return "\n\n".join(cls._shinkaku_candidate_parts(candidates, mode))
+
+    def _shinkaku_candidate_components(
+        self, candidates: List[Dict[str, Any]], mode: str = "page"
+    ) -> List[Any]:
+        parts = self._shinkaku_candidate_parts(candidates, mode)
+        if self._shinkaku_candidate_output_mode() != "forward":
+            return [Comp.Plain("\n\n".join(parts))]
+        nodes = [
+            Comp.Node(name="星之卡比图鉴", content=[Comp.Plain(part)])
+            for part in parts
+            if part
+        ]
+        max_nodes = self._forward_max_nodes()
+        return [
+            Comp.Nodes(nodes=nodes[index : index + max_nodes])
+            for index in range(0, len(nodes), max_nodes)
+        ]
 
     async def _shinkaku_terms_text(self, query: str) -> str:
         client = getattr(self, "shinkaku", None)
@@ -4576,14 +4611,28 @@ class KirbyCatalogPlugin(Star):
             20,
             200,
         )
-        columns = self._bounded_int(
-            self._config_value(
-                "shinkaku_reference_columns", DEFAULT_SHINKAKU_REFERENCE_COLUMNS
-            ),
-            DEFAULT_SHINKAKU_REFERENCE_COLUMNS,
-            1,
-            3,
+        single_image = self._bool_value(
+            self._config_value("shinkaku_reference_single_image", True)
         )
+        if single_image:
+            columns = self._bounded_int(
+                self._config_value(
+                    "shinkaku_reference_compact_columns",
+                    DEFAULT_SHINKAKU_REFERENCE_COMPACT_COLUMNS,
+                ),
+                DEFAULT_SHINKAKU_REFERENCE_COMPACT_COLUMNS,
+                4,
+                7,
+            )
+        else:
+            columns = self._bounded_int(
+                self._config_value(
+                    "shinkaku_reference_columns", DEFAULT_SHINKAKU_REFERENCE_COLUMNS
+                ),
+                DEFAULT_SHINKAKU_REFERENCE_COLUMNS,
+                1,
+                3,
+            )
         store_root = getattr(getattr(self, "store", None), "root", None)
         output_dir = Path(store_root) if store_root else Path(
             StarTools.get_data_dir(PLUGIN_ID)
@@ -4596,16 +4645,18 @@ class KirbyCatalogPlugin(Star):
                 entries,
                 entries_per_page=entries_per_page,
                 columns=columns,
+                single_image=single_image,
             )
             title = (
                 f"真格攻略 Wiki 名称速查（中文 / 日本語）  共 {len(entries)} 个页面"
             )
             logger.info(
                 "[%s] 真格名称速查图已生成: entries=%d, pages=%d, "
-                "entries_per_page=%d, columns=%d",
+                "layout=%s, entries_per_page=%d, columns=%d",
                 PLUGIN_ID,
                 len(entries),
                 len(outputs),
+                "single" if single_image else "paginated",
                 entries_per_page,
                 columns,
             )
@@ -4881,11 +4932,12 @@ class KirbyCatalogPlugin(Star):
                 query, aliases=self._shinkaku_query_aliases(query)
             )
             if resolved.get("kind") == "candidates":
-                yield event.plain_result(
-                    self._shinkaku_candidate_text(
-                        resolved.get("candidates", []), mode
-                    )
+                components = self._shinkaku_candidate_components(
+                    resolved.get("candidates", []), mode
                 )
+                result = await self._chain_result_with_media(event, components)
+                if result is not None:
+                    yield result
                 return
             if resolved.get("kind") != "page":
                 yield event.plain_result(

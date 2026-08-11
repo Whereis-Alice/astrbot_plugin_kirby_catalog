@@ -222,10 +222,18 @@ class ShinkakuClientTests(unittest.IsolatedAsyncioTestCase):
             output_dir = Path(temporary)
             entries = client.page_name_entries[:7]
             first = render_shinkaku_reference_pages(
-                output_dir, entries, entries_per_page=3, columns=2
+                output_dir,
+                entries,
+                entries_per_page=3,
+                columns=2,
+                single_image=False,
             )
             second = render_shinkaku_reference_pages(
-                output_dir, entries, entries_per_page=3, columns=2
+                output_dir,
+                entries,
+                entries_per_page=3,
+                columns=2,
+                single_image=False,
             )
 
             self.assertEqual(first, second)
@@ -238,6 +246,33 @@ class ShinkakuClientTests(unittest.IsolatedAsyncioTestCase):
                 (output_dir / "manifest.json").read_text(encoding="utf-8")
             )
             self.assertEqual(manifest["entries"], 7)
+            self.assertFalse(manifest["single_image"])
+
+    async def test_compact_reference_renderer_fits_all_pages_in_one_safe_image(self):
+        client = KirbyShinkakuClient(cache_ttl_seconds=0)
+        with TemporaryDirectory() as temporary:
+            output_dir = Path(temporary)
+            first = render_shinkaku_reference_pages(
+                output_dir, client.page_name_entries, columns=5
+            )
+            second = render_shinkaku_reference_pages(
+                output_dir, client.page_name_entries, columns=5
+            )
+
+            self.assertEqual(first, second)
+            self.assertEqual(len(first), 1)
+            self.assertTrue(first[0].is_file())
+            with Image.open(first[0]) as image:
+                self.assertEqual(image.width, 2160)
+                self.assertLess(image.height, 8000)
+                self.assertLess(image.width * image.height, 18_000_000)
+            self.assertLess(first[0].stat().st_size, 8 * 1024 * 1024)
+            manifest = json.loads(
+                (output_dir / "manifest.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(manifest["entries"], 301)
+            self.assertEqual(manifest["columns"], 5)
+            self.assertTrue(manifest["single_image"])
 
     async def test_ambiguous_short_name_returns_three_language_candidates(self):
         client = KirbyShinkakuClient(cache_ttl_seconds=0)
@@ -899,10 +934,51 @@ class ShinkakuCommandTests(unittest.IsolatedAsyncioTestCase):
 
             self.assertIn("中文 / 日本語", title)
             self.assertIsInstance(components[0], Comp.Plain)
-            self.assertGreater(
+            self.assertEqual(
                 sum(isinstance(component, Comp.Image) for component in components),
                 1,
             )
+
+    async def test_candidate_output_mode_supports_plain_and_forward_messages(self):
+        plugin = self.make_plugin()
+        client = KirbyShinkakuClient(cache_ttl_seconds=0)
+        resolved = await client.resolve("Fighter")
+        candidates = resolved["candidates"]
+
+        plugin.config["shinkaku_candidate_output_mode"] = "普通消息"
+        plain = plugin._shinkaku_candidate_components(candidates, "page")
+        self.assertEqual(len(plain), 1)
+        self.assertIsInstance(plain[0], Comp.Plain)
+        self.assertIn("Fighter (Kirby: Planet Robobot)", plain[0].text)
+
+        plugin.config["shinkaku_candidate_output_mode"] = "合并转发"
+        forwarded = plugin._shinkaku_candidate_components(candidates, "page")
+        self.assertTrue(forwarded)
+        self.assertTrue(
+            all(isinstance(component, Comp.Nodes) for component in forwarded)
+        )
+        nodes = [node for component in forwarded for node in component.nodes]
+        self.assertEqual(len(nodes), len(candidates) + 2)
+        self.assertIn("找到多个可能", nodes[0].content[0].text)
+        self.assertIn("English:", nodes[1].content[0].text)
+        self.assertIn("例如：卡比真格", nodes[-1].content[0].text)
+
+    async def test_ambiguous_command_uses_configured_forward_output(self):
+        plugin = self.make_plugin()
+        plugin.config["shinkaku_candidate_output_mode"] = "合并转发"
+        plugin.shinkaku = KirbyShinkakuClient(cache_ttl_seconds=0)
+
+        results = [
+            result
+            async for result in plugin._shinkaku_query_impl(
+                FakeEvent("卡比真格 Fighter")
+            )
+        ]
+
+        self.assertEqual(len(results), 1)
+        self.assertTrue(
+            all(isinstance(component, Comp.Nodes) for component in results[0])
+        )
 
     async def test_document_command_returns_generated_html_file(self):
         with TemporaryDirectory() as temporary:
