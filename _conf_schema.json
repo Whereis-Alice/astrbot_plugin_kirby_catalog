@@ -669,6 +669,22 @@
         "max": 604800,
         "hint": "包括攻略页面、站内搜索结果和日英用语对照表。设为 0 可关闭插件进程内缓存。"
       },
+      "shinkaku_reference_entries_per_page": {
+        "description": "真格名称速查图每页条目数",
+        "type": "int",
+        "default": 50,
+        "min": 20,
+        "max": 200,
+        "hint": "速查图按作品和原站栏目分组；数值越大图片越长。默认 50 条，适合 QQ 群内阅读。"
+      },
+      "shinkaku_reference_columns": {
+        "description": "真格名称速查图列数",
+        "type": "int",
+        "default": 2,
+        "min": 1,
+        "max": 3,
+        "hint": "默认两列兼顾字号和图片高度；中文或日文较长时可改为 1 列。"
+      },
       "shinkaku_proxy_url": {
         "description": "可选真格攻略 Cloudflare Worker 中转地址",
         "type": "string",

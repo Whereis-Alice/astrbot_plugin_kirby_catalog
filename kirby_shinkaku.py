@@ -94,6 +94,18 @@ def _normalise_term(value: str) -> str:
     return re.sub(r"[\s\W_]+", "", value)
 
 
+def _catalog_index_from_query(value: str) -> int | None:
+    """Read the public quick-reference number without treating it as a web title."""
+
+    match = re.fullmatch(r"\s*(?:#|编号|序号)?\s*(\d+)\s*", str(value or ""))
+    if not match:
+        return None
+    try:
+        return int(match.group(1))
+    except ValueError:
+        return None
+
+
 def _load_page_name_entries(path: Path) -> list[dict[str, Any]]:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
@@ -680,6 +692,24 @@ class KirbyShinkakuClient:
     def page_name_entries(self) -> list[dict[str, Any]]:
         return [dict(entry) for entry in self._page_name_entries]
 
+    def get_page_name_by_index(self, index: int) -> dict[str, Any] | None:
+        """Return one page from the public catalog number used by the reference image."""
+
+        try:
+            target = int(index)
+        except (TypeError, ValueError):
+            return None
+        if target <= 0:
+            return None
+        for entry in self._page_name_entries:
+            try:
+                entry_index = int(entry.get("catalog_index") or 0)
+            except (TypeError, ValueError):
+                continue
+            if entry_index == target:
+                return dict(entry)
+        return None
+
     @staticmethod
     def _page_name_match_score(entry: dict[str, Any], query: str) -> int:
         target = _normalise_term(query)
@@ -712,6 +742,13 @@ class KirbyShinkakuClient:
         *,
         exact_only: bool = False,
     ) -> list[dict[str, Any]]:
+        catalog_index = _catalog_index_from_query(query)
+        if catalog_index is not None:
+            entry = self.get_page_name_by_index(catalog_index)
+            if entry is None:
+                return []
+            entry["score"] = 500
+            return [entry]
         target = _normalise_term(query)
         if not target:
             return []
@@ -750,6 +787,7 @@ class KirbyShinkakuClient:
     @staticmethod
     def _page_name_candidate(entry: dict[str, Any]) -> dict[str, Any]:
         return {
+            "catalog_index": int(entry.get("catalog_index") or 0),
             "title": str(entry.get("title_ja") or ""),
             "title_ja": str(entry.get("title_ja") or ""),
             "title_zh": str(entry.get("title_zh") or ""),
@@ -1213,6 +1251,16 @@ class KirbyShinkakuClient:
         if not query:
             return {"error": "empty_query"}
 
+        catalog_index = _catalog_index_from_query(query)
+        if catalog_index is not None:
+            entry = self.get_page_name_by_index(catalog_index)
+            if entry is None:
+                return {"error": "not_found", "query": query}
+            page = await self.get_page(str(entry.get("title_ja") or ""))
+            if page is not None:
+                return {"kind": "page", "page": page}
+            return {"error": "not_found", "query": query}
+
         supplied_aliases = [query, *(aliases or [])]
         ambiguous_name_matches: dict[str, dict[str, Any]] = {}
         for candidate in supplied_aliases:
@@ -1295,6 +1343,7 @@ class KirbyShinkakuClient:
                         page["title_ja"] = page_names["title_ja"]
                         page["title_zh"] = page_names["title_zh"]
                         page["title_en"] = page_names["title_en"]
+                        page["catalog_index"] = page_names.get("catalog_index", 0)
                     candidates.setdefault(page_url, page)
         ranked = sorted(
             candidates.values(),

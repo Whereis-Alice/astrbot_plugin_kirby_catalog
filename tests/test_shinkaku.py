@@ -9,12 +9,16 @@ from urllib.error import HTTPError
 
 from astrbot.api import message_components as Comp
 from jinja2 import BaseLoader, Environment
+from PIL import Image
 
 from astrbot_plugin_kirby_catalog.kirby_shinkaku import (
     KirbyShinkakuClient,
     _normalise_term,
 )
 from astrbot_plugin_kirby_catalog.main import KirbyCatalogPlugin
+from astrbot_plugin_kirby_catalog.shinkaku_reference import (
+    render_shinkaku_reference_pages,
+)
 from astrbot_plugin_kirby_catalog.wiki_content import (
     inline_markup_plain,
     parse_detail_blocks,
@@ -193,6 +197,47 @@ class ShinkakuClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(chinese["page"]["title"], "ファイター(RBP)")
         self.assertEqual(english["page"]["title"], "ファイター(RBP)")
         self.assertEqual(get_page_mock.await_count, 2)
+
+    async def test_catalog_number_resolves_to_the_bundled_japanese_page(self):
+        client = KirbyShinkakuClient(cache_ttl_seconds=0)
+        entry = client.get_page_name_by_index(88)
+
+        self.assertIsNotNone(entry)
+        assert entry is not None
+        self.assertEqual(client.lookup_page_names("#88")[0]["catalog_index"], 88)
+        with patch.object(
+            client,
+            "get_page",
+            return_value={"title": entry["title_ja"], "sections": []},
+        ) as get_page_mock:
+            resolved = await client.resolve("编号 88")
+
+        self.assertEqual(resolved["kind"], "page")
+        self.assertEqual(resolved["page"]["title"], entry["title_ja"])
+        get_page_mock.assert_awaited_once_with(entry["title_ja"])
+
+    async def test_reference_renderer_caches_grouped_pages(self):
+        client = KirbyShinkakuClient(cache_ttl_seconds=0)
+        with TemporaryDirectory() as temporary:
+            output_dir = Path(temporary)
+            entries = client.page_name_entries[:7]
+            first = render_shinkaku_reference_pages(
+                output_dir, entries, entries_per_page=3, columns=2
+            )
+            second = render_shinkaku_reference_pages(
+                output_dir, entries, entries_per_page=3, columns=2
+            )
+
+            self.assertEqual(first, second)
+            self.assertEqual(len(first), 2)
+            self.assertTrue(all(path.is_file() for path in first))
+            with Image.open(first[0]) as image:
+                self.assertEqual(image.width, 1840)
+                self.assertGreater(image.height, 400)
+            manifest = json.loads(
+                (output_dir / "manifest.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(manifest["entries"], 7)
 
     async def test_ambiguous_short_name_returns_three_language_candidates(self):
         client = KirbyShinkakuClient(cache_ttl_seconds=0)
@@ -817,6 +862,47 @@ class ShinkakuCommandTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(text_parts, ("Fighter", "page", "", "text"))
         self.assertEqual(card_parts, ("Fighter", "page", "", "card"))
         self.assertEqual(document_parts, ("Fighter", "page", "", "document"))
+
+    async def test_document_command_number_uses_shinkaku_catalog_index(self):
+        plugin = self.make_plugin()
+        plugin.shinkaku = KirbyShinkakuClient(cache_ttl_seconds=0)
+        entry = plugin.shinkaku.get_page_name_by_index(88)
+        assert entry is not None
+
+        query, mode, section, output_override = plugin._shinkaku_query_parts(
+            FakeEvent("卡比真格文档 #88")
+        )
+
+        self.assertEqual(query, entry["title_ja"])
+        self.assertEqual(mode, "page")
+        self.assertEqual(section, "")
+        self.assertEqual(output_override, "document")
+
+    async def test_reference_aliases_use_reference_mode_without_a_query(self):
+        plugin = self.make_plugin()
+        for command in ("卡比真格速查", "卡比真格速查图", "卡比真格名称表"):
+            with self.subTest(command=command):
+                query, mode, section, output_override = plugin._shinkaku_query_parts(
+                    FakeEvent(command)
+                )
+                self.assertEqual(query, "")
+                self.assertEqual(mode, "reference")
+                self.assertEqual(section, "")
+                self.assertEqual(output_override, "")
+
+    async def test_reference_command_renders_all_indexed_names(self):
+        with TemporaryDirectory() as temporary:
+            plugin = self.make_plugin()
+            plugin.shinkaku = KirbyShinkakuClient(cache_ttl_seconds=0)
+            plugin.store = SimpleNamespace(root=Path(temporary))
+            title, components = await plugin._shinkaku_reference_components()
+
+            self.assertIn("中文 / 日本語", title)
+            self.assertIsInstance(components[0], Comp.Plain)
+            self.assertGreater(
+                sum(isinstance(component, Comp.Image) for component in components),
+                1,
+            )
 
     async def test_document_command_returns_generated_html_file(self):
         with TemporaryDirectory() as temporary:

@@ -37,6 +37,7 @@ from .kirby_shinkaku import (
     SHINKAKU_SITE_LABEL,
     KirbyShinkakuClient,
     KirbyShinkakuError,
+    _catalog_index_from_query,
 )
 from .media_delivery import (
     cleanup_staged_media_if_due,
@@ -47,9 +48,14 @@ from .media_delivery import (
     prepare_image_for_delivery,
     stage_local_image,
 )
+from .shinkaku_reference import DEFAULT_COLUMNS as _REFERENCE_DEFAULT_COLUMNS
+from .shinkaku_reference import (
+    DEFAULT_ENTRIES_PER_PAGE as _REFERENCE_DEFAULT_ENTRIES_PER_PAGE,
+)
+from .shinkaku_reference import render_shinkaku_reference_pages, shinkaku_reference_text
 from .webui import KirbyCatalogWebUI
-from .wiki_document import build_wiki_document, cleanup_wiki_documents
 from .wiki_content import inline_markup_plain
+from .wiki_document import build_wiki_document, cleanup_wiki_documents
 from .wikirby import DEFAULT_API_URL, WikirbyClient, WikirbyError
 from .wikirby_card import (
     DEFAULT_CARD_TEMPLATE,
@@ -109,6 +115,8 @@ MAX_WIKI_TRANSLATION_CACHE_ITEMS = 128
 MAX_SHINKAKU_TABLE_ICON_IMAGES = 160
 DEFAULT_WIKI_TRANSLATION_CHUNK_CHARS = 6000
 DEFAULT_WIKI_DOCUMENT_RETENTION_MINUTES = 1440.0
+DEFAULT_SHINKAKU_REFERENCE_ENTRIES_PER_PAGE = _REFERENCE_DEFAULT_ENTRIES_PER_PAGE
+DEFAULT_SHINKAKU_REFERENCE_COLUMNS = _REFERENCE_DEFAULT_COLUMNS
 WIKI_EXPLICIT_OUTPUT_SUFFIXES = {
     "文本": "text",
     "卡片": "card",
@@ -130,7 +138,7 @@ class AllyDrawOutcome:
     PLUGIN_ID,
     "Whereis-Alice",
     "星之卡比盟友抽取、收藏图鉴与三百科查询插件",
-    "3.8.0",
+    "3.9.0",
     "https://github.com/Whereis-Alice/astrbot_plugin_kirby_catalog",
 )
 class KirbyCatalogPlugin(Star):
@@ -4278,6 +4286,26 @@ class KirbyCatalogPlugin(Star):
         mode = "page"
         if folded.startswith(
             (
+                "卡比真格速查",
+                "卡比真格目录",
+                "卡比真格名称表",
+                "卡比真格斗速查",
+                "卡比真格斗目录",
+                "卡比真格斗名称表",
+                "卡比真格wiki速查",
+                "卡比真格wiki目录",
+                "卡比真格wiki名称表",
+                "真格攻略速查",
+                "真格攻略目录",
+                "真格攻略名称表",
+                "真格wiki速查",
+                "真格wiki目录",
+                "真格wiki名称表",
+            )
+        ):
+            mode = "reference"
+        elif folded.startswith(
+            (
                 "卡比真格名称",
                 "卡比真格名",
                 "卡比真格斗名称",
@@ -4313,6 +4341,31 @@ class KirbyCatalogPlugin(Star):
             "卡比真格Wiki章节",
             "真格攻略章节",
             "真格Wiki章节",
+            "卡比真格速查",
+            "卡比真格速查图",
+            "卡比真格目录",
+            "卡比真格目录图",
+            "卡比真格名称表",
+            "卡比真格斗速查",
+            "卡比真格斗速查图",
+            "卡比真格斗目录",
+            "卡比真格斗目录图",
+            "卡比真格斗名称表",
+            "卡比真格Wiki速查",
+            "卡比真格Wiki速查图",
+            "卡比真格Wiki目录",
+            "卡比真格Wiki目录图",
+            "卡比真格Wiki名称表",
+            "真格攻略速查",
+            "真格攻略速查图",
+            "真格攻略目录",
+            "真格攻略目录图",
+            "真格攻略名称表",
+            "真格Wiki速查",
+            "真格Wiki速查图",
+            "真格Wiki目录",
+            "真格Wiki目录图",
+            "真格Wiki名称表",
             "卡比真格文本",
             "卡比真格卡片",
             "卡比真格文档",
@@ -4339,11 +4392,22 @@ class KirbyCatalogPlugin(Star):
         if mode == "page" and "|" in remainder:
             remainder, section = (part.strip() for part in remainder.split("|", 1))
         query = remainder.strip()
-        numeric_target = query.lstrip("#") if query else ""
-        if numeric_target.isdigit():
-            entry, _ = self._entry_or_error(numeric_target)
-            if entry:
-                query = self._entry_wiki_query(entry)
+        numeric_target = _catalog_index_from_query(query)
+        if numeric_target is not None and mode != "reference":
+            page_name_entry = None
+            client = getattr(self, "shinkaku", None)
+            getter = getattr(client, "get_page_name_by_index", None)
+            if callable(getter):
+                try:
+                    page_name_entry = getter(numeric_target)
+                except Exception:
+                    page_name_entry = None
+            if page_name_entry:
+                query = str(page_name_entry.get("title_ja") or query).strip()
+            else:
+                entry, _ = self._entry_or_error(str(numeric_target))
+                if entry:
+                    query = self._entry_wiki_query(entry)
         elif not query:
             query = self._quoted_wiki_query(event)
         return query, mode, section, output_override
@@ -4404,9 +4468,11 @@ class KirbyCatalogPlugin(Star):
             japanese = page.get("title_ja") or page.get("title") or "未命名页面"
             chinese = page.get("title_zh") or "中文名未收录"
             english = page.get("title_en") or "English name unavailable"
+            catalog_index = int(page.get("catalog_index") or 0)
+            number = f"#{catalog_index} " if catalog_index else ""
             lines.extend(
                 [
-                    f"{index}. {chinese}",
+                    f"{index}. {number}{chinese}",
                     f"   English: {english}",
                     f"   日本語：{japanese}",
                 ]
@@ -4441,9 +4507,11 @@ class KirbyCatalogPlugin(Star):
                 "unchanged": "原文保留",
             }
             for index, row in enumerate(page_rows, start=1):
+                catalog_index = int(row.get("catalog_index") or 0)
+                number = f"#{catalog_index} " if catalog_index else ""
                 lines.extend(
                     [
-                        f"{index}. 中文：{row.get('title_zh') or '未收录'}",
+                        f"{index}. {number}中文：{row.get('title_zh') or '未收录'}",
                         f"英文：{row.get('title_en') or '未收录'}",
                         f"日文：{row.get('title_ja') or '未收录'}",
                         f"中文来源：{status_labels.get(str(row.get('zh_status') or ''), '未标注')}",
@@ -4478,6 +4546,79 @@ class KirbyCatalogPlugin(Star):
             ]
         )
         return "\n".join(lines)
+
+    def _shinkaku_reference_entries(self) -> list[dict[str, Any]]:
+        client = getattr(self, "shinkaku", None)
+        if client is None:
+            return []
+        entries = getattr(client, "page_name_entries", [])
+        if callable(entries):
+            try:
+                entries = entries()
+            except Exception:
+                return []
+        return [dict(entry) for entry in entries if isinstance(entry, dict)]
+
+    async def _shinkaku_reference_components(self) -> tuple[str, list[Any]]:
+        """Render the complete Chinese/Japanese directory as cached groupable images."""
+
+        entries = self._shinkaku_reference_entries()
+        if not entries:
+            return "真格攻略 Wiki 名称速查", [
+                Comp.Plain("真格攻略 Wiki 名称索引暂时不可用。")
+            ]
+        entries_per_page = self._bounded_int(
+            self._config_value(
+                "shinkaku_reference_entries_per_page",
+                DEFAULT_SHINKAKU_REFERENCE_ENTRIES_PER_PAGE,
+            ),
+            DEFAULT_SHINKAKU_REFERENCE_ENTRIES_PER_PAGE,
+            20,
+            200,
+        )
+        columns = self._bounded_int(
+            self._config_value(
+                "shinkaku_reference_columns", DEFAULT_SHINKAKU_REFERENCE_COLUMNS
+            ),
+            DEFAULT_SHINKAKU_REFERENCE_COLUMNS,
+            1,
+            3,
+        )
+        store_root = getattr(getattr(self, "store", None), "root", None)
+        output_dir = Path(store_root) if store_root else Path(
+            StarTools.get_data_dir(PLUGIN_ID)
+        )
+        output_dir = output_dir / "shinkaku_reference"
+        try:
+            outputs = await asyncio.to_thread(
+                render_shinkaku_reference_pages,
+                output_dir,
+                entries,
+                entries_per_page=entries_per_page,
+                columns=columns,
+            )
+            title = (
+                f"真格攻略 Wiki 名称速查（中文 / 日本語）  共 {len(entries)} 个页面"
+            )
+            logger.info(
+                "[%s] 真格名称速查图已生成: entries=%d, pages=%d, "
+                "entries_per_page=%d, columns=%d",
+                PLUGIN_ID,
+                len(entries),
+                len(outputs),
+                entries_per_page,
+                columns,
+            )
+            return title, [
+                Comp.Plain(title),
+                *(Comp.Image.fromFileSystem(str(path)) for path in outputs),
+            ]
+        except Exception as exc:
+            logger.exception("[%s] 真格名称速查图生成失败: %s", PLUGIN_ID, exc)
+            return (
+                "真格攻略 Wiki 名称速查（文字回退）",
+                [Comp.Plain(shinkaku_reference_text(entries))],
+            )
 
     async def _shinkaku_sections_text(
         self, query: str, resolved: Optional[Dict[str, Any]] = None
@@ -4653,7 +4794,7 @@ class KirbyCatalogPlugin(Star):
         资料来自日文的星之卡比真 Boss Battle 攻略 Wiki，适合查询真格斗、
         Boss 行动、攻略法和能力实机记录；工具只读，不会修改图鉴或发送群消息。
         Args:
-            query(string): Boss、能力或攻略页面的完整中文、英文、日文名称；短名称可能返回不同作品候选。
+            query(string): Boss、能力或攻略页面的完整中文、英文、日文名称，或名称速查图中的目录编号（例如 88）；短名称可能返回不同作品候选。
             section(string): 可选的日文栏目标题，只返回指定攻略栏目。
         """
         if not self._shinkaku_enabled():
@@ -4713,13 +4854,22 @@ class KirbyCatalogPlugin(Star):
             yield event.plain_result("真格攻略 Wiki 查询功能尚未初始化。")
             return
         query, mode, section, output_override = self._shinkaku_query_parts(event)
+        if mode == "reference":
+            _, components = await self._shinkaku_reference_components()
+            result = await self._chain_result_with_media(
+                event, components, media_profile="wiki_card"
+            )
+            if result is not None:
+                yield result
+            return
         if not query:
             yield event.plain_result(
                 "用法：卡比真格 <Boss、能力或页面名>；"
                 "卡比真格名称 <术语>；"
                 "卡比真格章节 <页面名>；"
+                "卡比真格速查图：查看全部中文/日文页面名称与目录编号；"
                 "指定栏目：卡比真格 <页面名> | <日文栏目名>；"
-                "指定发送形式：卡比真格文本/卡片/文档 <页面名>。"
+                "指定发送形式：卡比真格文本/卡片/文档 <页面名或编号>。"
             )
             return
         started_at = time.monotonic()
@@ -5739,11 +5889,11 @@ class KirbyCatalogPlugin(Star):
             yield result
 
     @filter.regex(
-        r"(?i)^/?(?:卡比真格(?:名称|名|章节|文本|卡片|文档)?|"
-        r"卡比真格斗(?:名称|名|章节|文本|卡片|文档)?|"
-        r"卡比真格Wiki(?:名称|名|章节|文本|卡片|文档)?|"
-        r"真格攻略(?:名称|名|章节|文本|卡片|文档)?|"
-        r"真格Wiki(?:名称|名|章节|文本|卡片|文档)?)(?:\s+.+)?$"
+        r"(?i)^/?(?:卡比真格(?:名称表|速查图?|目录图?|名称|名|章节|文本|卡片|文档)?|"
+        r"卡比真格斗(?:名称表|速查图?|目录图?|名称|名|章节|文本|卡片|文档)?|"
+        r"卡比真格Wiki(?:名称表|速查图?|目录图?|名称|名|章节|文本|卡片|文档)?|"
+        r"真格攻略(?:名称表|速查图?|目录图?|名称|名|章节|文本|卡片|文档)?|"
+        r"真格Wiki(?:名称表|速查图?|目录图?|名称|名|章节|文本|卡片|文档)?)(?:\s+.+)?$"
     )
     @filter.event_message_type(EventMessageType.GROUP_MESSAGE)
     async def shinkaku_query_plain(self, event: AstrMessageEvent):
@@ -6042,6 +6192,8 @@ class KirbyCatalogPlugin(Star):
             "卡比真格 [页面名]：查询真格斗竞技场的 Boss、能力与实机攻略资料\n"
             "卡比真格章节 [页面名]：查看可查询的日文攻略栏目\n"
             "卡比真格名称 [术语]：查询攻略 Wiki 的日英用语对照\n"
+            "卡比真格速查图：查看全部中文/日文页面名称和目录编号\n"
+            "卡比真格文档 [页面名或编号]：生成完整真格攻略 HTML 文档\n"
             "管理员命令：重置今日群抽取次数、增加今日抽取次数，以及图鉴添加、"
             "换图、改名、简介、恢复简介、迁移、清理旧名、删除重复"
         )
