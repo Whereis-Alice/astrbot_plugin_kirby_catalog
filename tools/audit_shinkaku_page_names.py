@@ -26,6 +26,7 @@ REQUIRED_FIELDS = (
     "section_en",
     "category",
     "zh_status",
+    "en_status",
 )
 ALLOWED_ZH_STATUSES = {"official", "official_reused", "translated", "unchanged"}
 
@@ -69,8 +70,9 @@ def audit_payload(
         missing = [field for field in REQUIRED_FIELDS if not _non_empty(entry.get(field))]
         if missing:
             errors.append(f"entry {index} missing fields: {', '.join(missing)}")
-        if entry.get("zh_status") not in ALLOWED_ZH_STATUSES:
-            errors.append(f"entry {index} has invalid zh_status")
+        for status_field in ("zh_status", "en_status"):
+            if entry.get(status_field) not in ALLOWED_ZH_STATUSES:
+                errors.append(f"entry {index} has invalid {status_field}")
         if not str(entry.get("url", "")).startswith(
             "https://seesaawiki.jp/kirby_shinkaku/d/"
         ):
