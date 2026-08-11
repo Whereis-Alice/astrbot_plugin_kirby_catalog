@@ -253,10 +253,10 @@ class ShinkakuClientTests(unittest.IsolatedAsyncioTestCase):
         with TemporaryDirectory() as temporary:
             output_dir = Path(temporary)
             first = render_shinkaku_reference_pages(
-                output_dir, client.page_name_entries, columns=5
+                output_dir, client.page_name_entries
             )
             second = render_shinkaku_reference_pages(
-                output_dir, client.page_name_entries, columns=5
+                output_dir, client.page_name_entries
             )
 
             self.assertEqual(first, second)
@@ -271,7 +271,7 @@ class ShinkakuClientTests(unittest.IsolatedAsyncioTestCase):
                 (output_dir / "manifest.json").read_text(encoding="utf-8")
             )
             self.assertEqual(manifest["entries"], 301)
-            self.assertEqual(manifest["columns"], 5)
+            self.assertEqual(manifest["columns"], 4)
             self.assertTrue(manifest["single_image"])
 
     async def test_ambiguous_short_name_returns_three_language_candidates(self):

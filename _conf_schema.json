@@ -688,10 +688,10 @@
       "shinkaku_reference_compact_columns": {
         "description": "真格单张速查图列数",
         "type": "int",
-        "default": 5,
+        "default": 4,
         "min": 4,
         "max": 7,
-        "hint": "仅在单张总览模式生效。默认 5 列，在 2160 像素宽度下兼顾可读性与图片高度；列数越多，图片越短、单列文字越窄。"
+        "hint": "仅在单张总览模式生效。默认 4 列并使用较大字号；列数越多，图片越短，但单列文字和字号会更紧凑。"
       },
       "shinkaku_reference_entries_per_page": {
         "description": "真格名称速查图每页条目数",

@@ -11,8 +11,8 @@ from PIL import Image, ImageDraw, ImageFont
 
 DEFAULT_ENTRIES_PER_PAGE = 50
 DEFAULT_COLUMNS = 2
-DEFAULT_COMPACT_COLUMNS = 5
-REFERENCE_RENDER_VERSION = 3
+DEFAULT_COMPACT_COLUMNS = 4
+REFERENCE_RENDER_VERSION = 4
 
 _GROUP_PALETTE = (
     ((255, 228, 236), (154, 54, 91), (255, 241, 246)),
@@ -211,11 +211,19 @@ def _compact_entry_height(
     name_font: ImageFont.ImageFont,
     japanese_font: ImageFont.ImageFont,
     name_width: int,
+    name_line_height: int,
+    japanese_line_height: int,
+    minimum_height: int,
 ) -> int:
     chinese, japanese = _compact_entry_names(entry)
     zh_lines = _wrap_text(draw, chinese, name_font, name_width)
     ja_lines = _wrap_text(draw, japanese, japanese_font, name_width)
-    return max(56, 16 + len(zh_lines) * 21 + len(ja_lines) * 17)
+    return max(
+        minimum_height,
+        14
+        + len(zh_lines) * name_line_height
+        + len(ja_lines) * japanese_line_height,
+    )
 
 
 def _safe_stem(value: str) -> str:
@@ -408,21 +416,53 @@ def _draw_compact_reference(
 ) -> None:
     canvas_width = 2160
     margin_x = 24
-    top_height = 118
+    top_height = 124
     footer_height = 32
     row_gap = 2
     column_gap = 6
-    group_height = 46
+    if columns <= 4:
+        group_height = 52
+        group_font_size = 21
+        group_subtitle_size = 14
+        index_font_size = 16
+        name_font_size = 20
+        japanese_font_size = 16
+        name_line_height = 25
+        japanese_line_height = 20
+        minimum_entry_height = 66
+        text_offset = 64
+    elif columns == 5:
+        group_height = 50
+        group_font_size = 20
+        group_subtitle_size = 13
+        index_font_size = 16
+        name_font_size = 19
+        japanese_font_size = 15
+        name_line_height = 24
+        japanese_line_height = 19
+        minimum_entry_height = 64
+        text_offset = 64
+    else:
+        group_height = 46
+        group_font_size = 18
+        group_subtitle_size = 12
+        index_font_size = 14
+        name_font_size = 16
+        japanese_font_size = 13
+        name_line_height = 21
+        japanese_line_height = 17
+        minimum_entry_height = 56
+        text_offset = 62
     cell_width = (
         canvas_width - margin_x * 2 - column_gap * (columns - 1)
     ) // columns
-    title_font = _font(34, True)
-    subtitle_font = _font(17)
-    group_font = _font(18, True)
-    group_subtitle_font = _font(12)
-    index_font = _font(14, True)
-    name_font = _font(16, True)
-    japanese_font = _font(13)
+    title_font = _font(38, True)
+    subtitle_font = _font(18)
+    group_font = _font(group_font_size, True)
+    group_subtitle_font = _font(group_subtitle_size)
+    index_font = _font(index_font_size, True)
+    name_font = _font(name_font_size, True)
+    japanese_font = _font(japanese_font_size)
     draw_probe = Image.new("RGB", (1, 1), "white")
     probe = ImageDraw.Draw(draw_probe)
     rows = _compact_rows(entries, columns)
@@ -439,7 +479,10 @@ def _draw_compact_reference(
                 entry,
                 name_font,
                 japanese_font,
-                cell_width - 70,
+                cell_width - text_offset - 8,
+                name_line_height,
+                japanese_line_height,
+                minimum_entry_height,
             )
             for entry in row_entries
         )
@@ -460,13 +503,13 @@ def _draw_compact_reference(
     )
     draw.rectangle((0, 0, 12, top_height - 8), fill=(232, 103, 145))
     draw.text(
-        (34, 24),
+        (34, 23),
         "真格攻略 Wiki 名称速查",
         fill=(45, 50, 58),
         font=title_font,
     )
     draw.text(
-        (36, 72),
+        (36, 76),
         "中文名称 / 日本語名称  ·  按作品、资料类型与原站顺序编号",
         fill=(99, 108, 119),
         font=subtitle_font,
@@ -474,7 +517,7 @@ def _draw_compact_reference(
     range_label = f"共 {len(entries)} 个页面  ·  #1-#{len(entries)}"
     range_box = draw.textbbox((0, 0), range_label, font=subtitle_font)
     draw.text(
-        (canvas_width - 34 - (range_box[2] - range_box[0]), 34),
+        (canvas_width - 34 - (range_box[2] - range_box[0]), 36),
         range_label,
         fill=(38, 104, 137),
         font=subtitle_font,
@@ -535,8 +578,8 @@ def _draw_compact_reference(
                     font=index_font,
                 )
                 chinese, japanese = _compact_entry_names(entry)
-                text_x = x + 62
-                text_width = cell_width - 70
+                text_x = x + text_offset
+                text_width = cell_width - text_offset - 8
                 zh_lines = _wrap_text(draw, chinese, name_font, text_width)
                 ja_lines = _wrap_text(draw, japanese, japanese_font, text_width)
                 text_y = y + 5
@@ -547,7 +590,7 @@ def _draw_compact_reference(
                         fill=(48, 53, 61),
                         font=name_font,
                     )
-                    text_y += 21
+                    text_y += name_line_height
                 for line in ja_lines:
                     draw.text(
                         (text_x, text_y),
@@ -555,7 +598,7 @@ def _draw_compact_reference(
                         fill=(102, 111, 121),
                         font=japanese_font,
                     )
-                    text_y += 17
+                    text_y += japanese_line_height
         y += row_height + row_gap
 
     footer = "完整名称、译名来源与页面 URL：resources/shinkaku_page_names.json / .csv / .md"
@@ -574,7 +617,7 @@ def render_shinkaku_reference_pages(
     entries: Iterable[dict[str, Any]],
     *,
     entries_per_page: int = DEFAULT_ENTRIES_PER_PAGE,
-    columns: int = DEFAULT_COLUMNS,
+    columns: int | None = None,
     single_image: bool = True,
 ) -> list[Path]:
     """Render the bundled Chinese/Japanese page-name index into cached PNGs."""
@@ -584,6 +627,8 @@ def render_shinkaku_reference_pages(
         raise ValueError("真格攻略 Wiki 名称索引为空")
     entries_per_page = max(1, int(entries_per_page))
     single_image = bool(single_image)
+    if columns is None:
+        columns = DEFAULT_COMPACT_COLUMNS if single_image else DEFAULT_COLUMNS
     columns = max(1, min(7 if single_image else 3, int(columns)))
     pages = [] if single_image else _paginate_rows(
         normalised, entries_per_page, columns
