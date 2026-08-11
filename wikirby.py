@@ -220,7 +220,7 @@ def _clean_wiki_table_cell(value: str) -> str:
     return text
 
 
-def parse_rendered_sections(rendered_html: str) -> list[dict[str, str]]:
+def parse_rendered_sections(rendered_html: str) -> list[dict[str, Any]]:
     """Extract readable article sections from MediaWiki's rendered HTML."""
     if not rendered_html.strip():
         return []
@@ -229,8 +229,11 @@ def parse_rendered_sections(rendered_html: str) -> list[dict[str, str]]:
     if root is None:
         return []
 
-    sections: list[dict[str, str]] = []
+    sections: list[dict[str, Any]] = []
     title = ""
+    level = 2
+    source_position = 0
+    heading_position = 0
     parts: list[str] = []
     active = False
 
@@ -238,22 +241,34 @@ def parse_rendered_sections(rendered_html: str) -> list[dict[str, str]]:
         nonlocal parts
         body = "\n".join(dict.fromkeys(part for part in parts if part)).strip()
         if title and body:
-            sections.append({"title": title, "text": body})
+            sections.append(
+                {
+                    "title": title,
+                    "text": body,
+                    "level": str(level),
+                    "source_position": source_position,
+                }
+            )
         parts = []
 
     for child in root.children:
         if not isinstance(child, Tag):
             continue
         if child.name in {"h2", "h3", "h4"}:
+            heading_position += 1
             heading = _rendered_heading_text(child)
             if child.name == "h2":
                 flush()
                 folded = heading.casefold()
                 active = bool(heading) and folded not in _SKIPPED_DETAIL_SECTIONS
                 title = _DETAIL_SECTION_LABELS.get(folded, heading) if active else ""
+                level = 2
+                source_position = heading_position
             elif active and heading:
                 flush()
                 title = heading
+                level = int(child.name[1])
+                source_position = heading_position
             continue
         if not active:
             continue

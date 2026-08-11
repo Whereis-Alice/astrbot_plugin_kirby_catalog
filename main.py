@@ -128,8 +128,8 @@ class AllyDrawOutcome:
 @register(
     PLUGIN_ID,
     "Whereis-Alice",
-    "星之卡比盟友抽取、收藏图鉴与双百科查询插件",
-    "3.7.0",
+    "星之卡比盟友抽取、收藏图鉴与三百科查询插件",
+    "3.7.1",
     "https://github.com/Whereis-Alice/astrbot_plugin_kirby_catalog",
 )
 class KirbyCatalogPlugin(Star):
@@ -1700,6 +1700,7 @@ class KirbyCatalogPlugin(Star):
         template_name: Any,
         wiki_name: str,
         reference_label: str,
+        preserve_source_order: bool = False,
     ) -> Any | None:
         components = await self._wiki_card_components(
             page,
@@ -1711,6 +1712,7 @@ class KirbyCatalogPlugin(Star):
             wiki_name=wiki_name,
             reference_label=reference_label,
             paginate=False,
+            preserve_source_order=preserve_source_order,
         )
         return components[0] if components else None
 
@@ -1866,6 +1868,7 @@ class KirbyCatalogPlugin(Star):
         wiki_name: str,
         reference_label: str,
         paginate: bool = True,
+        preserve_source_order: bool = False,
     ) -> List[Any]:
         theme = resolve_card_template(template_name)
         auto_paginate = paginate and self._bool_value(
@@ -1929,9 +1932,17 @@ class KirbyCatalogPlugin(Star):
                     page_line_budget=budget,
                     has_image=bool(image_bytes),
                     force_paginate=force_paginate,
+                    preserve_source_order=preserve_source_order,
                 )
             else:
-                layouts = [build_card_layout(summary, detail_text, rich_sections)]
+                layouts = [
+                    build_card_layout(
+                        summary,
+                        detail_text,
+                        rich_sections,
+                        preserve_source_order=preserve_source_order,
+                    )
+                ]
 
             components: List[Any] = []
             pageable_violations: List[str] = []
@@ -2068,6 +2079,7 @@ class KirbyCatalogPlugin(Star):
             ),
             wiki_name="Kirby Fandom",
             reference_label="FANDOM REFERENCE",
+            preserve_source_order=True,
         )
 
     async def _fandom_card_components(
@@ -2089,6 +2101,7 @@ class KirbyCatalogPlugin(Star):
             ),
             wiki_name="Kirby Fandom",
             reference_label="FANDOM REFERENCE",
+            preserve_source_order=True,
         )
 
     async def _shinkaku_card_components(
@@ -2110,6 +2123,7 @@ class KirbyCatalogPlugin(Star):
             ),
             wiki_name=SHINKAKU_SITE_LABEL,
             reference_label="SHINKAKU BOSS BATTLE GUIDE",
+            preserve_source_order=True,
         )
 
     async def _ally_description_card_component(
@@ -2282,6 +2296,7 @@ class KirbyCatalogPlugin(Star):
         rich_sections: Optional[List[Dict[str, Any]]] = None,
         wiki_name: str,
         template_name: str,
+        preserve_source_order: bool = False,
     ) -> Any:
         output_dir = self.store.root / "wiki_documents"
         retention_minutes = self._wiki_document_retention_minutes()
@@ -2300,6 +2315,7 @@ class KirbyCatalogPlugin(Star):
             image_bytes=(image_bytes if self._wiki_document_include_image() else None),
             media_urls=list(page.get("media_urls", []) or []),
             template_name=template_name,
+            preserve_source_order=preserve_source_order,
         )
         logger.info(
             "[%s] 百科 HTML 文档已生成: wiki=%s, title=%r, path=%s, bytes=%d",
@@ -3128,11 +3144,41 @@ class KirbyCatalogPlugin(Star):
         details: Dict[str, Any],
     ) -> List[Dict[str, Any]]:
         result: List[Dict[str, Any]] = []
+        narrative_order = 0
         for section in details.get("sections", []) or []:
             if not isinstance(section, dict):
                 continue
+            narrative_order += 1
+            section_order = narrative_order
+            current_anchor_order = section_order
             tables = section.get("tables", []) or []
-            for index, table in enumerate(tables, start=1):
+            if not isinstance(tables, list):
+                continue
+            anchored_tables: List[Tuple[int, int, Dict[str, Any]]] = []
+            table_index = 0
+            for block in section.get("content_blocks", []) or []:
+                if not isinstance(block, dict):
+                    continue
+                kind = str(block.get("kind") or "").strip()
+                if kind == "subheading":
+                    narrative_order += 1
+                    current_anchor_order = narrative_order
+                    continue
+                if kind == "table" and table_index < len(tables):
+                    table = tables[table_index]
+                    table_index += 1
+                    if isinstance(table, dict):
+                        anchored_tables.append(
+                            (table_index, current_anchor_order, table)
+                        )
+
+            while table_index < len(tables):
+                table = tables[table_index]
+                table_index += 1
+                if isinstance(table, dict):
+                    anchored_tables.append((table_index, section_order, table))
+
+            for index, source_order, table in anchored_tables:
                 if not isinstance(table, dict):
                     continue
                 headers = [
@@ -3156,8 +3202,9 @@ class KirbyCatalogPlugin(Star):
                         "context": context,
                         "headers": headers,
                         "rows": deepcopy(rows),
-                        "source_order": int(section.get("order", 0) or 0),
+                        "source_order": source_order,
                         "table_order": index,
+                        "level": int(section.get("level", 1) or 1),
                     }
                 )
         return result
@@ -3348,6 +3395,42 @@ class KirbyCatalogPlugin(Star):
                 lines.append("该栏目有部分内容未能完整解析，请打开来源页面核对。")
             lines.append("")
         return "\n".join(lines).strip()
+
+    @staticmethod
+    def _fandom_source_ordered_rich_sections(
+        rich_sections: List[Dict[str, Any]],
+        narrative_sections: List[Dict[str, Any]],
+        prefix_heading_count: int,
+    ) -> List[Dict[str, Any]]:
+        """Place Fandom quotes and techniques back into the article heading flow."""
+
+        narrative_positions = []
+        for section in narrative_sections:
+            try:
+                position = int(section.get("source_position", 0) or 0)
+            except (TypeError, ValueError):
+                position = 0
+            if position > 0:
+                narrative_positions.append(position)
+
+        fallback_order = prefix_heading_count + len(narrative_sections)
+        result: List[Dict[str, Any]] = []
+        for index, raw_section in enumerate(rich_sections, start=1):
+            section = deepcopy(raw_section)
+            try:
+                position = int(section.get("source_position", 0) or 0)
+            except (TypeError, ValueError):
+                position = 0
+            if position > 0:
+                preceding = sum(value < position for value in narrative_positions)
+                section["source_order"] = (
+                    prefix_heading_count + preceding + 0.5
+                )
+            else:
+                section["source_order"] = fallback_order + index
+            section.setdefault("table_order", index)
+            result.append(section)
+        return result
 
     def _wikirby_query_parts(
         self, event: AstrMessageEvent
@@ -3879,6 +3962,8 @@ class KirbyCatalogPlugin(Star):
         details = client.get_page_details(page, section)
         detail_lines: list[str] = []
         rich_sections = [dict(row) for row in details.get("rich_sections", [])]
+        narrative_sections: List[Dict[str, Any]] = []
+        prefix_heading_count = 0
         if section:
             matched_sections = details.get("sections", [])
             if not matched_sections and not rich_sections:
@@ -3889,25 +3974,35 @@ class KirbyCatalogPlugin(Star):
                     [],
                 )
             for row in matched_sections:
+                narrative_sections.append(row)
+                level = str(row.get("level") or "2")
+                heading = (
+                    f"【{row['title']}】"
+                    if level in {"", "2"}
+                    else f"◆ {row['title']}"
+                )
                 detail_lines.extend(
-                    [f"【{row['title']}】", str(row["text"]).strip(), ""]
+                    [heading, str(row["text"]).strip(), ""]
                 )
         elif force_details or self._bool_value(
             self._config_value("fandom_show_details", True)
         ):
             infobox = details.get("infobox", [])
             if infobox:
+                prefix_heading_count += 1
                 detail_lines.append("【页面资料】")
                 for row in infobox:
                     detail_lines.append(f"• {row['label']}：{row['value']}")
                 detail_lines.append("")
             categories = details.get("categories", [])
             if categories:
+                prefix_heading_count += 1
                 detail_lines.append("【页面分类】")
                 for row in categories:
                     detail_lines.append(f"• {row['label']}：{row['value']}")
                 detail_lines.append("")
             for row in details.get("sections", []):
+                narrative_sections.append(row)
                 level = str(row.get("level") or "2")
                 heading = (
                     f"【{row['title']}】"
@@ -3915,6 +4010,12 @@ class KirbyCatalogPlugin(Star):
                     else f"◆ {row['title']}"
                 )
                 detail_lines.extend([heading, str(row["text"]).strip(), ""])
+
+        rich_sections = self._fandom_source_ordered_rich_sections(
+            rich_sections,
+            narrative_sections,
+            prefix_heading_count,
+        )
 
         detail_text = "\n".join(detail_lines).strip()
         if detail_text and translate and translation_enabled:
@@ -4125,6 +4226,7 @@ class KirbyCatalogPlugin(Star):
                                 "fandom_card_template", DEFAULT_CARD_TEMPLATE
                             )
                         ),
+                        preserve_source_order=True,
                     )
                 except Exception as exc:
                     logger.exception(
@@ -4671,6 +4773,7 @@ class KirbyCatalogPlugin(Star):
                                 "shinkaku_card_template", DEFAULT_CARD_TEMPLATE
                             )
                         ),
+                        preserve_source_order=True,
                     )
                 except Exception as exc:
                     logger.exception(

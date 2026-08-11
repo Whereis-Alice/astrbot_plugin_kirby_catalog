@@ -19,6 +19,7 @@ from astrbot_plugin_kirby_catalog.kirby_fandom import (
     parse_fandom_sections,
 )
 from astrbot_plugin_kirby_catalog.main import KirbyCatalogPlugin
+from astrbot_plugin_kirby_catalog.wikirby_card import build_card_pages
 
 FANDOM_HTML = """
 <div class="mw-parser-output">
@@ -347,6 +348,73 @@ class FandomParserTests(unittest.TestCase):
 
         self.assertNotIn("Related Quotes", titles)
         self.assertNotIn("Techniques", titles)
+
+    def test_rich_sections_keep_their_position_between_narrative_modules(self):
+        rendered_html = """
+        <div class="mw-parser-output">
+          <h2><span class="mw-headline">Overview</span></h2>
+          <p>Overview body.</p>
+          <h2><span class="mw-headline">Related Quotes</span></h2>
+          <table class="br-5px"><tr><td>“</td><td><i>A quote.</i>”</td></tr></table>
+          <h2><span class="mw-headline">Games</span></h2>
+          <p>Games body.</p>
+          <h3><span class="mw-headline">Techniques</span></h3>
+          <table class="wikitable">
+            <tr><th>Move</th><th>Controls</th><th>Description</th><th>Damage</th></tr>
+            <tr><td>Slash</td><td>B</td><td>Attack.</td><td>10</td></tr>
+          </table>
+          <h2><span class="mw-headline">Trivia</span></h2>
+          <p>Trivia body.</p>
+        </div>
+        """
+        narrative = parse_fandom_sections(rendered_html)
+        rich = KirbyCatalogPlugin._fandom_source_ordered_rich_sections(
+            parse_fandom_rich_sections(rendered_html),
+            narrative,
+            prefix_heading_count=2,
+        )
+        detail_text = "\n".join(
+            [
+                "【页面资料】",
+                "• 类型：角色",
+                "【页面分类】",
+                "• 分类：测试",
+                *[
+                    line
+                    for row in narrative
+                    for line in (
+                        (
+                            f"【{row['title']}】"
+                            if str(row.get("level")) == "2"
+                            else f"◆ {row['title']}"
+                        ),
+                        row["text"],
+                    )
+                ],
+            ]
+        )
+
+        layout = build_card_pages(
+            "Summary",
+            detail_text,
+            rich,
+            page_line_budget=1000,
+            preserve_source_order=True,
+        )[0]
+        titles = [group["title"] for group in layout["content_flow"]]
+
+        self.assertEqual(
+            [row["source_position"] for row in narrative],
+            [1, 3, 5],
+        )
+        self.assertEqual(
+            [row["source_position"] for row in rich],
+            [2, 4],
+        )
+        self.assertLess(titles.index("Overview"), titles.index("相关语录"))
+        self.assertLess(titles.index("相关语录"), titles.index("Games"))
+        self.assertLess(titles.index("Games"), titles.index("招式与操作"))
+        self.assertLess(titles.index("招式与操作"), titles.index("趣闻"))
 
     def test_section_query_returns_rich_techniques(self):
         client = KirbyFandomClient(cache_ttl_seconds=0, max_detail_chars=3000)

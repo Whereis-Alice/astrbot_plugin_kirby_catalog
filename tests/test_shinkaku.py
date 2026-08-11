@@ -7,10 +7,16 @@ from unittest.mock import patch
 from urllib.error import HTTPError
 
 from astrbot.api import message_components as Comp
+from jinja2 import BaseLoader, Environment
 
 from astrbot_plugin_kirby_catalog.kirby_shinkaku import KirbyShinkakuClient
 from astrbot_plugin_kirby_catalog.main import KirbyCatalogPlugin
-from astrbot_plugin_kirby_catalog.wikirby_card import build_card_pages
+from astrbot_plugin_kirby_catalog.wiki_content import parse_detail_blocks
+from astrbot_plugin_kirby_catalog.wikirby_card import (
+    WIKIRBY_CARD_TEMPLATE,
+    build_card_pages,
+    resolve_card_template,
+)
 
 
 class FakeResponse:
@@ -334,6 +340,207 @@ class ShinkakuClientTests(unittest.IsolatedAsyncioTestCase):
             page["media_urls"], ["https://www.youtube.com/embed/example"]
         )
         self.assertIn("image02.seesaawiki.jp", page["image_url"])
+
+    async def test_fighter_modules_keep_nested_skills_emphasis_and_table_anchors(self):
+        client = KirbyShinkakuClient(cache_ttl_seconds=0)
+        source = """
+        <div id="main">
+          <div id="page-header"><h2>ファイター(RBP)</h2></div>
+          <h3>技一覧</h3>
+          <div class="wiki-section-body-1">
+            <table>
+              <tr><th>技名</th><th>威力</th></tr>
+              <tr><td>バルカンジャブ</td><td>50</td></tr>
+            </table>
+            <div id="content_block_1">
+              <div class="toggle-title">詳しいデータ</div>
+              <div class="toggle-display"><ul>
+                <li><strong>バルカンジャブ</strong><ul>
+                  <li>実際のコマンドは<em>Bはなす</em></li>
+                  <li>発生 5F</li>
+                </ul></li>
+                <li><strong>スマッシュパンチ</strong><ul>
+                  <li>コマンド入力時間 長押し8F</li>
+                  <li>発生 5F</li>
+                </ul></li>
+                <li><strong>あしばらい</strong><ul>
+                  <li>実際のコマンドはダッシュ+Bはなす</li>
+                  <li>発生 1F</li>
+                </ul></li>
+              </ul></div>
+            </div>
+            <div id="content_block_2">
+              <div class="toggle-title">ボスダメージ補正</div>
+              <div class="toggle-display"><table>
+                <tr><th>技名</th><th>基本威力</th></tr>
+                <tr><td>バルカンジャブ</td><td>50</td></tr>
+              </table></div>
+            </div>
+          </div>
+          <h3>各ボス戦</h3>
+          <div class="wiki-section-body-1">
+            <div id="content_block_3">
+              <div class="toggle-title">タイム評価について</div>
+              <div class="toggle-display">
+                <p><strong>SS</strong> ＝ 最速</p>
+              </div>
+            </div>
+            <table>
+              <tr><th>Boss</th><th>評価</th></tr>
+              <tr><td>Re:ウィスピーボーグ</td><td>B</td></tr>
+            </table>
+          </div>
+        </div>
+        """.encode("euc_jp")
+        page = client._parse_page(
+            source,
+            "ファイター(RBP)",
+            "https://seesaawiki.jp/kirby_shinkaku/d/Fighter_Test",
+        )
+
+        details = {"sections": page["sections"]}
+        detail_text = KirbyCatalogPlugin._shinkaku_narrative_text(details)
+        rich_sections = KirbyCatalogPlugin._shinkaku_rich_sections(details)
+        detail_blocks = parse_detail_blocks(detail_text)
+
+        detailed = next(
+            block for block in detail_blocks if block["title"] == "詳しいデータ"
+        )
+        self.assertTrue(detailed["definition_grid"])
+        self.assertIn("<strong>バルカンジャブ</strong>", detailed["body_html"])
+        self.assertIn("<em>Bはなす</em>", detailed["body_html"])
+        self.assertIn("  - 発生 5F", detailed["body"])
+
+        block_order = {
+            block["title"]: block["source_order"] for block in detail_blocks
+        }
+        self.assertEqual(
+            [section["source_order"] for section in rich_sections],
+            [
+                block_order["技一覧"],
+                block_order["ボスダメージ補正"],
+                block_order["タイム評価について"],
+            ],
+        )
+
+        layout = build_card_pages(
+            page["summary"],
+            detail_text,
+            rich_sections,
+            page_line_budget=2000,
+            preserve_source_order=True,
+        )[0]
+        groups = {group["title"]: group for group in layout["content_flow"]}
+        self.assertEqual(
+            [row["display_title"] for row in groups["技一覧"]["rich_sections"]],
+            ["技一覧（表 1）"],
+        )
+        self.assertEqual(
+            [
+                row["display_title"]
+                for row in groups["ボスダメージ補正"]["rich_sections"]
+            ],
+            ["ボスダメージ補正"],
+        )
+        self.assertEqual(
+            [
+                row["display_title"]
+                for row in groups["タイム評価について"]["rich_sections"]
+            ],
+            ["各ボス戦"],
+        )
+
+        rendered = Environment(loader=BaseLoader(), autoescape=True).from_string(
+            WIKIRBY_CARD_TEMPLATE
+        ).render(
+            title=page["title"],
+            source=page["url"],
+            theme=resolve_card_template("卡比粉彩"),
+            wiki_name="卡比真格攻略 Wiki",
+            reference_label="SHINKAKU BOSS BATTLE GUIDE",
+            image_data_uri="",
+            **layout,
+        )
+        self.assertNotIn("资料速览", rendered)
+        self.assertIn('class="definition-grid"', rendered)
+        article = rendered.split('<section class="article-flow">', 1)[1]
+        self.assertLess(article.index("技一覧"), article.index("詳しいデータ"))
+        self.assertLess(
+            article.index("ボスダメージ補正"), article.index("各ボス戦")
+        )
+
+    async def test_paginated_detailed_skills_and_technique_rows_stay_atomic(self):
+        skills = []
+        for index in range(1, 7):
+            skills.extend(
+                [
+                    f"- 招式 {index}",
+                    f"  - 指令 {index}：" + "长按 B 后释放。" * 10,
+                    f"  - 发生 {index}F",
+                    f"  - 修正时间 {index * 10}F",
+                ]
+            )
+        rich_sections = [
+            {
+                "kind": "techniques",
+                "title": "操作表",
+                "source_order": 2,
+                "groups": [
+                    {
+                        "label": "平台操作",
+                        "rows": [
+                            {
+                                "move": f"操作招式 {index}",
+                                "controls": "B",
+                                "description": "完整说明。" * 30,
+                                "damage": str(index * 10),
+                            }
+                            for index in range(1, 5)
+                        ],
+                    }
+                ],
+            }
+        ]
+        pages = build_card_pages(
+            "简介",
+            "【详细数据】\n" + "\n".join(skills) + "\n【操作表】\n操作说明。",
+            rich_sections,
+            page_line_budget=60,
+            force_paginate=True,
+            preserve_source_order=True,
+        )
+
+        bodies = [
+            str(group.get("body") or "")
+            for page in pages
+            for group in page["content_flow"]
+        ]
+        for index in range(1, 7):
+            matching = [body for body in bodies if f"- 招式 {index}" in body]
+            self.assertEqual(len(matching), 1)
+            self.assertIn(f"  - 指令 {index}：", matching[0])
+            self.assertIn(f"  - 发生 {index}F", matching[0])
+            owner = next(
+                group
+                for page in pages
+                for group in page["content_flow"]
+                if f"- 招式 {index}" in str(group.get("body") or "")
+            )
+            self.assertTrue(owner["definition_grid"])
+
+        technique_moves = [
+            row["move"]
+            for page in pages
+            for group in page["content_flow"]
+            for section in group.get("rich_sections", [])
+            if section.get("kind") == "techniques"
+            for technique_group in section.get("groups", [])
+            for row in technique_group.get("rows", [])
+        ]
+        self.assertEqual(
+            technique_moves,
+            [f"操作招式 {index}" for index in range(1, 5)],
+        )
 
 
 class ShinkakuCommandTests(unittest.IsolatedAsyncioTestCase):

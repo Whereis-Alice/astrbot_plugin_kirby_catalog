@@ -73,6 +73,53 @@ class WikiDocumentTests(unittest.TestCase):
             self.assertTrue(current.exists())
             self.assertTrue(keep.exists())
 
+    def test_document_keeps_module_table_order_and_definition_layout(self):
+        detail = (
+            "【招式列表】\n基础说明。\n"
+            "【详细数据】\n"
+            "- **火神百裂拳**\n"
+            "  - 实际指令为松开 *B*\n"
+            "  - 发生 5F\n"
+            "- **粉碎拳**\n"
+            "  - 指令输入时间 长按8F\n"
+            "  - 发生 5F\n"
+            "- **扫腿**\n"
+            "  - 实际指令为冲刺+松开B\n"
+            "  - 发生 1F\n"
+            "【特征】\n招式丰富。"
+        )
+        rich_sections = [
+            {
+                "kind": "table",
+                "title": "详细数据表",
+                "source_order": 2,
+                "headers": ["招式", "发生"],
+                "rows": [[{"text": "火神百裂拳"}, {"text": "5F"}]],
+            }
+        ]
+
+        with tempfile.TemporaryDirectory() as temporary:
+            path = build_wiki_document(
+                Path(temporary),
+                wiki_name="卡比真格攻略 Wiki",
+                title="ファイター(RBP)",
+                source_url="https://example.test/Fighter",
+                summary="页面概览。",
+                detail_text=detail,
+                rich_sections=rich_sections,
+                image_bytes=None,
+                media_urls=[],
+                template_name="卡比粉彩",
+                preserve_source_order=True,
+            )
+            document = path.read_text(encoding="utf-8")
+
+        self.assertIn('class="definition-grid"', document)
+        self.assertIn("<strong>火神百裂拳</strong>", document)
+        self.assertIn("<em>B</em>", document)
+        self.assertLess(document.index("详细数据"), document.index("详细数据表"))
+        self.assertLess(document.index("详细数据表"), document.index("特征"))
+
 
 if __name__ == "__main__":
     unittest.main()

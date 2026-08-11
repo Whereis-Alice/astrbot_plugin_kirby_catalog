@@ -101,7 +101,13 @@ def _normalise_multiline_text(value: str) -> str:
     lines: list[str] = []
     blank_pending = False
     for raw_line in value.split("\n"):
-        line = re.sub(r"[\t\f\v ]+", " ", raw_line).strip()
+        expanded = raw_line.replace("\t", "  ")
+        list_match = re.match(r"^(?P<indent> +)(?P<body>(?:[-*•]|\d+[.、])\s+.+)$", expanded)
+        if list_match:
+            indent = " " * min(12, len(list_match.group("indent")))
+            line = indent + re.sub(r"[\f\v ]+", " ", list_match.group("body")).strip()
+        else:
+            line = re.sub(r"[\t\f\v ]+", " ", expanded).strip()
         if not line:
             blank_pending = bool(lines)
             continue
@@ -110,6 +116,71 @@ def _normalise_multiline_text(value: str) -> str:
         lines.append(line)
         blank_pending = False
     return "\n".join(lines).strip()
+
+
+def _inline_markup_text(element: Tag | None) -> str:
+    """Keep meaningful inline emphasis as a small, renderer-owned dialect."""
+
+    if element is None:
+        return ""
+
+    def walk(node: Tag | NavigableString) -> str:
+        if isinstance(node, NavigableString):
+            return str(node)
+        name = str(node.name or "").casefold()
+        if name == "br":
+            return "\n"
+        value = "".join(walk(child) for child in node.children)
+        if name in {"strong", "b"} and value.strip():
+            return f"**{value.strip()}**"
+        if name in {"em", "i"} and value.strip():
+            return f"*{value.strip()}*"
+        return value
+
+    value = html.unescape(walk(element)).replace("\xa0", " ")
+    value = re.sub(r"[\t\f\v ]+", " ", value)
+    value = re.sub(r" *\n *", "\n", value)
+    return value.strip()
+
+
+def _list_item_data(item: Tag) -> dict[str, Any]:
+    text_parts: list[str] = []
+    children: list[dict[str, Any]] = []
+    for child in item.children:
+        if isinstance(child, NavigableString):
+            text_parts.append(str(child))
+            continue
+        if not isinstance(child, Tag):
+            continue
+        name = str(child.name or "").casefold()
+        if name in {"ul", "ol"}:
+            for nested_item in child.find_all("li", recursive=False):
+                children.append(_list_item_data(nested_item))
+            continue
+        text_parts.append(_inline_markup_text(child))
+    text = _normalise_multiline_text("".join(text_parts))
+    return {"text": text, "children": children}
+
+
+def _list_data(element: Tag) -> dict[str, Any]:
+    return {
+        "kind": "list",
+        "ordered": str(element.name or "").casefold() == "ol",
+        "items": [
+            _list_item_data(item)
+            for item in element.find_all("li", recursive=False)
+        ],
+    }
+
+
+def _list_lines(items: list[dict[str, Any]], depth: int = 0) -> list[str]:
+    output: list[str] = []
+    for item in items:
+        text = str(item.get("text") or "").strip()
+        if text:
+            output.append(f"{'  ' * depth}- {text}")
+        output.extend(_list_lines(list(item.get("children", []) or []), depth + 1))
+    return output
 
 
 def _meaningful_image_urls(root: Tag, base_url: str) -> list[str]:
@@ -246,6 +317,7 @@ def _section_content(body: Tag, base_url: str) -> dict[str, Any]:
     narrative_parts: list[str] = []
     tables: list[dict[str, Any]] = []
     toggles: list[dict[str, Any]] = []
+    content_blocks: list[dict[str, Any]] = []
     inline_buffer: list[str] = []
 
     def append_block(target: list[str], value: str) -> None:
@@ -261,6 +333,7 @@ def _section_content(body: Tag, base_url: str) -> dict[str, Any]:
         if value:
             parts.append(value)
             narrative_parts.append(value)
+            content_blocks.append({"kind": "prose", "text": value})
 
     for child in body.children:
         if isinstance(child, NavigableString):
@@ -285,7 +358,7 @@ def _section_content(body: Tag, base_url: str) -> dict[str, Any]:
             flush_inline()
             continue
         if name in _INLINE_TAGS:
-            inline_buffer.append(child.get_text("", strip=False))
+            inline_buffer.append(_inline_markup_text(child))
             continue
 
         flush_inline()
@@ -293,17 +366,16 @@ def _section_content(body: Tag, base_url: str) -> dict[str, Any]:
             table_data = _table_data(child, base_url)
             if table_data is not None:
                 tables.append(table_data)
+                content_blocks.append({"kind": "table", "table": table_data})
                 parts.extend(_table_lines(table_data))
             continue
         if name in {"ul", "ol"}:
-            ordered = name == "ol"
-            for index, item in enumerate(child.find_all("li", recursive=False), start=1):
-                value = _clean_text(item)
-                if not value:
-                    continue
-                item_text = f"{index}. {value}" if ordered else f"- {value}"
-                parts.append(item_text)
-                narrative_parts.append(item_text)
+            list_block = _list_data(child)
+            list_lines = _list_lines(list_block["items"])
+            if list_lines:
+                content_blocks.append(list_block)
+                parts.extend(list_lines)
+                narrative_parts.extend(list_lines)
             continue
         if name == "dl":
             pending_label = ""
@@ -317,10 +389,12 @@ def _section_content(body: Tag, base_url: str) -> dict[str, Any]:
                 line = f"{pending_label}：{value}" if pending_label else value
                 parts.append(line)
                 narrative_parts.append(line)
+                content_blocks.append({"kind": "prose", "text": line})
                 pending_label = ""
             if pending_label:
                 parts.append(pending_label)
                 narrative_parts.append(pending_label)
+                content_blocks.append({"kind": "prose", "text": pending_label})
             continue
 
         toggle_title_element, toggle_display = _toggle_parts(child)
@@ -342,6 +416,7 @@ def _section_content(body: Tag, base_url: str) -> dict[str, Any]:
                 "text": parsed["text"],
                 "text_without_tables": parsed["text_without_tables"],
                 "tables": toggle_tables,
+                "content_blocks": parsed["content_blocks"],
                 "images": parsed["images"],
                 "media_urls": parsed["media_urls"],
             }
@@ -349,6 +424,10 @@ def _section_content(body: Tag, base_url: str) -> dict[str, Any]:
             heading = f"【{toggle_title}】"
             append_block(parts, heading)
             append_block(narrative_parts, heading)
+            content_blocks.append(
+                {"kind": "subheading", "text": toggle_title, "level": 1}
+            )
+            content_blocks.extend(parsed["content_blocks"])
             append_block(parts, parsed["text"])
             append_block(narrative_parts, parsed["text_without_tables"])
             tables.extend(toggle_tables)
@@ -360,6 +439,8 @@ def _section_content(body: Tag, base_url: str) -> dict[str, Any]:
             value = _normalise_multiline_text(child.get_text("\n", strip=False))
             append_block(parts, value)
             append_block(narrative_parts, value)
+            if value:
+                content_blocks.append({"kind": "pre", "text": value})
             continue
         if child.select_one("div[class*='wiki-section-body-']"):
             continue
@@ -369,6 +450,7 @@ def _section_content(body: Tag, base_url: str) -> dict[str, Any]:
         append_block(narrative_parts, nested["text_without_tables"])
         tables.extend(nested["tables"])
         toggles.extend(nested["toggles"])
+        content_blocks.extend(nested["content_blocks"])
 
     flush_inline()
     return {
@@ -376,6 +458,7 @@ def _section_content(body: Tag, base_url: str) -> dict[str, Any]:
         "text_without_tables": "\n".join(narrative_parts).strip(),
         "tables": tables,
         "toggles": toggles,
+        "content_blocks": content_blocks,
         "images": _meaningful_image_urls(body, base_url),
         "media_urls": _meaningful_media_urls(body, base_url),
     }
@@ -428,6 +511,7 @@ def _page_sections(root: Tag, base_url: str) -> list[dict[str, Any]]:
                 "text_without_tables": content["text_without_tables"],
                 "tables": content["tables"],
                 "toggles": content["toggles"],
+                "content_blocks": content["content_blocks"],
                 "images": content["images"],
                 "media_urls": content["media_urls"],
                 "level": str(level),

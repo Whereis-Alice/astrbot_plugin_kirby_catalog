@@ -3,7 +3,14 @@ from __future__ import annotations
 import math
 import re
 import unicodedata
+from copy import deepcopy
 from typing import Any
+
+from .wiki_content import (
+    build_content_groups,
+    parse_detail_blocks,
+    structured_text_html,
+)
 
 DEFAULT_CARD_TEMPLATE = "梦之泉"
 CARD_TEMPLATE_NAMES = ("梦之泉", "卡比粉彩", "瓦豆鲁迪", "星际档案")
@@ -285,7 +292,7 @@ WIKIRBY_CARD_TEMPLATE = r"""
 
     .facts-band {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+      grid-template-columns: repeat(2, minmax(0, 1fr));
       gap: 18px;
       padding: 24px 44px;
       background: {{ theme.band }};
@@ -309,6 +316,195 @@ WIKIRBY_CARD_TEMPLATE = r"""
       padding: 30px 44px 10px;
       background: {{ theme.surface }};
       border-bottom: 1px solid {{ theme.border }};
+    }
+
+    .article-flow {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 20px;
+      min-width: 0;
+      padding: 30px 44px;
+      background: {{ theme.surface }};
+      border-bottom: 1px solid {{ theme.border }};
+    }
+
+    .article-module {
+      grid-column: 1 / -1;
+      min-width: 0;
+      margin: 0;
+      padding: 24px 26px 27px;
+      background: {{ theme.panel_a }};
+      border-left: 7px solid {{ theme.accent }};
+    }
+
+    .article-module--compact {
+      grid-column: auto;
+    }
+
+    .article-module[data-tone-index="1"] {
+      background: {{ theme.panel_b }};
+      border-left-color: {{ theme.accent_alt }};
+    }
+
+    .article-module[data-tone-index="2"] {
+      background: {{ theme.panel_c }};
+      border-left-color: {{ theme.accent_warm }};
+    }
+
+    .article-module[data-tone-index="3"] {
+      background: {{ theme.panel_d }};
+      border-left-color: {{ theme.accent }};
+    }
+
+    .module-divider {
+      grid-column: 1 / -1;
+      padding: 16px 20px;
+      color: {{ theme.title }};
+      background: {{ theme.header }};
+      border-top: 4px solid {{ theme.accent }};
+      border-bottom: 1px solid {{ theme.border }};
+      font-size: 25px;
+      font-weight: 900;
+      line-height: 1.35;
+      overflow-wrap: anywhere;
+    }
+
+    .module-heading {
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+      margin: 0 0 15px;
+      color: {{ theme.title }};
+      font-size: 24px;
+      font-weight: 900;
+      line-height: 1.38;
+      overflow-wrap: anywhere;
+    }
+
+    .module-heading::before {
+      content: "";
+      flex: 0 0 10px;
+      width: 10px;
+      height: 32px;
+      margin-top: 1px;
+      background: {{ theme.accent }};
+    }
+
+    .article-module[data-tone-index="1"] .module-heading::before {
+      background: {{ theme.accent_alt }};
+    }
+
+    .article-module[data-tone-index="2"] .module-heading::before {
+      background: {{ theme.accent_warm }};
+    }
+
+    .article-module--child .module-heading {
+      font-size: 21px;
+    }
+
+    .module-body {
+      min-width: 0;
+      color: {{ theme.text }};
+      font-size: 18px;
+      font-weight: 500;
+      line-height: 1.72;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+
+    .module-body p {
+      margin: 0 0 14px;
+    }
+
+    .module-body p:last-child {
+      margin-bottom: 0;
+    }
+
+    .module-body ul,
+    .module-body ol {
+      margin: 8px 0 14px;
+      padding-left: 28px;
+    }
+
+    .module-body li {
+      margin: 6px 0;
+    }
+
+    .module-body li > ul,
+    .module-body li > ol {
+      margin-top: 5px;
+      margin-bottom: 8px;
+    }
+
+    .module-body strong {
+      color: {{ theme.title }};
+      font-weight: 900;
+    }
+
+    .module-body em {
+      color: {{ theme.accent_alt }};
+      font-style: normal;
+      font-weight: 750;
+    }
+
+    .definition-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px 18px;
+      margin-top: 4px;
+    }
+
+    .definition-item {
+      min-width: 0;
+      padding: 15px 16px 13px;
+      background: rgba(255, 255, 255, 0.36);
+      border-left: 4px solid {{ theme.accent_alt }};
+      break-inside: avoid;
+      page-break-inside: avoid;
+    }
+
+    .definition-item:nth-child(3n + 2) {
+      border-left-color: {{ theme.accent }};
+    }
+
+    .definition-item:nth-child(3n) {
+      border-left-color: {{ theme.accent_warm }};
+    }
+
+    .definition-title {
+      margin-bottom: 8px;
+      color: {{ theme.title }};
+      font-size: 17px;
+      font-weight: 900;
+      line-height: 1.4;
+      overflow-wrap: anywhere;
+    }
+
+    .definition-item ul,
+    .definition-item ol {
+      margin: 0;
+      padding-left: 21px;
+    }
+
+    .definition-item li {
+      margin: 4px 0;
+      font-size: 15.5px;
+      line-height: 1.58;
+    }
+
+    .module-rich + .module-rich,
+    .module-body + .module-rich {
+      margin-top: 22px;
+      padding-top: 20px;
+      border-top: 1px solid {{ theme.border }};
+    }
+
+    .module-rich .rich-heading {
+      margin-bottom: 13px;
+    }
+
+    .module-rich .rich-title {
+      font-size: 19px;
     }
 
     .rich-section {
@@ -871,13 +1067,15 @@ WIKIRBY_CARD_TEMPLATE = r"""
       }
 
       .facts-band,
-      .details-columns {
+      .details-columns,
+      .article-flow {
         padding-left: 34px;
         padding-right: 34px;
       }
 
       .facts-band,
-      .details-columns {
+      .details-columns,
+      .article-flow {
         grid-template-columns: 1fr;
       }
 
@@ -887,6 +1085,14 @@ WIKIRBY_CARD_TEMPLATE = r"""
 
       .details-columns {
         gap: 28px;
+      }
+
+      .article-module--compact {
+        grid-column: 1 / -1;
+      }
+
+      .definition-grid {
+        grid-template-columns: 1fr;
       }
 
       .footer {
@@ -945,7 +1151,8 @@ WIKIRBY_CARD_TEMPLATE = r"""
       }
 
       .facts-band,
-      .details-columns {
+      .details-columns,
+      .article-flow {
         padding-left: 28px;
         padding-right: 28px;
       }
@@ -976,6 +1183,89 @@ WIKIRBY_CARD_TEMPLATE = r"""
   </style>
 </head>
 <body>
+  {% macro render_rich(section) -%}
+  <div class="module-rich rich-section rich-section--{{ section.kind }}">
+    {% if section.show_title %}
+    <div class="rich-heading">
+      <span class="rich-heading-mark"></span>
+      <div>
+        <div class="rich-title">{{ section.display_title | e }}</div>
+        {% if section.context %}
+        <div class="rich-context">{{ section.context | e }}</div>
+        {% endif %}
+      </div>
+    </div>
+    {% endif %}
+    {% if section.kind == 'quotes' %}
+    <div class="quote-list">
+      {% for quote in section.quotes %}
+      <article class="quote-item">
+        <div class="quote-mark">“</div>
+        <div class="quote-text">{{ quote.text | e }}</div>
+        {% if quote.attribution or quote.source %}
+        <div class="quote-credit">
+          — {% if quote.attribution %}{{ quote.attribution | e }}{% endif %}{% if quote.attribution and quote.source %} · {% endif %}{% if quote.source %}{{ quote.source | e }}{% endif %}
+        </div>
+        {% endif %}
+      </article>
+      {% endfor %}
+    </div>
+    {% elif section.kind == 'techniques' %}
+      {% if section.intro %}
+      <div class="technique-intro">{{ section.intro | e }}</div>
+      {% endif %}
+      {% for group in section.groups %}
+      <section class="technique-group">
+        {% if group.label %}
+        <div class="technique-group-heading">{{ group.label | e }}</div>
+        {% endif %}
+        <div class="technique-table-wrap">
+          <table class="technique-table">
+            <colgroup>
+              <col class="move" />
+              <col class="controls" />
+              <col class="description" />
+              <col class="damage" />
+            </colgroup>
+            <thead><tr><th>招式</th><th>操作</th><th>说明</th><th>伤害</th></tr></thead>
+            <tbody>
+              {% for row in group.rows %}
+              <tr>
+                <td class="technique-move">{{ row.move | e }}</td>
+                <td class="technique-controls">{{ row.controls | e }}</td>
+                <td>{{ row.description | e }}</td>
+                <td class="technique-damage">{{ row.damage | e }}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </section>
+      {% endfor %}
+    {% elif section.kind == 'table' %}
+    <div class="wiki-table-wrap">
+      <table class="wiki-table{% if section.column_count >= 4 %} wiki-table--wide{% endif %}">
+        <thead><tr>{% for header in section.headers %}<th>{{ header | e }}</th>{% endfor %}</tr></thead>
+        <tbody>
+          {% for row in section.rows %}
+          <tr>
+            {% for cell in row %}
+            <td class="{% if cell.icon_data_uri %}wiki-table-cell--icon {% endif %}{% if cell.tone %}wiki-table-cell--rating wiki-table-cell--rating-{{ cell.tone }}{% endif %}">
+              {% if cell.icon_data_uri %}<img class="wiki-table-icon" src="{{ cell.icon_data_uri }}" alt="" />{% endif %}
+              {% if cell.text %}<span>{{ cell.text | e }}</span>{% elif not cell.icon_data_uri %}<span>—</span>{% endif %}
+            </td>
+            {% endfor %}
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endif %}
+    {% if section.incomplete %}
+    <div class="rich-warning">该栏目有部分内容未能完整解析，请打开来源页面核对。</div>
+    {% endif %}
+  </div>
+  {%- endmacro %}
   <main id="kirby-card" class="template-{{ theme.slug }}">
     <div class="color-rail"><span></span><span></span><span></span></div>
     <header class="masthead">
@@ -1033,7 +1323,22 @@ WIKIRBY_CARD_TEMPLATE = r"""
         {% endfor %}
       </section>
       {% endif %}
-      {% if rich_sections %}
+      {% if content_flow %}
+      <section class="article-flow">
+        {% for group in content_flow %}
+          {% if group.group_only %}
+          <div class="module-divider" data-tone-index="{{ group.tone_index }}">{{ group.title | e }}</div>
+          {% else %}
+          <section class="article-module{% if group.compact and not group.rich_sections %} article-module--compact{% endif %}{% if group.level > 1 %} article-module--child{% endif %}" data-tone-index="{{ group.tone_index }}">
+            {% if group.title %}<h2 class="module-heading">{{ group.title | e }}</h2>{% endif %}
+            {% if group.body_html %}<div class="module-body">{{ group.body_html | safe }}</div>{% endif %}
+            {% for section in group.rich_sections %}{{ render_rich(section) }}{% endfor %}
+          </section>
+          {% endif %}
+        {% endfor %}
+      </section>
+      {% endif %}
+      {% if not content_flow and rich_sections %}
       <section class="rich-area">
         {% for section in rich_sections %}
         <section class="rich-section rich-section--{{ section.kind }}">
@@ -1131,7 +1436,7 @@ WIKIRBY_CARD_TEMPLATE = r"""
         {% endfor %}
       </section>
       {% endif %}
-      {% if right_block_count %}
+      {% if not content_flow and right_block_count %}
       <section class="details-columns{% if not left_blocks %} details-columns--flush{% endif %}">
         {% for column in right_columns %}
         <div class="details-column">
@@ -1161,6 +1466,7 @@ WIKIRBY_CARD_TEMPLATE = r"""
 
 _HEADING_RE = re.compile(r"^(.{1,48}?)[：:]$")
 _SENTENCE_BREAK_RE = re.compile(r"(?<=[。！？!?；;])\s*")
+_CARD_LIST_RE = re.compile(r"^(?P<indent>[ \t]*)(?:[-*•]|\d+[.、])\s+.+$")
 _LINE_UNITS = 54
 
 
@@ -1190,50 +1496,164 @@ def build_card_layout(
     summary: str,
     detail_text: str,
     rich_sections: list[dict[str, Any]] | None = None,
+    *,
+    preserve_source_order: bool = False,
 ) -> dict[str, Any]:
     summary = summary.strip() or "该页面暂时没有可显示的正文摘要。"
-    detail_blocks = _detail_blocks(detail_text)
+    left_blocks, content_groups, prepared_rich_sections = _prepare_card_content(
+        detail_text,
+        rich_sections or [],
+        preserve_source_order=preserve_source_order,
+    )
+    return _layout_from_groups(summary, left_blocks, content_groups)
+
+
+_FACT_BLOCK_TITLES = {
+    "页面资料",
+    "资料",
+    "其他语言名称",
+    "多语言页面名称",
+    "页面分类",
+}
+
+
+def _prepare_card_content(
+    detail_text: str,
+    rich_sections: list[dict[str, Any]],
+    *,
+    preserve_source_order: bool,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    detail_blocks = parse_detail_blocks(detail_text)
     prepared_rich_sections = _prepare_rich_sections(rich_sections or [])
     left_blocks: list[dict[str, Any]] = []
-    right_blocks: list[dict[str, Any]] = []
+    article_blocks: list[dict[str, Any]] = []
 
     for block in detail_blocks:
-        if block["tone"] == "facts" or block["title"] == "其他语言名称":
-            left_blocks.extend(
-                _with_fact_items(part) for part in _split_for_column(block)
-            )
-        else:
-            right_blocks.extend(_split_for_column(block, max_lines=92))
-
-    if not left_blocks and not right_blocks and not prepared_rich_sections:
-        left_blocks.append(
-            _with_fact_items(
+        fact_items = _key_value_items(str(block.get("body", "")))
+        if fact_items and (
+            not str(block.get("title") or "").strip()
+            or block.get("title") in _FACT_BLOCK_TITLES
+        ):
+            left_blocks.append(
                 {
-                    "title": "页面资料",
-                    "body": "暂无额外资料。",
+                    **block,
                     "tone": "facts",
+                    "fact_items": fact_items,
                 }
             )
-        )
+        else:
+            article_blocks.append(block)
 
-    columns: list[list[dict[str, str]]] = [[], []]
-    column_lines = [0, 0]
-    for block in right_blocks:
-        target = 0 if column_lines[0] <= column_lines[1] else 1
-        columns[target].append(block)
-        column_lines[target] += estimate_text_lines(block["body"]) + 4
+    content_groups = build_content_groups(
+        article_blocks,
+        prepared_rich_sections,
+        preserve_source_order=preserve_source_order,
+    )
+    for group in content_groups:
+        group_title = str(group.get("title") or "").strip()
+        attachments = list(group.get("rich_sections", []) or [])
+        for index, section in enumerate(attachments):
+            section_title = str(section.get("display_title") or "").strip()
+            section["show_title"] = bool(
+                section_title
+                and (
+                    section_title.casefold() != group_title.casefold()
+                    or len(attachments) > 1
+                )
+            )
+            section["tone_index"] = int(group.get("tone_index", 0) or 0)
+            section["attachment_order"] = index
 
+    return left_blocks, content_groups, prepared_rich_sections
+
+
+def _layout_from_groups(
+    summary: str,
+    left_blocks: list[dict[str, Any]],
+    content_groups: list[dict[str, Any]],
+) -> dict[str, Any]:
+    legacy_columns: list[list[dict[str, Any]]] = [[], []]
+    for index, group in enumerate(content_groups):
+        if group.get("body") and not group.get("rich_sections"):
+            legacy_columns[index % 2].append(
+                {
+                    "title": str(group.get("title") or ""),
+                    "body": str(group.get("body") or ""),
+                    "tone": "section",
+                }
+            )
+    flattened_rich = [
+        section
+        for group in content_groups
+        for section in group.get("rich_sections", []) or []
+    ]
     return {
         "summary": summary,
         "left_blocks": left_blocks,
-        "right_columns": columns,
-        "right_block_count": sum(len(column) for column in columns),
-        "rich_sections": prepared_rich_sections,
-        "rich_section_count": len(prepared_rich_sections),
+        "right_columns": legacy_columns,
+        "right_block_count": sum(len(column) for column in legacy_columns),
+        "rich_sections": flattened_rich,
+        "rich_section_count": len(flattened_rich),
+        "content_flow": content_groups,
         "show_summary": True,
         "page_number": 1,
         "page_total": 1,
     }
+
+
+def _continued_group_title(title: str, continuation: int) -> str:
+    if not title or continuation <= 0:
+        return title
+    return f"{title}（续）" if continuation == 1 else f"{title}（续 {continuation}）"
+
+
+def _split_content_group(
+    group: dict[str, Any], max_lines: int
+) -> list[dict[str, Any]]:
+    if group.get("group_only") or _content_group_lines(group) <= max_lines:
+        return [group]
+
+    parts: list[dict[str, Any]] = []
+    continuation = 0
+    body = str(group.get("body") or "").strip()
+    if body:
+        for chunk in _chunk_body(body, max(18, max_lines - 8)):
+            body_html, definition_grid = structured_text_html(
+                chunk,
+                force_definition_grid=bool(group.get("definition_grid")),
+            )
+            part = deepcopy(group)
+            part["title"] = _continued_group_title(
+                str(group.get("title") or ""), continuation
+            )
+            part["body"] = chunk
+            part["body_html"] = body_html
+            part["definition_grid"] = definition_grid
+            part["compact"] = False
+            part["rich_sections"] = []
+            parts.append(part)
+            continuation += 1
+
+    for rich_section in group.get("rich_sections", []) or []:
+        for section_part in _split_prepared_rich_section(
+            rich_section, max(24, max_lines - 8)
+        ):
+            part = deepcopy(group)
+            part["title"] = _continued_group_title(
+                str(group.get("title") or ""), continuation
+            )
+            part["body"] = ""
+            part["body_html"] = ""
+            part["definition_grid"] = False
+            part["compact"] = False
+            section_part["show_title"] = bool(
+                str(section_part.get("display_title") or "").strip()
+                and not part["title"]
+            )
+            part["rich_sections"] = [section_part]
+            parts.append(part)
+            continuation += 1
+    return parts or [group]
 
 
 def build_card_pages(
@@ -1244,11 +1664,21 @@ def build_card_pages(
     page_line_budget: int = 110,
     has_image: bool = False,
     force_paginate: bool = False,
+    preserve_source_order: bool = False,
 ) -> list[dict[str, Any]]:
-    """Split only oversized cards while preserving semantic content boundaries."""
+    """Split oversized cards while keeping each module in source order."""
 
     budget = max(60, int(page_line_budget))
-    complete_layout = build_card_layout(summary, detail_text, rich_sections)
+    left_blocks, content_groups, _ = _prepare_card_content(
+        detail_text,
+        rich_sections or [],
+        preserve_source_order=preserve_source_order,
+    )
+    complete_layout = _layout_from_groups(
+        summary.strip() or "该页面暂时没有可显示的正文摘要。",
+        left_blocks,
+        content_groups,
+    )
     if not force_paginate and _layout_vertical_lines(
         complete_layout, has_image=has_image
     ) <= budget:
@@ -1259,46 +1689,37 @@ def build_card_pages(
         max(24, budget - 35),
     )
     first_summary = summary_parts[0]
-    units: list[tuple[str, dict[str, Any]]] = []
+    units: list[dict[str, Any]] = []
     for index, part in enumerate(summary_parts[1:], start=1):
+        body_html, definition_grid = structured_text_html(part)
         units.append(
-            (
-                "detail",
-                {
-                    "title": "简介（续）" if index == 1 else f"简介（续 {index}）",
-                    "body": part,
-                    "tone": "section",
-                },
-            )
+            {
+                "title": "简介（续）" if index == 1 else f"简介（续 {index}）",
+                "body": part,
+                "body_html": body_html,
+                "level": 1,
+                "source_order": 0,
+                "tone_index": 0,
+                "group_only": False,
+                "definition_grid": definition_grid,
+                "compact": False,
+                "rich_sections": [],
+            }
         )
+    for group in content_groups:
+        units.extend(_split_content_group(group, max(28, budget - 18)))
 
-    detail_chunk_lines = max(24, min(54, budget // 2))
-    for block in _detail_blocks(detail_text):
-        for part in _split_for_column(block, max_lines=detail_chunk_lines):
-            units.append(("detail", part))
-
-    rich_chunk_lines = max(28, budget - 24)
-    for section in _prepare_rich_sections(rich_sections or []):
-        for part in _split_prepared_rich_section(section, rich_chunk_lines):
-            units.append(("rich", part))
-
-    def make_layout(
-        page_units: list[tuple[str, dict[str, Any]]], first_page: bool
-    ) -> dict[str, Any]:
-        detail_blocks = [
-            payload for kind, payload in page_units if kind == "detail"
-        ]
-        page_rich = [payload for kind, payload in page_units if kind == "rich"]
-        layout = build_card_layout(
+    def make_layout(page_units: list[dict[str, Any]], first_page: bool) -> dict[str, Any]:
+        layout = _layout_from_groups(
             first_summary if first_page else "",
-            _detail_blocks_to_text(detail_blocks),
-            page_rich,
+            left_blocks if first_page else [],
+            page_units,
         )
         layout["show_summary"] = first_page
         return layout
 
     pages: list[dict[str, Any]] = []
-    current: list[tuple[str, dict[str, Any]]] = []
+    current: list[dict[str, Any]] = []
     first_page = True
     for unit in units:
         candidate = [*current, unit]
@@ -1336,6 +1757,13 @@ def _layout_vertical_lines(layout: dict[str, Any], *, has_image: bool) -> int:
         estimate_text_lines(str(block.get("body", ""))) + 5
         for block in layout.get("left_blocks", [])
     )
+    if layout.get("content_flow"):
+        article_lines = sum(
+            _content_group_lines(group)
+            for group in layout.get("content_flow", [])
+        )
+        return fixed_lines + hero_lines + facts_lines + article_lines
+
     column_lines = [
         sum(
             estimate_text_lines(str(block.get("body", ""))) + 5
@@ -1349,6 +1777,19 @@ def _layout_vertical_lines(layout: dict[str, Any], *, has_image: bool) -> int:
         for section in layout.get("rich_sections", [])
     )
     return fixed_lines + hero_lines + facts_lines + detail_lines + rich_lines
+
+
+def _content_group_lines(group: dict[str, Any]) -> int:
+    if group.get("group_only"):
+        return 5
+    body_lines = estimate_text_lines(str(group.get("body", "")))
+    if group.get("definition_grid"):
+        body_lines = max(8, math.ceil(body_lines / 2))
+    rich_lines = sum(
+        _rich_section_lines(section)
+        for section in group.get("rich_sections", []) or []
+    )
+    return 6 + body_lines + rich_lines
 
 
 def _rich_section_lines(section: dict[str, Any]) -> int:
@@ -1481,27 +1922,8 @@ def _split_prepared_rich_section(
     chunks: list[dict[str, Any]] = []
     intro = str(section.get("intro", ""))
     for group in section.get("groups", []):
-        expanded_rows: list[dict[str, str]] = []
-        for row in group.get("rows", []):
-            descriptions = _chunk_body(
-                str(row.get("description", "")), max(10, max_lines - 12)
-            )
-            for index, description in enumerate(descriptions):
-                expanded_rows.append(
-                    {
-                        **row,
-                        "move": (
-                            str(row.get("move", ""))
-                            if index == 0
-                            else f"{row.get('move', '招式')}（续）"
-                        ),
-                        "controls": str(row.get("controls", "")) if index == 0 else "—",
-                        "description": description,
-                        "damage": str(row.get("damage", "")) if index == 0 else "—",
-                    }
-                )
         current_rows: list[dict[str, str]] = []
-        for row in expanded_rows:
+        for row in group.get("rows", []):
             candidate = {
                 **section,
                 "intro": intro if not chunks else "",
@@ -1553,6 +1975,15 @@ def _prepare_rich_sections(
         kind = str(section.get("kind", "") or "").strip()
         context = str(section.get("context", "") or "").strip()
         incomplete = bool(int(section.get("omitted_count", 0) or 0))
+        try:
+            source_order = float(section.get("source_order", 0) or 0)
+        except (TypeError, ValueError):
+            source_order = 0.0
+        ordering = {
+            "source_order": source_order,
+            "table_order": int(section.get("table_order", 0) or 0),
+            "level": int(section.get("level", 1) or 1),
+        }
         if kind == "quotes":
             quotes: list[dict[str, str]] = []
             for quote in section.get("quotes", []) or []:
@@ -1579,6 +2010,7 @@ def _prepare_rich_sections(
                     "context": context,
                     "quotes": quotes,
                     "incomplete": incomplete,
+                    **ordering,
                 }
             )
             continue
@@ -1634,6 +2066,7 @@ def _prepare_rich_sections(
                     "rows": rows,
                     "column_count": column_count,
                     "incomplete": incomplete,
+                    **ordering,
                 }
             )
             continue
@@ -1677,6 +2110,7 @@ def _prepare_rich_sections(
                     "intro": str(section.get("intro", "") or "").strip(),
                     "groups": groups,
                     "incomplete": incomplete,
+                    **ordering,
                 }
             )
     return prepared
@@ -1758,21 +2192,44 @@ def _chunk_body(text: str, max_lines: int) -> list[str]:
 
 def _text_segments(text: str) -> list[str]:
     segments: list[str] = []
-    for raw_line in text.splitlines():
+    raw_lines = text.splitlines()
+    index = 0
+    while index < len(raw_lines):
+        raw_line = raw_lines[index].rstrip()
         line = raw_line.strip()
         if not line:
+            index += 1
             continue
-        if line.startswith(("•", "-", "*")):
-            segments.append(line)
+        list_match = _CARD_LIST_RE.match(raw_line)
+        if list_match:
+            group = [raw_line]
+            base_indent = len(list_match.group("indent").replace("\t", "  "))
+            index += 1
+            while index < len(raw_lines):
+                nested_line = raw_lines[index].rstrip()
+                nested_match = _CARD_LIST_RE.match(nested_line)
+                if nested_match is None:
+                    break
+                nested_indent = len(
+                    nested_match.group("indent").replace("\t", "  ")
+                )
+                if nested_indent <= base_indent:
+                    break
+                group.append(nested_line)
+                index += 1
+            segments.append("\n".join(group))
             continue
         sentences = [part.strip() for part in _SENTENCE_BREAK_RE.split(line)]
         segments.extend(part for part in sentences if part)
+        index += 1
     return segments
 
 
 def _split_oversized_segment(segment: str, max_lines: int) -> list[str]:
     max_units = max_lines * _LINE_UNITS
     if _text_units(segment) <= max_units:
+        return [segment]
+    if "\n" in segment and _CARD_LIST_RE.match(segment.splitlines()[0]):
         return [segment]
 
     parts: list[str] = []

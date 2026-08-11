@@ -477,7 +477,9 @@ def parse_fandom_rich_sections(
 
     output: list[dict[str, Any]] = []
     heading_stack: dict[int, str] = {}
-    for heading in root.find_all(re.compile(r"^h[2-4]$"), recursive=False):
+    for source_position, heading in enumerate(
+        root.find_all(re.compile(r"^h[2-4]$"), recursive=False), start=1
+    ):
         level = int(heading.name[1])
         title = _heading_text(heading)
         heading_stack = {
@@ -494,6 +496,8 @@ def parse_fandom_rich_sections(
             "title": title,
             "context": " · ".join(ancestors),
             "ancestors": ancestors,
+            "source_position": source_position,
+            "level": level,
         }
         if kind == "quotes":
             quotes = _parse_quotes_section(fragment)
@@ -587,7 +591,7 @@ def parse_fandom_image_url(rendered_html: str) -> str:
     return candidates[0] if candidates else ""
 
 
-def parse_fandom_sections(rendered_html: str) -> list[dict[str, str]]:
+def parse_fandom_sections(rendered_html: str) -> list[dict[str, Any]]:
     """Extract prose-heavy sections while omitting media galleries and references."""
     output: list[dict[str, str]] = []
     for section in parse_rendered_sections(rendered_html):
@@ -600,7 +604,14 @@ def parse_fandom_sections(rendered_html: str) -> list[dict[str, str]]:
             continue
         if _rich_section_kind(title):
             continue
-        output.append({"title": title, "text": text})
+        output.append(
+            {
+                "title": title,
+                "text": text,
+                "level": str(section.get("level") or "2"),
+                "source_position": int(section.get("source_position", 0) or 0),
+            }
+        )
     return output
 
 
