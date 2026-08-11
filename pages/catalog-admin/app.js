@@ -628,7 +628,7 @@ async function openTerminology(termId) {
   byId("terminologyDrawerFooter").hidden = true;
   openDrawer(drawer);
   try {
-    state.activeTerminology = await apiGet("admin/terminology/entry", { term_id: termId });
+    state.activeTerminology = await apiGet("admin/terminology-entry", { term_id: termId });
     renderTerminologyDrawer();
   } catch (error) {
     byId("terminologyDrawerBody").innerHTML = `<div class="empty-state"><strong>读取失败</strong><span>${escapeHtml(error.message)}</span></div>`;

@@ -10,6 +10,7 @@ from collections import Counter, OrderedDict
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional
+from urllib.parse import unquote
 
 from PIL import Image, ImageOps
 
@@ -75,6 +76,17 @@ def _query_value(key: str, default: Any = None, converter: Any = None) -> Any:
     if converter is None:
         return source.get(key, default)
     return source.get(key, default, type=converter)
+
+
+def _decode_terminology_id(value: Any) -> str:
+    """Decode IDs produced by older pages that encoded path segments twice."""
+    term_id = str(value or "").strip()
+    for _ in range(2):
+        decoded = unquote(term_id)
+        if decoded == term_id:
+            break
+        term_id = decoded
+    return term_id
 
 
 async def _request_json() -> Dict[str, Any]:
@@ -479,7 +491,14 @@ class CatalogAdminService:
         key = str(term_id or "").strip()
         entry = store.entry(key)
         if entry is None:
-            raise ValueError("名称库条目不存在")
+            logger.warning(
+                "[%s] WebUI 名称库详情未命中: term_id=%r, revision=%s, entries=%s",
+                PLUGIN_ID,
+                key,
+                store.revision,
+                len(store.entries()),
+            )
+            raise ValueError(f"名称库条目不存在：{key or '(空)'}")
         conflicts = [
             conflict
             for conflict in store.conflicts()
@@ -1182,10 +1201,22 @@ class KirbyCatalogWebUI:
             ("admin/audit", self.audit, ["GET"], "List WebUI audit records"),
             ("admin/terminology", self.terminology, ["GET"], "List terminology entries"),
             (
-                "admin/terminology/entry",
+                "admin/terminology-entry",
                 self.terminology_entry,
                 ["GET"],
                 "Get terminology entry",
+            ),
+            (
+                "admin/terminology/entry",
+                self.terminology_entry,
+                ["GET"],
+                "Get terminology entry (v3.10.1 compatibility)",
+            ),
+            (
+                "admin/terminology/<term_id>",
+                self.terminology_entry_path,
+                ["GET"],
+                "Get terminology entry (legacy path compatibility)",
             ),
             (
                 "admin/terminology/save",
@@ -1388,11 +1419,19 @@ class KirbyCatalogWebUI:
         return await self._read(self.service.list_terminology, params)
 
     async def terminology_entry(self):
-        # Terminology IDs contain characters that dynamic Page API routes do
-        # not preserve reliably, so read the ID from the query string instead.
         return await self._read(
             self.service.terminology_detail,
-            _query_value("term_id", ""),
+            _decode_terminology_id(_query_value("term_id", "")),
+        )
+
+    async def terminology_entry_path(self, term_id: str):
+        # Re-registering this legacy route replaces the stale handler left by
+        # an AstrBot plugin reload. Prefer the v3.10.1 query parameter when it
+        # is present, otherwise decode the old page's double-encoded path ID.
+        requested_id = _query_value("term_id", "") or term_id
+        return await self._read(
+            self.service.terminology_detail,
+            _decode_terminology_id(requested_id),
         )
 
     async def save_terminology(self):

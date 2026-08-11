@@ -18,6 +18,7 @@ from astrbot_plugin_kirby_catalog.webui import (
     PLUGIN_ID,
     CatalogAdminService,
     KirbyCatalogWebUI,
+    _decode_terminology_id,
 )
 from astrbot_plugin_kirby_catalog.terminology import (
     KirbyTerminologyStore,
@@ -404,6 +405,11 @@ class CatalogAdminServiceTests(unittest.TestCase):
 
 
 class KirbyCatalogWebUiRegistrationTests(unittest.TestCase):
+    def test_decodes_legacy_terminology_path_ids(self):
+        self.assertEqual(_decode_terminology_id("ability:hydra"), "ability:hydra")
+        self.assertEqual(_decode_terminology_id("ability%3Ahydra"), "ability:hydra")
+        self.assertEqual(_decode_terminology_id("ability%253Ahydra"), "ability:hydra")
+
     def test_registers_all_routes_with_plugin_prefix(self):
         with tempfile.TemporaryDirectory() as temp:
             store = CatalogStore(Path(temp) / "data", image_base_url="")
@@ -415,7 +421,7 @@ class KirbyCatalogWebUiRegistrationTests(unittest.TestCase):
 
             webui.register()
 
-            self.assertEqual(len(routes), 25)
+            self.assertEqual(len(routes), 27)
             self.assertTrue(
                 all(route[0].startswith(f"/{PLUGIN_ID}/admin/") for route in routes)
             )
@@ -423,9 +429,41 @@ class KirbyCatalogWebUiRegistrationTests(unittest.TestCase):
             self.assertIn(f"/{PLUGIN_ID}/admin/entries/<entry_id>/image", paths)
             self.assertIn(f"/{PLUGIN_ID}/admin/groups/user/save", paths)
             self.assertIn(f"/{PLUGIN_ID}/admin/trash/restore", paths)
+            self.assertIn(f"/{PLUGIN_ID}/admin/terminology-entry", paths)
             self.assertIn(f"/{PLUGIN_ID}/admin/terminology/entry", paths)
-            self.assertNotIn(f"/{PLUGIN_ID}/admin/terminology/<term_id>", paths)
+            self.assertIn(f"/{PLUGIN_ID}/admin/terminology/<term_id>", paths)
             self.assertIn(f"/{PLUGIN_ID}/admin/terminology/save", paths)
+
+    def test_register_replaces_stale_legacy_terminology_route(self):
+        with tempfile.TemporaryDirectory() as temp:
+            store = CatalogStore(Path(temp) / "data", image_base_url="")
+            legacy_path = f"/{PLUGIN_ID}/admin/terminology/<term_id>"
+
+            async def stale_handler(term_id):
+                return term_id
+
+            routes = [(legacy_path, stale_handler, ["GET"], "stale")]
+
+            def register(*route):
+                for index, current in enumerate(routes):
+                    if current[0] == route[0] and current[2] == route[2]:
+                        routes[index] = route
+                        return
+                routes.append(route)
+
+            webui = KirbyCatalogWebUI(
+                SimpleNamespace(register_web_api=register),
+                store,
+                asyncio.Lock(),
+            )
+            webui.register()
+
+            registered = next(route for route in routes if route[0] == legacy_path)
+            self.assertIs(registered[1].__self__, webui)
+            self.assertIs(
+                registered[1].__func__,
+                webui.terminology_entry_path.__func__,
+            )
 
     def test_page_bundle_uses_bridge_local_icons_and_responsive_themes(self):
         plugin_root = Path(__file__).parents[1]
@@ -443,7 +481,7 @@ class KirbyCatalogWebUiRegistrationTests(unittest.TestCase):
         self.assertIn('apiPost("admin/entries/add"', script)
         self.assertIn('apiPost("admin/entries/delete"', script)
         self.assertIn('apiPost("admin/trash/restore"', script)
-        self.assertIn('apiGet("admin/terminology/entry"', script)
+        self.assertIn('apiGet("admin/terminology-entry"', script)
         self.assertIn('apiPost("admin/terminology/save"', script)
         self.assertIn('apiUpload("admin/terminology/import"', script)
         self.assertIn("confirmAction({", script)
@@ -473,7 +511,7 @@ class KirbyCatalogWebUiRegistrationTests(unittest.TestCase):
                 plugin = plugin_main.KirbyCatalogPlugin(context, {})
 
             self.assertIsNotNone(plugin.webui)
-            self.assertEqual(len(routes), 25)
+            self.assertEqual(len(routes), 27)
             self.assertIs(plugin.webui.write_lock, plugin._draw_lock)
 
 
