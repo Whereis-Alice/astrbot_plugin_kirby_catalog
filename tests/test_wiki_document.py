@@ -120,6 +120,27 @@ class WikiDocumentTests(unittest.TestCase):
         self.assertLess(document.index("详细数据"), document.index("详细数据表"))
         self.assertLess(document.index("详细数据表"), document.index("特征"))
 
+    def test_document_renders_source_emphasis_in_lead_summary(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = build_wiki_document(
+                Path(temporary),
+                wiki_name="卡比真格攻略 Wiki",
+                title="ファイター(RBP)",
+                source_url="https://example.test/Fighter",
+                summary="**==身体能力==得到提升。**\n掌握了==拳击==与踢技。",
+                detail_text="【技一覧】\n攻略正文。",
+                template_name="卡比粉彩",
+                preserve_source_order=True,
+            )
+            document = path.read_text(encoding="utf-8")
+
+        self.assertIn(
+            '<strong><span class="source-accent">身体能力</span>得到提升。</strong>',
+            document,
+        )
+        self.assertIn('<span class="source-accent">拳击</span>', document)
+        self.assertLess(document.index("身体能力"), document.index("技一覧"))
+
 
 if __name__ == "__main__":
     unittest.main()

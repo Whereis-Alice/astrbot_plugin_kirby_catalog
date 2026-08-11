@@ -29,6 +29,11 @@ _PROXY_FALLBACK_HTTP_CODES = _RETRYABLE_HTTP_CODES | {403}
 _PROXY_PREFERENCE_SECONDS = 300.0
 _IMAGE_HOST_RE = re.compile(r"^image0[1-9]\.seesaawiki\.jp$", re.IGNORECASE)
 _SECTION_CLASS_RE = re.compile(r"^wiki-section-body-(\d+)$")
+_SOURCE_ACCENT_COLOR_RE = re.compile(
+    r"(?:^|;)\s*color\s*:\s*(?:#(?:f00|ff0000)|red|"
+    r"rgb\(\s*255\s*,\s*0\s*,\s*0\s*\))\s*(?:;|$)",
+    re.IGNORECASE,
+)
 _SKIPPED_PAGE_TITLES = {"menubar1", "トップページ"}
 _INLINE_TAGS = {
     "a",
@@ -135,6 +140,14 @@ def _inline_markup_text(element: Tag | None) -> str:
             return f"**{value.strip()}**"
         if name in {"em", "i"} and value.strip():
             return f"*{value.strip()}*"
+        style = str(node.get("style") or "")
+        colour = str(node.get("color") or "").strip().casefold()
+        if value.strip() and (
+            name == "mark"
+            or bool(_SOURCE_ACCENT_COLOR_RE.search(style))
+            or colour in {"#f00", "#ff0000", "red"}
+        ):
+            return f"=={value.strip()}=="
         return value
 
     value = html.unescape(walk(element)).replace("\xa0", " ")
@@ -523,6 +536,46 @@ def _page_sections(root: Tag, base_url: str) -> list[dict[str, Any]]:
     return sections
 
 
+def _page_lead(root: Tag, base_url: str) -> dict[str, Any]:
+    """Read article content placed before the first named Wiki section."""
+
+    user_area = root.select_one("#page-body-inner .user-area") or root.select_one(
+        ".user-area"
+    )
+    if not isinstance(user_area, Tag):
+        return {}
+
+    fragments: list[str] = []
+    for child in user_area.children:
+        if isinstance(child, Tag):
+            name = str(child.name or "").casefold()
+            classes = {str(value) for value in child.get("class", [])}
+            if (
+                name in {"h3", "h4", "h5", "h6"}
+                or any(_SECTION_CLASS_RE.match(value) for value in classes)
+                or child.select_one("div[class*='wiki-section-body-']") is not None
+            ):
+                break
+        fragments.append(str(child))
+
+    if not "".join(fragments).strip():
+        return {}
+    fragment = BeautifulSoup("<div>" + "".join(fragments) + "</div>", "html.parser")
+    body = fragment.div
+    if not isinstance(body, Tag):
+        return {}
+    content = _section_content(body, base_url)
+    if not any(
+        (
+            content["text"],
+            content["images"],
+            content["media_urls"],
+        )
+    ):
+        return {}
+    return content
+
+
 def _page_image_url(root: Tag, base_url: str) -> str:
     images = _meaningful_image_urls(root, base_url)
     return images[0] if images else ""
@@ -746,21 +799,29 @@ class KirbyShinkakuClient:
         title = _page_title(root, requested_title)
         if not title or "ページが見つかりません" in title:
             return None
+        lead = _page_lead(root, source_url)
         sections = _page_sections(root, source_url)
         section_titles = [
             str(row["title"])
             for row in sections
             if str(row.get("level") or "1") == "1"
         ]
-        summary = (
-            f"真格攻略 Wiki 的「{title}」资料页"
-            + (f"，包含{ '、'.join(section_titles) }等内容。" if section_titles else "。")
-        )
+        summary = str(lead.get("text_without_tables") or lead.get("text") or "").strip()
+        if not summary:
+            summary = (
+                f"真格攻略 Wiki 的「{title}」资料页"
+                + (
+                    f"，包含{ '、'.join(section_titles) }等内容。"
+                    if section_titles
+                    else "。"
+                )
+            )
         images = _meaningful_image_urls(root, source_url)
         media_urls = _meaningful_media_urls(root, source_url)
         return {
             "title": title,
             "summary": summary,
+            "lead": lead,
             "url": source_url,
             "image_url": images[0] if images else "",
             "images": images,

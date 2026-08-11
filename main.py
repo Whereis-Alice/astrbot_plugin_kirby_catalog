@@ -129,7 +129,7 @@ class AllyDrawOutcome:
     PLUGIN_ID,
     "Whereis-Alice",
     "星之卡比盟友抽取、收藏图鉴与三百科查询插件",
-    "3.7.1",
+    "3.7.2",
     "https://github.com/Whereis-Alice/astrbot_plugin_kirby_catalog",
 )
 class KirbyCatalogPlugin(Star):
@@ -2427,6 +2427,8 @@ class KirbyCatalogPlugin(Star):
                         f"请将下面的 {source_name} 百科内容准确翻译成简体中文。"
                         "只输出译文，不要解释，不要添加原文中没有的内容。"
                         "保留原有标题层级、段落、列表、表格行、数字、按键、URL 和特殊标记；"
+                        "其中 **...**、*...* 和 ==...== 分别是粗体、强调和来源彩色强调，"
+                        "必须保留标记及其包围范围；"
                         "角色名、作品名和专有名词使用常见官方中文，必要时保留原文。\n\n"
                         f"原文：\n{chunk}"
                     ),

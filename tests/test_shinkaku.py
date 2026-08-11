@@ -208,6 +208,70 @@ class ShinkakuClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("\u8868\u683c\uff1a\u884c\u52d5 | \u5bfe\u7b56", page["sections"][0]["text"])
         self.assertIn("image01.seesaawiki.jp", page["image_url"])
 
+    async def test_page_parser_keeps_lead_text_emphasis_before_first_section(self):
+        client = KirbyShinkakuClient(cache_ttl_seconds=0)
+        source = """
+        <div id="main">
+          <div id="page-header"><h2>ファイター(RBP)</h2></div>
+          <div id="page-body-inner"><div class="user-area">
+            <img src="https://image02.seesaawiki.jp/k/u/kirby_shinkaku/71bb18ea61b24d4a.png">
+            <br><br>
+            <b><span style="color:#ff0000;">身体てき</span> にせい能が</b><br>
+            <b>アップする能力。人なみはずれた</b><br>
+            <b>強力な<span style="color:#ff0000;">パンチ</span>や<span style="color:red;">キック</span>を</b><br>
+            <b>マスターしている。きたえれば</b><br>
+            <b>かのうせいは<span style="color:rgb(255, 0, 0);">むげん大</span>である。</b>
+            <div class="wiki-section-1">
+              <div class="title-1"><h3>技一覧</h3></div>
+              <div class="wiki-section-body-1"><p>最初の攻略本文。</p></div>
+            </div>
+          </div></div>
+        </div>
+        """.encode("euc_jp")
+        page = client._parse_page(
+            source,
+            "ファイター(RBP)",
+            "https://seesaawiki.jp/kirby_shinkaku/d/Fighter_Test",
+        )
+
+        self.assertIsNotNone(page)
+        self.assertEqual(
+            page["summary"].splitlines(),
+            [
+                "**==身体てき== にせい能が**",
+                "**アップする能力。人なみはずれた**",
+                "**強力な==パンチ==や==キック==を**",
+                "**マスターしている。きたえれば**",
+                "**かのうせいは==むげん大==である。**",
+            ],
+        )
+        self.assertEqual(page["lead"]["text"], page["summary"])
+        self.assertEqual([row["title"] for row in page["sections"]], ["技一覧"])
+        self.assertNotIn("最初の攻略本文", page["summary"])
+        self.assertTrue(page["image_url"].endswith("71bb18ea61b24d4a.png"))
+
+        layout = build_card_pages(
+            page["summary"],
+            KirbyCatalogPlugin._shinkaku_narrative_text(
+                {"sections": page["sections"]}
+            ),
+            page_line_budget=200,
+            preserve_source_order=True,
+        )[0]
+        rendered = Environment(loader=BaseLoader(), autoescape=True).from_string(
+            WIKIRBY_CARD_TEMPLATE
+        ).render(
+            title=page["title"],
+            source=page["url"],
+            theme=resolve_card_template("卡比粉彩"),
+            wiki_name="卡比真格攻略 Wiki",
+            reference_label="SHINKAKU BOSS BATTLE GUIDE",
+            image_data_uri="",
+            **layout,
+        )
+        self.assertIn('<span class="source-accent">身体てき</span>', rendered)
+        self.assertLess(rendered.index("身体てき"), rendered.index("技一覧"))
+
     async def test_search_parser_keeps_page_title_links_not_navigation(self):
         client = KirbyShinkakuClient(cache_ttl_seconds=0)
         source = """

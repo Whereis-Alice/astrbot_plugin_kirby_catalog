@@ -10,7 +10,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from .wiki_content import build_content_groups, parse_detail_blocks
+from .wiki_content import build_content_groups, inline_markup_html, parse_detail_blocks
 
 _THEMES = {
     "梦之泉": {
@@ -79,15 +79,7 @@ def _image_data_uri(data: bytes | None) -> str:
 
 
 def _linkify(value: str) -> str:
-    escaped = html.escape(str(value or ""), quote=False)
-    return re.sub(
-        r"(https?://[^\s<]+)",
-        lambda match: (
-            f'<a href="{html.escape(match.group(1), quote=True)}" '
-            f'target="_blank" rel="noreferrer">{match.group(1)}</a>'
-        ),
-        escaped,
-    )
+    return inline_markup_html(value)
 
 
 def _plain_text_html(text: str) -> str:
@@ -408,6 +400,7 @@ def build_wiki_document(
     li {{ margin: 5px 0; }}
     strong {{ color: var(--accent-dark); font-weight: 900; }}
     em {{ color: var(--secondary-dark); font-style: normal; font-weight: 750; }}
+    .source-accent {{ color: #c9344b; font-weight: 900; }}
     .article-module {{ border-left: 7px solid var(--accent); }}
     .article-module.tone-1 {{ border-left-color: var(--secondary); background: #f4f9fc; }}
     .article-module.tone-2 {{ border-left-color: #c28c2e; background: #fffaf0; }}

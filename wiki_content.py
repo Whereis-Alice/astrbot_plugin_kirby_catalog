@@ -20,6 +20,11 @@ def inline_markup_html(value: str, *, linkify: bool = True) -> str:
     escaped = html.escape(str(value or ""), quote=False)
     escaped = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", escaped)
     escaped = re.sub(r"(?<!\*)\*([^*\n]+?)\*(?!\*)", r"<em>\1</em>", escaped)
+    escaped = re.sub(
+        r"==([^=\n]+?)==",
+        r'<span class="source-accent">\1</span>',
+        escaped,
+    )
     if linkify:
         escaped = _URL_RE.sub(
             lambda match: (

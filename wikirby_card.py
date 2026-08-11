@@ -8,6 +8,7 @@ from typing import Any
 
 from .wiki_content import (
     build_content_groups,
+    inline_markup_html,
     parse_detail_blocks,
     structured_text_html,
 )
@@ -259,6 +260,22 @@ WIKIRBY_CARD_TEMPLATE = r"""
       line-height: 1.65;
       white-space: pre-wrap;
       overflow-wrap: anywhere;
+    }
+
+    .hero-copy .hero-note strong {
+      color: {{ theme.text }};
+      font-weight: 900;
+    }
+
+    .hero-copy .hero-note em {
+      color: {{ theme.accent_alt }};
+      font-style: normal;
+      font-weight: 800;
+    }
+
+    .source-accent {
+      color: #d53f52;
+      font-weight: 900;
     }
 
     .hero-art {
@@ -1288,7 +1305,7 @@ WIKIRBY_CARD_TEMPLATE = r"""
       <div class="hero-copy">
         <div class="index">页面简介</div>
         <div class="hero-title">简介</div>
-        <div class="hero-note">{{ summary | e }}</div>
+        <div class="hero-note">{% if summary_html %}{{ summary_html | safe }}{% else %}{{ summary | e }}{% endif %}</div>
       </div>
       {% if image_data_uri %}
       <div class="hero-art">
@@ -1589,6 +1606,7 @@ def _layout_from_groups(
     ]
     return {
         "summary": summary,
+        "summary_html": inline_markup_html(summary),
         "left_blocks": left_blocks,
         "right_columns": legacy_columns,
         "right_block_count": sum(len(column) for column in legacy_columns),
