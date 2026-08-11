@@ -346,7 +346,9 @@ def build_wiki_document(
     )
     summary_html = (
         '<section class="summary"><div class="eyebrow">页面概览</div>'
-        + _plain_text_html(summary)
+        + '<div class="summary-copy">'
+        + inline_markup_html(summary)
+        + "</div>"
         + "</section>"
         if summary
         else ""
@@ -390,6 +392,7 @@ def build_wiki_document(
     .hero-image img {{ max-width: 100%; max-height: 680px; object-fit: contain; }}
     .summary, .content-section {{ margin-top: 18px; padding: 24px 28px; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; }}
     .summary {{ border-left: 6px solid var(--secondary); background: var(--secondary-soft); }}
+    .summary-copy {{ white-space: pre-wrap; overflow-wrap: anywhere; }}
     .eyebrow, h2 {{ color: var(--accent-dark); font-weight: 900; }}
     .eyebrow {{ font-size: 14px; margin-bottom: 7px; }}
     h2 {{ margin: 0 0 14px; font-size: 24px; line-height: 1.35; }}

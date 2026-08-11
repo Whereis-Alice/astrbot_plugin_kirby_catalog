@@ -11,7 +11,10 @@ from jinja2 import BaseLoader, Environment
 
 from astrbot_plugin_kirby_catalog.kirby_shinkaku import KirbyShinkakuClient
 from astrbot_plugin_kirby_catalog.main import KirbyCatalogPlugin
-from astrbot_plugin_kirby_catalog.wiki_content import parse_detail_blocks
+from astrbot_plugin_kirby_catalog.wiki_content import (
+    inline_markup_plain,
+    parse_detail_blocks,
+)
 from astrbot_plugin_kirby_catalog.wikirby_card import (
     WIKIRBY_CARD_TEMPLATE,
     build_card_pages,
@@ -271,6 +274,44 @@ class ShinkakuClientTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIn('<span class="source-accent">身体てき</span>', rendered)
         self.assertLess(rendered.index("身体てき"), rendered.index("技一覧"))
+
+    async def test_translated_lead_renders_cross_line_emphasis_without_markers(self):
+        translated = (
+            "==身体性能==\n"
+            "**得到提升的能力。\n将超乎寻常的**\n"
+            "强力==拳击==与==踢击==\n"
+            "**熟练掌握。\n只要经过锻炼，**\n"
+            "**可能性就是==无限大==。\n**"
+        )
+        layout = build_card_pages(
+            translated,
+            "【招式列表】\n攻略正文。",
+            page_line_budget=200,
+            preserve_source_order=True,
+        )[0]
+        rendered = Environment(loader=BaseLoader(), autoescape=True).from_string(
+            WIKIRBY_CARD_TEMPLATE
+        ).render(
+            title="ファイター(RBP)",
+            source="https://seesaawiki.jp/kirby_shinkaku/d/Fighter_Test",
+            theme=resolve_card_template("星际档案"),
+            wiki_name="卡比真格攻略 Wiki",
+            reference_label="SHINKAKU BOSS BATTLE GUIDE",
+            image_data_uri="",
+            **layout,
+        )
+
+        hero = rendered.split('<div class="hero-note">', 1)[1].split("</div>", 1)[0]
+        self.assertNotIn("**", hero)
+        self.assertNotIn("==", hero)
+        self.assertIn("<strong>得到提升的能力。\n将超乎寻常的</strong>", hero)
+        self.assertIn('<span class="source-accent">无限大</span>', hero)
+        self.assertEqual(
+            inline_markup_plain(translated),
+            "身体性能\n得到提升的能力。\n将超乎寻常的\n"
+            "强力拳击与踢击\n熟练掌握。\n只要经过锻炼，\n"
+            "可能性就是无限大。\n",
+        )
 
     async def test_search_parser_keeps_page_title_links_not_navigation(self):
         client = KirbyShinkakuClient(cache_ttl_seconds=0)

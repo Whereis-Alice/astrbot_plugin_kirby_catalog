@@ -127,7 +127,11 @@ class WikiDocumentTests(unittest.TestCase):
                 wiki_name="卡比真格攻略 Wiki",
                 title="ファイター(RBP)",
                 source_url="https://example.test/Fighter",
-                summary="**==身体能力==得到提升。**\n掌握了==拳击==与踢技。",
+                summary=(
+                    "==身体能力==\n"
+                    "**得到提升的能力。\n掌握了超乎寻常的**\n"
+                    "**==拳击==与踢技。\n**"
+                ),
                 detail_text="【技一覧】\n攻略正文。",
                 template_name="卡比粉彩",
                 preserve_source_order=True,
@@ -135,10 +139,19 @@ class WikiDocumentTests(unittest.TestCase):
             document = path.read_text(encoding="utf-8")
 
         self.assertIn(
-            '<strong><span class="source-accent">身体能力</span>得到提升。</strong>',
+            '<span class="source-accent">身体能力</span>',
             document,
         )
         self.assertIn('<span class="source-accent">拳击</span>', document)
+        self.assertIn(
+            "<strong>得到提升的能力。\n掌握了超乎寻常的</strong>",
+            document,
+        )
+        summary = document.split('<section class="summary">', 1)[1].split(
+            "</section>", 1
+        )[0]
+        self.assertNotIn("**", summary)
+        self.assertNotIn("==", summary)
         self.assertLess(document.index("身体能力"), document.index("技一覧"))
 
 

@@ -49,6 +49,7 @@ from .media_delivery import (
 )
 from .webui import KirbyCatalogWebUI
 from .wiki_document import build_wiki_document, cleanup_wiki_documents
+from .wiki_content import inline_markup_plain
 from .wikirby import DEFAULT_API_URL, WikirbyClient, WikirbyError
 from .wikirby_card import (
     DEFAULT_CARD_TEMPLATE,
@@ -129,7 +130,7 @@ class AllyDrawOutcome:
     PLUGIN_ID,
     "Whereis-Alice",
     "星之卡比盟友抽取、收藏图鉴与三百科查询插件",
-    "3.7.2",
+    "3.7.3",
     "https://github.com/Whereis-Alice/astrbot_plugin_kirby_catalog",
 )
 class KirbyCatalogPlugin(Star):
@@ -4520,7 +4521,7 @@ class KirbyCatalogPlugin(Star):
                 )
         lines = [f"{SHINKAKU_SITE_LABEL}：{page['title']}", ""]
         if summary and not section:
-            lines.extend(["【页面概览】", summary, ""])
+            lines.extend(["【页面概览】", inline_markup_plain(summary), ""])
 
         details = client.get_page_details(page, section)
         rich_sections = self._shinkaku_rich_sections(details)
@@ -4581,8 +4582,10 @@ class KirbyCatalogPlugin(Star):
         response_detail_text = "\n\n".join(
             part
             for part in (
-                detail_text,
-                self._shinkaku_rich_sections_text(rich_sections),
+                inline_markup_plain(detail_text),
+                inline_markup_plain(
+                    self._shinkaku_rich_sections_text(rich_sections)
+                ),
             )
             if part
         )

@@ -12,16 +12,28 @@ _LIST_LINE_RE = re.compile(
     r"^(?P<indent>[ \t]*)(?:(?P<number>\d+[.、])|(?P<bullet>[-*•]))\s+(?P<text>.+)$"
 )
 _URL_RE = re.compile(r"(https?://[^\s<]+)")
+_STRONG_MARKUP_RE = re.compile(r"\*\*(.+?)\*\*", re.DOTALL)
+_EMPHASIS_MARKUP_RE = re.compile(r"(?<!\*)\*([^*\n]+?)\*(?!\*)")
+_SOURCE_ACCENT_MARKUP_RE = re.compile(r"==(.+?)==", re.DOTALL)
+
+
+def inline_markup_plain(value: str) -> str:
+    """Remove renderer-owned emphasis markers from plain-message output."""
+
+    text = str(value or "")
+    text = _STRONG_MARKUP_RE.sub(r"\1", text)
+    text = _EMPHASIS_MARKUP_RE.sub(r"\1", text)
+    text = _SOURCE_ACCENT_MARKUP_RE.sub(r"\1", text)
+    return text
 
 
 def inline_markup_html(value: str, *, linkify: bool = True) -> str:
     """Render the small, parser-owned emphasis dialect as safe HTML."""
 
     escaped = html.escape(str(value or ""), quote=False)
-    escaped = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", escaped)
-    escaped = re.sub(r"(?<!\*)\*([^*\n]+?)\*(?!\*)", r"<em>\1</em>", escaped)
-    escaped = re.sub(
-        r"==([^=\n]+?)==",
+    escaped = _STRONG_MARKUP_RE.sub(r"<strong>\1</strong>", escaped)
+    escaped = _EMPHASIS_MARKUP_RE.sub(r"<em>\1</em>", escaped)
+    escaped = _SOURCE_ACCENT_MARKUP_RE.sub(
         r'<span class="source-accent">\1</span>',
         escaped,
     )
