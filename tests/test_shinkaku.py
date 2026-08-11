@@ -1,3 +1,4 @@
+import hashlib
 import json
 import unittest
 from io import BytesIO
@@ -264,15 +265,35 @@ class ShinkakuClientTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(first[0].is_file())
             with Image.open(first[0]) as image:
                 self.assertEqual(image.width, 2160)
-                self.assertLess(image.height, 8000)
-                self.assertLess(image.width * image.height, 18_000_000)
+                self.assertLess(image.height, 12000)
+                self.assertLess(image.width * image.height, 26_000_000)
             self.assertLess(first[0].stat().st_size, 8 * 1024 * 1024)
             manifest = json.loads(
                 (output_dir / "manifest.json").read_text(encoding="utf-8")
             )
             self.assertEqual(manifest["entries"], 301)
-            self.assertEqual(manifest["columns"], 4)
+            self.assertEqual(manifest["columns"], 5)
             self.assertTrue(manifest["single_image"])
+
+    async def test_bundled_reference_image_matches_manifest(self):
+        root = Path(__file__).resolve().parents[1]
+        image_path = root / "resources" / "shinkaku_reference.png"
+        manifest = json.loads(
+            (root / "resources" / "shinkaku_reference_manifest.json").read_text(
+                encoding="utf-8"
+            )
+        )
+
+        self.assertTrue(image_path.is_file())
+        self.assertEqual(manifest["entries"], 301)
+        self.assertEqual(manifest["columns"], 5)
+        self.assertEqual(manifest["render_version"], 5)
+        self.assertEqual(manifest["bytes"], image_path.stat().st_size)
+        self.assertEqual(
+            manifest["sha256"], hashlib.sha256(image_path.read_bytes()).hexdigest()
+        )
+        with Image.open(image_path) as image:
+            self.assertEqual(image.size, (manifest["width"], manifest["height"]))
 
     async def test_ambiguous_short_name_returns_three_language_candidates(self):
         client = KirbyShinkakuClient(cache_ttl_seconds=0)
@@ -930,14 +951,23 @@ class ShinkakuCommandTests(unittest.IsolatedAsyncioTestCase):
             plugin = self.make_plugin()
             plugin.shinkaku = KirbyShinkakuClient(cache_ttl_seconds=0)
             plugin.store = SimpleNamespace(root=Path(temporary))
-            title, components = await plugin._shinkaku_reference_components()
+            with patch(
+                "astrbot_plugin_kirby_catalog.main.render_shinkaku_reference_pages"
+            ) as renderer:
+                title, components = await plugin._shinkaku_reference_components()
 
             self.assertIn("中文 / 日本語", title)
+            renderer.assert_not_called()
             self.assertIsInstance(components[0], Comp.Plain)
             self.assertEqual(
                 sum(isinstance(component, Comp.Image) for component in components),
                 1,
             )
+            image = next(
+                component for component in components if isinstance(component, Comp.Image)
+            )
+            self.assertIn("resources", image.file)
+            self.assertTrue(image.file.endswith("shinkaku_reference.png"))
 
     async def test_candidate_output_mode_supports_plain_and_forward_messages(self):
         plugin = self.make_plugin()

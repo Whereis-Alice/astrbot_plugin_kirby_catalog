@@ -121,6 +121,10 @@ DEFAULT_WIKI_DOCUMENT_RETENTION_MINUTES = 1440.0
 DEFAULT_SHINKAKU_REFERENCE_ENTRIES_PER_PAGE = _REFERENCE_DEFAULT_ENTRIES_PER_PAGE
 DEFAULT_SHINKAKU_REFERENCE_COLUMNS = _REFERENCE_DEFAULT_COLUMNS
 DEFAULT_SHINKAKU_REFERENCE_COMPACT_COLUMNS = _REFERENCE_DEFAULT_COMPACT_COLUMNS
+BUNDLED_SHINKAKU_REFERENCE_PATH = (
+    Path(__file__).parent / "resources" / "shinkaku_reference.png"
+)
+BUNDLED_SHINKAKU_REFERENCE_ENTRY_COUNT = 301
 WIKI_EXPLICIT_OUTPUT_SUFFIXES = {
     "文本": "text",
     "卡片": "card",
@@ -142,7 +146,7 @@ class AllyDrawOutcome:
     PLUGIN_ID,
     "Whereis-Alice",
     "星之卡比盟友抽取、收藏图鉴与三百科查询插件",
-    "3.9.2",
+    "3.9.3",
     "https://github.com/Whereis-Alice/astrbot_plugin_kirby_catalog",
 )
 class KirbyCatalogPlugin(Star):
@@ -620,6 +624,8 @@ class KirbyCatalogPlugin(Star):
     def _media_delivery_limits(
         self, media_profile: str
     ) -> Tuple[int, int, float, int, int]:
+        if media_profile == "shinkaku_reference":
+            return 0, 0, 0, 0, DEFAULT_WIKI_CARD_JPEG_QUALITY
         if media_profile == "wiki_card":
             prefix = "wiki_card"
             defaults = (
@@ -4598,10 +4604,35 @@ class KirbyCatalogPlugin(Star):
         """Render the complete Chinese/Japanese directory as cached groupable images."""
 
         entries = self._shinkaku_reference_entries()
+        use_bundled_image = self._bool_value(
+            self._config_value("shinkaku_reference_use_bundled_image", True)
+        )
+        if use_bundled_image and BUNDLED_SHINKAKU_REFERENCE_PATH.is_file():
+            entry_count = len(entries) or BUNDLED_SHINKAKU_REFERENCE_ENTRY_COUNT
+            title = (
+                f"真格攻略 Wiki 名称速查（中文 / 日本語）  共 {entry_count} 个页面"
+            )
+            logger.info(
+                "[%s] 直接发送内置真格名称高清速查图: entries=%d, path=%s",
+                PLUGIN_ID,
+                entry_count,
+                BUNDLED_SHINKAKU_REFERENCE_PATH,
+            )
+            return title, [
+                Comp.Plain(title),
+                Comp.Image.fromFileSystem(str(BUNDLED_SHINKAKU_REFERENCE_PATH)),
+            ]
+        if use_bundled_image:
+            logger.warning(
+                "[%s] 内置真格名称高清速查图缺失，改用动态渲染: path=%s",
+                PLUGIN_ID,
+                BUNDLED_SHINKAKU_REFERENCE_PATH,
+            )
         if not entries:
             return "真格攻略 Wiki 名称速查", [
                 Comp.Plain("真格攻略 Wiki 名称索引暂时不可用。")
             ]
+
         entries_per_page = self._bounded_int(
             self._config_value(
                 "shinkaku_reference_entries_per_page",
@@ -4652,13 +4683,14 @@ class KirbyCatalogPlugin(Star):
             )
             logger.info(
                 "[%s] 真格名称速查图已生成: entries=%d, pages=%d, "
-                "layout=%s, entries_per_page=%d, columns=%d",
+                "layout=%s, entries_per_page=%d, columns=%d, bundled=%s",
                 PLUGIN_ID,
                 len(entries),
                 len(outputs),
                 "single" if single_image else "paginated",
                 entries_per_page,
                 columns,
+                False,
             )
             return title, [
                 Comp.Plain(title),
@@ -4900,18 +4932,18 @@ class KirbyCatalogPlugin(Star):
         if not self._shinkaku_enabled():
             yield event.plain_result("真格攻略 Wiki 查询功能当前已关闭。")
             return
-        client = getattr(self, "shinkaku", None)
-        if client is None:
-            yield event.plain_result("真格攻略 Wiki 查询功能尚未初始化。")
-            return
         query, mode, section, output_override = self._shinkaku_query_parts(event)
         if mode == "reference":
             _, components = await self._shinkaku_reference_components()
             result = await self._chain_result_with_media(
-                event, components, media_profile="wiki_card"
+                event, components, media_profile="shinkaku_reference"
             )
             if result is not None:
                 yield result
+            return
+        client = getattr(self, "shinkaku", None)
+        if client is None:
+            yield event.plain_result("真格攻略 Wiki 查询功能尚未初始化。")
             return
         if not query:
             yield event.plain_result(

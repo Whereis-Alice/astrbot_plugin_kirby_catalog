@@ -683,15 +683,21 @@
         "description": "真格名称速查图合并为单张",
         "type": "bool",
         "default": true,
-        "hint": "开启后把全部 301 个页面压成一张分组总览图，减少群内刷屏；关闭后恢复旧版分页速查图。"
+        "hint": "仅在关闭内置高清图后生效。开启时动态生成一张分组总览图；关闭后恢复旧版分页速查图。"
+      },
+      "shinkaku_reference_use_bundled_image": {
+        "description": "真格速查优先使用内置高清图",
+        "type": "bool",
+        "default": true,
+        "hint": "开启后直接发送插件 resources 中预先生成的五列高清 PNG，不在运行时重新渲染。关闭后才使用下方的动态单张、列数和分页设置。"
       },
       "shinkaku_reference_compact_columns": {
         "description": "真格单张速查图列数",
         "type": "int",
-        "default": 4,
+        "default": 5,
         "min": 4,
         "max": 7,
-        "hint": "仅在单张总览模式生效。默认 4 列并使用较大字号；列数越多，图片越短，但单列文字和字号会更紧凑。"
+        "hint": "仅在关闭内置高清图并启用动态单张总览时生效。默认 5 列；列数越多，图片越短，但单列文字会更紧凑。"
       },
       "shinkaku_reference_entries_per_page": {
         "description": "真格名称速查图每页条目数",
@@ -699,7 +705,7 @@
         "default": 50,
         "min": 20,
         "max": 200,
-        "hint": "仅在关闭“真格名称速查图合并为单张”后生效。速查图按作品和原站栏目分组；数值越大图片越长。"
+        "hint": "仅在关闭内置高清图和“真格名称速查图合并为单张”后生效。速查图按作品和原站栏目分组；数值越大图片越长。"
       },
       "shinkaku_reference_columns": {
         "description": "真格名称速查图列数",
@@ -707,7 +713,7 @@
         "default": 2,
         "min": 1,
         "max": 3,
-        "hint": "仅在关闭“真格名称速查图合并为单张”后生效。默认两列兼顾字号和图片高度；中文或日文较长时可改为 1 列。"
+        "hint": "仅在关闭内置高清图和“真格名称速查图合并为单张”后生效。默认两列兼顾字号和图片高度；中文或日文较长时可改为 1 列。"
       },
       "shinkaku_proxy_url": {
         "description": "可选真格攻略 Cloudflare Worker 中转地址",

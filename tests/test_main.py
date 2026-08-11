@@ -915,6 +915,29 @@ class DrawManagementTests(unittest.IsolatedAsyncioTestCase):
             with Image.open(Path(wiki_result[0].path)) as wiki_image:
                 self.assertEqual(wiki_image.width, 2400)
 
+    async def test_shinkaku_reference_profile_preserves_original_png(self):
+        plugin = make_plugin(self.entry)
+        plugin.config = {
+            "media_send_mode": "AstrBot标准发送",
+            "media_normalize_jpeg": True,
+            "wiki_card_max_width_px": 100,
+            "wiki_card_max_height_px": 100,
+            "wiki_card_max_megapixels": 0.01,
+            "wiki_card_max_bytes_mb": 0.01,
+        }
+        with tempfile.TemporaryDirectory() as temp:
+            plugin.store.root = Path(temp) / "plugin-data"
+            image_path = Path(temp) / "reference.png"
+            Image.new("RGB", (240, 480), "white").save(image_path, format="PNG")
+
+            result = await plugin._chain_result_with_media(
+                FakeEvent("测试"),
+                [Comp.Image.fromFileSystem(str(image_path))],
+                media_profile="shinkaku_reference",
+            )
+
+        self.assertEqual(Path(result[0].path), image_path)
+
     def test_ally_detail_template_and_visibility_switches(self):
         plugin = make_plugin(self.entry)
 

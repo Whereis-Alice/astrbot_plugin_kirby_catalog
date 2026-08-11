@@ -11,8 +11,8 @@ from PIL import Image, ImageDraw, ImageFont
 
 DEFAULT_ENTRIES_PER_PAGE = 50
 DEFAULT_COLUMNS = 2
-DEFAULT_COMPACT_COLUMNS = 4
-REFERENCE_RENDER_VERSION = 4
+DEFAULT_COMPACT_COLUMNS = 5
+REFERENCE_RENDER_VERSION = 5
 
 _GROUP_PALETTE = (
     ((255, 228, 236), (154, 54, 91), (255, 241, 246)),
@@ -416,53 +416,53 @@ def _draw_compact_reference(
 ) -> None:
     canvas_width = 2160
     margin_x = 24
-    top_height = 124
-    footer_height = 32
+    top_height = 146
+    footer_height = 42
     row_gap = 2
     column_gap = 6
     if columns <= 4:
-        group_height = 52
-        group_font_size = 21
-        group_subtitle_size = 14
-        index_font_size = 16
-        name_font_size = 20
-        japanese_font_size = 16
-        name_line_height = 25
-        japanese_line_height = 20
-        minimum_entry_height = 66
-        text_offset = 64
+        group_height = 80
+        group_font_size = 31
+        group_subtitle_size = 20
+        index_font_size = 22
+        name_font_size = 32
+        japanese_font_size = 25
+        name_line_height = 39
+        japanese_line_height = 31
+        minimum_entry_height = 100
+        text_offset = 78
     elif columns == 5:
-        group_height = 50
-        group_font_size = 20
-        group_subtitle_size = 13
-        index_font_size = 16
-        name_font_size = 19
-        japanese_font_size = 15
-        name_line_height = 24
-        japanese_line_height = 19
-        minimum_entry_height = 64
-        text_offset = 64
+        group_height = 76
+        group_font_size = 28
+        group_subtitle_size = 18
+        index_font_size = 21
+        name_font_size = 30
+        japanese_font_size = 23
+        name_line_height = 36
+        japanese_line_height = 29
+        minimum_entry_height = 94
+        text_offset = 74
     else:
-        group_height = 46
-        group_font_size = 18
-        group_subtitle_size = 12
-        index_font_size = 14
-        name_font_size = 16
-        japanese_font_size = 13
-        name_line_height = 21
-        japanese_line_height = 17
-        minimum_entry_height = 56
-        text_offset = 62
+        group_height = 64
+        group_font_size = 24
+        group_subtitle_size = 16
+        index_font_size = 18
+        name_font_size = 24
+        japanese_font_size = 19
+        name_line_height = 30
+        japanese_line_height = 24
+        minimum_entry_height = 78
+        text_offset = 68
     cell_width = (
         canvas_width - margin_x * 2 - column_gap * (columns - 1)
     ) // columns
-    title_font = _font(38, True)
-    subtitle_font = _font(18)
+    title_font = _font(44, True)
+    subtitle_font = _font(20)
     group_font = _font(group_font_size, True)
     group_subtitle_font = _font(group_subtitle_size)
     index_font = _font(index_font_size, True)
     name_font = _font(name_font_size, True)
-    japanese_font = _font(japanese_font_size)
+    japanese_font = _font(japanese_font_size, True)
     draw_probe = Image.new("RGB", (1, 1), "white")
     probe = ImageDraw.Draw(draw_probe)
     rows = _compact_rows(entries, columns)
@@ -503,13 +503,13 @@ def _draw_compact_reference(
     )
     draw.rectangle((0, 0, 12, top_height - 8), fill=(232, 103, 145))
     draw.text(
-        (34, 23),
+        (34, 22),
         "真格攻略 Wiki 名称速查",
         fill=(45, 50, 58),
         font=title_font,
     )
     draw.text(
-        (36, 76),
+        (36, 84),
         "中文名称 / 日本語名称  ·  按作品、资料类型与原站顺序编号",
         fill=(99, 108, 119),
         font=subtitle_font,
@@ -517,7 +517,7 @@ def _draw_compact_reference(
     range_label = f"共 {len(entries)} 个页面  ·  #1-#{len(entries)}"
     range_box = draw.textbbox((0, 0), range_label, font=subtitle_font)
     draw.text(
-        (canvas_width - 34 - (range_box[2] - range_box[0]), 36),
+        (canvas_width - 34 - (range_box[2] - range_box[0]), 40),
         range_label,
         fill=(38, 104, 137),
         font=subtitle_font,
@@ -536,7 +536,7 @@ def _draw_compact_reference(
                 fill=soft,
             )
             draw.text(
-                (margin_x + 12, y + 5),
+                (margin_x + 12, y + 7),
                 f"{game_zh}  ·  {section_zh}",
                 fill=dark,
                 font=group_font,
@@ -546,7 +546,7 @@ def _draw_compact_reference(
             )
             if subtitle:
                 draw.text(
-                    (margin_x + 13, y + 28),
+                    (margin_x + 13, y + group_font_size + 11),
                     subtitle,
                     fill=dark,
                     font=group_subtitle_font,
@@ -582,7 +582,7 @@ def _draw_compact_reference(
                 text_width = cell_width - text_offset - 8
                 zh_lines = _wrap_text(draw, chinese, name_font, text_width)
                 ja_lines = _wrap_text(draw, japanese, japanese_font, text_width)
-                text_y = y + 5
+                text_y = y + 7
                 for line in zh_lines:
                     draw.text(
                         (text_x, text_y),
@@ -595,7 +595,7 @@ def _draw_compact_reference(
                     draw.text(
                         (text_x, text_y),
                         line,
-                        fill=(102, 111, 121),
+                        fill=(72, 81, 91),
                         font=japanese_font,
                     )
                     text_y += japanese_line_height
@@ -603,7 +603,7 @@ def _draw_compact_reference(
 
     footer = "完整名称、译名来源与页面 URL：resources/shinkaku_page_names.json / .csv / .md"
     draw.text(
-        (margin_x, canvas_height - footer_height + 8),
+        (margin_x, canvas_height - footer_height + 10),
         footer,
         fill=(119, 128, 138),
         font=group_subtitle_font,
