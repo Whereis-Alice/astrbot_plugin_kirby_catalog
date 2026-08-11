@@ -130,7 +130,7 @@ class AllyDrawOutcome:
     PLUGIN_ID,
     "Whereis-Alice",
     "星之卡比盟友抽取、收藏图鉴与三百科查询插件",
-    "3.7.3",
+    "3.8.0",
     "https://github.com/Whereis-Alice/astrbot_plugin_kirby_catalog",
 )
 class KirbyCatalogPlugin(Star):
@@ -4397,23 +4397,73 @@ class KirbyCatalogPlugin(Star):
     def _shinkaku_candidate_text(
         candidates: List[Dict[str, Any]], mode: str = "page"
     ) -> str:
-        lines = ["找到多个可能的真格攻略 Wiki 页面，请改用完整日文页面名查询："]
+        lines = [
+            "找到多个可能的真格攻略 Wiki 页面，请改用完整中文、英文或日文页面名查询："
+        ]
         for index, page in enumerate(candidates, start=1):
-            lines.append(f"{index}. {page.get('title') or '未命名页面'}")
+            japanese = page.get("title_ja") or page.get("title") or "未命名页面"
+            chinese = page.get("title_zh") or "中文名未收录"
+            english = page.get("title_en") or "English name unavailable"
+            lines.extend(
+                [
+                    f"{index}. {chinese}",
+                    f"   English: {english}",
+                    f"   日本語：{japanese}",
+                ]
+            )
         command = "卡比真格章节" if mode == "sections" else "卡比真格"
         if candidates:
-            lines.append(f"例如：{command} {candidates[0].get('title', '')}")
+            example = (
+                candidates[0].get("title_en")
+                or candidates[0].get("title_zh")
+                or candidates[0].get("title")
+                or ""
+            )
+            lines.append(f"例如：{command} {example}")
         return "\n".join(lines)
 
     async def _shinkaku_terms_text(self, query: str) -> str:
         client = getattr(self, "shinkaku", None)
         if client is None:
             return "真格攻略 Wiki 查询功能尚未初始化。"
+        lookup_page_names = getattr(client, "lookup_page_names", None)
+        page_rows = (
+            lookup_page_names(query, limit=20)
+            if callable(lookup_page_names)
+            else []
+        )
+        if page_rows:
+            lines = [f"真格攻略 Wiki 页面名称对照：{query}"]
+            status_labels = {
+                "official": "官方译名",
+                "official_reused": "沿用系列官译",
+                "translated": "本项目自译",
+                "unchanged": "原文保留",
+            }
+            for index, row in enumerate(page_rows, start=1):
+                lines.extend(
+                    [
+                        f"{index}. 中文：{row.get('title_zh') or '未收录'}",
+                        f"英文：{row.get('title_en') or '未收录'}",
+                        f"日文：{row.get('title_ja') or '未收录'}",
+                        f"中文来源：{status_labels.get(str(row.get('zh_status') or ''), '未标注')}",
+                        f"分类：{row.get('game_zh') or '综合'} / {row.get('section_zh') or '综合资料'}",
+                        f"页面：{row.get('url') or DEFAULT_SHINKAKU_SITE_URL}",
+                        "",
+                    ]
+                )
+            lines.extend(
+                [
+                    "说明：页面名称表覆盖真格 Wiki 页面一覧中的全部 301 页；中文标注官方译名或本项目自译。",
+                    f"来源：{DEFAULT_SHINKAKU_SITE_URL}/l/",
+                ]
+            )
+            return "\n".join(lines).strip()
         rows = await client.lookup_terms(query)
         if not rows:
             return (
-                f"没有在真格攻略 Wiki 的日英用语表中找到“{query}”。\n"
-                "可尝试英文、日文，或改用卡比真格查询具体攻略页面。\n"
+                f"没有在真格攻略 Wiki 的页面名称表或日英用语表中找到“{query}”。\n"
+                "可尝试完整中文、英文、日文页面名，或改用卡比真格查询具体攻略页面。\n"
                 f"来源：{DEFAULT_SHINKAKU_SITE_URL}/"
             )
         lines = [f"真格攻略 Wiki 的日英用语对照：{query}"]
@@ -4603,7 +4653,7 @@ class KirbyCatalogPlugin(Star):
         资料来自日文的星之卡比真 Boss Battle 攻略 Wiki，适合查询真格斗、
         Boss 行动、攻略法和能力实机记录；工具只读，不会修改图鉴或发送群消息。
         Args:
-            query(string): Boss、能力、日文页面名、英文名称或图鉴中的中文名称。
+            query(string): Boss、能力或攻略页面的完整中文、英文、日文名称；短名称可能返回不同作品候选。
             section(string): 可选的日文栏目标题，只返回指定攻略栏目。
         """
         if not self._shinkaku_enabled():
@@ -4636,12 +4686,12 @@ class KirbyCatalogPlugin(Star):
     async def shinkaku_lookup_terms(
         self, event: AstrMessageEvent, query: str
     ) -> str:
-        """查询卡比真格攻略 Wiki 的日文、英文用语对照。
+        """查询卡比真格攻略 Wiki 的中英日页面名称或日英攻略用语。
 
-        可用于把英文 Boss、能力或招式名转换为 Wiki 使用的日文检索词；
-        这是攻略 Wiki 的用语表，不代表任天堂官方中文译名。
+        页面名称表完整覆盖页面一覧中的 301 页，中文优先采用官方译名并标注自译项；
+        非页面词会继续查询攻略 Wiki 的日英招式用语表。
         Args:
-            query(string): 英文或日文 Boss、能力、招式或攻略术语。
+            query(string): 中文、英文或日文页面名、Boss、能力、招式或攻略术语。
         """
         if not self._shinkaku_enabled():
             return "真格攻略 Wiki 查询功能当前已关闭。"

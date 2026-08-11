@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import html
+import json
 import re
 import time
+import unicodedata
+from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, unquote, urlencode, urljoin, urlparse
@@ -15,6 +18,9 @@ from bs4.element import NavigableString, Tag
 DEFAULT_SHINKAKU_SITE_URL = "https://seesaawiki.jp/kirby_shinkaku"
 SHINKAKU_SITE_LABEL = "卡比真格攻略 Wiki"
 SHINKAKU_ENGLISH_CORNER_TITLE = "英語のコーナー"
+DEFAULT_SHINKAKU_PAGE_NAMES_PATH = (
+    Path(__file__).resolve().parent / "resources" / "shinkaku_page_names.json"
+)
 
 # Seesaa Wiki rejects generic script clients more often than a normal browser
 # request. This identifies the client as a compatible HTML reader without
@@ -84,7 +90,40 @@ class KirbyShinkakuError(RuntimeError):
 
 
 def _normalise_term(value: str) -> str:
-    return re.sub(r"[\s\W_]+", "", str(value or "").casefold())
+    value = unicodedata.normalize("NFKC", str(value or "")).casefold()
+    return re.sub(r"[\s\W_]+", "", value)
+
+
+def _load_page_name_entries(path: Path) -> list[dict[str, Any]]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return []
+    entries = payload.get("entries", []) if isinstance(payload, dict) else []
+    if not isinstance(entries, list):
+        return []
+    output: list[dict[str, Any]] = []
+    for raw_entry in entries:
+        if not isinstance(raw_entry, dict):
+            continue
+        entry = dict(raw_entry)
+        if not all(
+            str(entry.get(field) or "").strip()
+            for field in ("title_ja", "title_zh", "title_en", "url")
+        ):
+            continue
+        entry["primary_aliases"] = [
+            str(value).strip()
+            for value in entry.get("primary_aliases", [])
+            if str(value).strip()
+        ]
+        entry["aliases"] = [
+            str(value).strip()
+            for value in entry.get("aliases", [])
+            if str(value).strip()
+        ]
+        output.append(entry)
+    return output
 
 
 def _clean_text(element: Tag | None) -> str:
@@ -610,18 +649,116 @@ class KirbyShinkakuClient:
         cache_ttl_seconds: int = 3600,
         proxy_url: str = "",
         proxy_token: str = "",
+        page_names_path: str | Path | None = None,
     ) -> None:
         self.site_url = site_url.strip().rstrip("/") or DEFAULT_SHINKAKU_SITE_URL
         self.timeout_seconds = max(2.0, float(timeout_seconds))
         self.cache_ttl_seconds = max(0, int(cache_ttl_seconds))
         self.proxy_url = proxy_url.strip().rstrip("/")
         self.proxy_token = proxy_token.strip()
+        names_path = (
+            Path(page_names_path)
+            if page_names_path is not None
+            else DEFAULT_SHINKAKU_PAGE_NAMES_PATH
+        )
+        self._page_name_entries = _load_page_name_entries(names_path)
+        self._page_names_by_title = {
+            _normalise_term(str(entry["title_ja"])): entry
+            for entry in self._page_name_entries
+        }
+        self._page_names_by_url = {
+            str(entry["url"]).strip(): entry for entry in self._page_name_entries
+        }
         self._proxy_preferred_until = 0.0
         self._cache: dict[str, tuple[float, Any]] = {}
         self._request_limit = asyncio.Semaphore(2)
 
     async def close(self) -> None:
         self._cache.clear()
+
+    @property
+    def page_name_entries(self) -> list[dict[str, Any]]:
+        return [dict(entry) for entry in self._page_name_entries]
+
+    @staticmethod
+    def _page_name_match_score(entry: dict[str, Any], query: str) -> int:
+        target = _normalise_term(query)
+        if not target:
+            return 0
+        primary = {
+            _normalise_term(value)
+            for value in entry.get("primary_aliases", [])
+            if _normalise_term(value)
+        }
+        aliases = {
+            _normalise_term(value)
+            for value in entry.get("aliases", [])
+            if _normalise_term(value)
+        }
+        if target in primary:
+            return 400
+        if target in aliases:
+            return 300
+        if any(target in value for value in primary):
+            return 180
+        if any(target in value for value in aliases):
+            return 120
+        return 0
+
+    def lookup_page_names(
+        self,
+        query: str,
+        limit: int = 20,
+        *,
+        exact_only: bool = False,
+    ) -> list[dict[str, Any]]:
+        target = _normalise_term(query)
+        if not target:
+            return []
+        matches: list[dict[str, Any]] = []
+        for entry in self._page_name_entries:
+            score = self._page_name_match_score(entry, query)
+            if score <= 0 or (exact_only and score < 300):
+                continue
+            row = dict(entry)
+            row["score"] = score
+            matches.append(row)
+        if exact_only and any(int(row["score"]) >= 400 for row in matches):
+            matches = [row for row in matches if int(row["score"]) >= 400]
+        matches.sort(
+            key=lambda row: (
+                -int(row.get("score", 0)),
+                int(row.get("catalog_index") or row.get("source_index") or 0),
+                str(row.get("title_ja") or ""),
+            )
+        )
+        return matches[: max(1, int(limit))]
+
+    def _page_name_entry(
+        self, *, title: str = "", url: str = ""
+    ) -> dict[str, Any] | None:
+        if url:
+            entry = self._page_names_by_url.get(url.strip())
+            if entry is not None:
+                return dict(entry)
+        if title:
+            entry = self._page_names_by_title.get(_normalise_term(title))
+            if entry is not None:
+                return dict(entry)
+        return None
+
+    @staticmethod
+    def _page_name_candidate(entry: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "title": str(entry.get("title_ja") or ""),
+            "title_ja": str(entry.get("title_ja") or ""),
+            "title_zh": str(entry.get("title_zh") or ""),
+            "title_en": str(entry.get("title_en") or ""),
+            "game_zh": str(entry.get("game_zh") or ""),
+            "section_zh": str(entry.get("section_zh") or ""),
+            "url": str(entry.get("url") or ""),
+            "score": int(entry.get("score") or 0),
+        }
 
     def _cache_get(self, key: str) -> Any:
         item = self._cache.get(key)
@@ -818,7 +955,7 @@ class KirbyShinkakuClient:
             )
         images = _meaningful_image_urls(root, source_url)
         media_urls = _meaningful_media_urls(root, source_url)
-        return {
+        result = {
             "title": title,
             "summary": summary,
             "lead": lead,
@@ -836,6 +973,13 @@ class KirbyShinkakuClient:
                 for index, row in enumerate(sections, start=1)
             ],
         }
+        page_names = self._page_name_entry(title=title, url=source_url)
+        if page_names is not None:
+            result["title_ja"] = page_names["title_ja"]
+            result["title_zh"] = page_names["title_zh"]
+            result["title_en"] = page_names["title_en"]
+            result["page_name_entry"] = page_names
+        return result
 
     def _get_page_sync(self, title: str) -> dict[str, Any] | None:
         try:
@@ -1070,6 +1214,32 @@ class KirbyShinkakuClient:
             return {"error": "empty_query"}
 
         supplied_aliases = [query, *(aliases or [])]
+        ambiguous_name_matches: dict[str, dict[str, Any]] = {}
+        for candidate in supplied_aliases:
+            exact_name_matches = self.lookup_page_names(
+                candidate, limit=100, exact_only=True
+            )
+            if len(exact_name_matches) == 1:
+                page = await self.get_page(exact_name_matches[0]["title_ja"])
+                if page is not None:
+                    return {"kind": "page", "page": page}
+            for entry in exact_name_matches:
+                url = str(entry.get("url") or "")
+                if url:
+                    ambiguous_name_matches.setdefault(url, entry)
+        if len(ambiguous_name_matches) > 1:
+            candidates = [
+                self._page_name_candidate(entry)
+                for entry in ambiguous_name_matches.values()
+            ]
+            candidates.sort(
+                key=lambda row: (
+                    -int(row.get("score", 0)),
+                    str(row.get("title_ja") or ""),
+                )
+            )
+            return {"kind": "candidates", "candidates": candidates[:20]}
+
         japanese_aliases: list[str] = []
         try:
             for candidate in supplied_aliases:
@@ -1118,6 +1288,13 @@ class KirbyShinkakuClient:
             for page in pages:
                 page_url = str(page.get("url") or "")
                 if page_url:
+                    page_names = self._page_name_entry(
+                        title=str(page.get("title") or ""), url=page_url
+                    )
+                    if page_names is not None:
+                        page["title_ja"] = page_names["title_ja"]
+                        page["title_zh"] = page_names["title_zh"]
+                        page["title_en"] = page_names["title_en"]
                     candidates.setdefault(page_url, page)
         ranked = sorted(
             candidates.values(),

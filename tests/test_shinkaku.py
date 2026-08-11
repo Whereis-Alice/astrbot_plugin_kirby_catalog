@@ -1,3 +1,4 @@
+import json
 import unittest
 from io import BytesIO
 from pathlib import Path
@@ -9,7 +10,10 @@ from urllib.error import HTTPError
 from astrbot.api import message_components as Comp
 from jinja2 import BaseLoader, Environment
 
-from astrbot_plugin_kirby_catalog.kirby_shinkaku import KirbyShinkakuClient
+from astrbot_plugin_kirby_catalog.kirby_shinkaku import (
+    KirbyShinkakuClient,
+    _normalise_term,
+)
 from astrbot_plugin_kirby_catalog.main import KirbyCatalogPlugin
 from astrbot_plugin_kirby_catalog.wiki_content import (
     inline_markup_plain,
@@ -123,6 +127,117 @@ class FakeShinkaku:
 
 
 class ShinkakuClientTests(unittest.IsolatedAsyncioTestCase):
+    async def test_bundled_page_name_index_covers_every_listed_page(self):
+        resource = (
+            Path(__file__).resolve().parents[1]
+            / "resources"
+            / "shinkaku_page_names.json"
+        )
+        payload = json.loads(resource.read_text(encoding="utf-8"))
+        entries = payload["entries"]
+
+        self.assertEqual(payload["source"]["total_pages"], 301)
+        self.assertEqual(len(entries), 301)
+        self.assertEqual(
+            [row["catalog_index"] for row in entries], list(range(1, 302))
+        )
+        for field in ("title_zh", "title_en", "title_ja", "url"):
+            values = [str(row[field]).strip() for row in entries]
+            self.assertTrue(all(values), field)
+            self.assertEqual(len(values), len(set(values)), field)
+
+        client = KirbyShinkakuClient(cache_ttl_seconds=0)
+        primary_owners = {}
+        for row in entries:
+            for field in ("title_zh", "title_en", "title_ja"):
+                self.assertEqual(client._page_name_match_score(row, row[field]), 400)
+            for alias in row["primary_aliases"]:
+                if str(alias).startswith("http"):
+                    continue
+                primary_owners.setdefault(_normalise_term(alias), set()).add(row["id"])
+        self.assertFalse(
+            {
+                key: owners
+                for key, owners in primary_owners.items()
+                if len(owners) > 1
+            }
+        )
+
+    async def test_full_chinese_and_english_names_resolve_without_search(self):
+        client = KirbyShinkakuClient(cache_ttl_seconds=0)
+        fighter = next(
+            row
+            for row in client.page_name_entries
+            if row["title_ja"] == "ファイター(RBP)"
+        )
+
+        async def get_page(title):
+            self.assertEqual(title, "ファイター(RBP)")
+            return {
+                "title": title,
+                "url": fighter["url"],
+                "sections": [],
+            }
+
+        with (
+            patch.object(client, "get_page", side_effect=get_page) as get_page_mock,
+            patch.object(
+                client,
+                "search_pages",
+                side_effect=AssertionError("exact local names must not use site search"),
+            ),
+        ):
+            chinese = await client.resolve(fighter["title_zh"])
+            english = await client.resolve(fighter["title_en"])
+
+        self.assertEqual(chinese["page"]["title"], "ファイター(RBP)")
+        self.assertEqual(english["page"]["title"], "ファイター(RBP)")
+        self.assertEqual(get_page_mock.await_count, 2)
+
+    async def test_ambiguous_short_name_returns_three_language_candidates(self):
+        client = KirbyShinkakuClient(cache_ttl_seconds=0)
+        resolved = await client.resolve("Fighter")
+
+        self.assertEqual(resolved["kind"], "candidates")
+        self.assertGreater(len(resolved["candidates"]), 1)
+        for row in resolved["candidates"]:
+            self.assertTrue(row["title_zh"])
+            self.assertTrue(row["title_en"])
+            self.assertTrue(row["title_ja"])
+
+        text = KirbyCatalogPlugin._shinkaku_candidate_text(
+            resolved["candidates"], "page"
+        )
+        self.assertIn("English:", text)
+        self.assertIn("日本語：", text)
+        self.assertIn("格斗家", text)
+
+    async def test_full_japanese_title_outranks_another_pages_short_alias(self):
+        client = KirbyShinkakuClient(cache_ttl_seconds=0)
+
+        exact = client.lookup_page_names(
+            "ウィスピーウッズEX", limit=20, exact_only=True
+        )
+        short = client.lookup_page_names("Whispy Woods EX", limit=20, exact_only=True)
+
+        self.assertEqual([row["game_code"] for row in exact], ["WII"])
+        self.assertGreater(len(short), 1)
+
+    async def test_switch_2_edition_pages_are_distinct(self):
+        client = KirbyShinkakuClient(cache_ttl_seconds=0)
+        rows = [
+            row
+            for row in client.page_name_entries
+            if row["game_code"] == "DIS_S2E"
+        ]
+
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(len({row["url"] for row in rows}), 2)
+        self.assertEqual(
+            {row["title_ja"] for row in rows},
+            {"ジェネル・メフィリス", "動画館(Dis・S2E)"},
+        )
+
     async def test_page_and_search_urls_use_euc_jp(self):
         client = KirbyShinkakuClient(cache_ttl_seconds=0)
         title = "\u30de\u30db\u30ed\u30a2EX"
@@ -742,6 +857,24 @@ class ShinkakuCommandTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Meta Knight", term_results[0])
         self.assertIn("\u30de\u30db\u30ed\u30a2EX", page_result)
         self.assertIn("\u30e1\u30bf\u30ca\u30a4\u30c8", term_result)
+
+    async def test_page_name_command_uses_static_index_without_network(self):
+        plugin = self.make_plugin()
+        plugin.shinkaku = KirbyShinkakuClient(cache_ttl_seconds=0)
+
+        with patch.object(
+            plugin.shinkaku,
+            "lookup_terms",
+            side_effect=AssertionError("a full page name must stay local"),
+        ):
+            result = await plugin._shinkaku_terms_text(
+                "Fighter (Kirby: Planet Robobot)"
+            )
+
+        self.assertIn("格斗家（星之卡比 机器人星球）", result)
+        self.assertIn("Fighter (Kirby: Planet Robobot)", result)
+        self.assertIn("ファイター(RBP)", result)
+        self.assertIn("全部 301 页", result)
 
     async def test_nested_shinkaku_settings_are_read(self):
         plugin = self.make_plugin()

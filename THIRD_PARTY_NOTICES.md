@@ -37,6 +37,15 @@ not bundled in this repository. The Seesaa source is used only for user-initiate
 read-only lookup of publicly available Boss Battle guide pages and its English
 Corner terminology table.
 
+## 真格 Wiki page-name index
+
+`resources/shinkaku_page_names.json`, `.csv`, and `.md` contain a manually
+curated lookup index derived from the public Seesaa Wiki page list. They bundle
+page titles, editorial Chinese/English labels, categories, translation-status
+metadata, and source URLs only. They do not bundle Seesaa article prose,
+tables, guide data, or images. Entries marked `translated` are this project's
+editorial translations rather than claims of official Nintendo localization.
+
 ## Lucide icons
 
 The catalog management Page bundles Lucide `v1.28.0` in
