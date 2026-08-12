@@ -784,6 +784,44 @@ class WikirbyCommandTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("【简介】", result)
         self.assertIn("来源：https://wikirby.com/wiki/Driblee", result)
 
+    async def test_wikirby_llm_tools_resolve_wiki_index_numbers(self):
+        plugin = KirbyCatalogPlugin.__new__(KirbyCatalogPlugin)
+        plugin.config = {"wikirby_enabled": True}
+        plugin.wikirby = FakeWikirby()
+        original_resolve = plugin.wikirby.resolve
+        plugin.wikirby.resolve = AsyncMock(side_effect=original_resolve)
+        plugin.wiki_index = SimpleNamespace(
+            resolve=lambda site, number: (
+                {"target": "Meta Knight"}
+                if site == "wikirby" and number == 88
+                else None
+            )
+        )
+
+        page_result = await plugin.wikirby_lookup_page(FakeEvent(""), "#88")
+        names_result = await plugin.wikirby_lookup_official_names(
+            FakeEvent(""), "编号 88"
+        )
+
+        self.assertIn("WiKirby：Meta Knight", page_result)
+        self.assertIn("官方名称", names_result)
+        self.assertEqual(
+            [call.args[0] for call in plugin.wikirby.resolve.await_args_list],
+            ["Meta Knight", "Meta Knight"],
+        )
+
+    async def test_wikirby_llm_tool_rejects_disabled_wiki_index_number(self):
+        plugin = KirbyCatalogPlugin.__new__(KirbyCatalogPlugin)
+        plugin.config = {"wikirby_enabled": True}
+        plugin.wikirby = FakeWikirby()
+        plugin.wikirby.resolve = AsyncMock(side_effect=plugin.wikirby.resolve)
+        plugin.wiki_index = SimpleNamespace(resolve=lambda _site, _number: None)
+
+        result = await plugin.wikirby_lookup_page(FakeEvent(""), "#88")
+
+        self.assertIn("当前没有启用序号 #88", result)
+        plugin.wikirby.resolve.assert_not_awaited()
+
     async def test_full_wikirby_llm_tool_does_not_run_nested_translation(self):
         plugin = KirbyCatalogPlugin.__new__(KirbyCatalogPlugin)
         plugin.config = {

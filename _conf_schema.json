@@ -23,6 +23,12 @@
           "default": "随机查看的盟友是 {name}，图鉴编号 #{id}{source_text}。",
           "hint": "支持 {name}、{id}、{source}、{source_text}。简介、百科提示和图片会在此基础上继续编排。"
         },
+        "lookup_message_template": {
+          "description": "精准查盟友基础文案模板",
+          "type": "text",
+          "default": "查询到的盟友是 {name}，图鉴编号 #{id}{source_text}。",
+          "hint": "用于“查盟友 <名称或编号>”。支持 {name}、{id}、{source}、{source_text}；该查询不会抽取、解锁或消耗次数。"
+        },
         "query_message_template": {
           "description": "查盟友基础文案模板",
           "type": "text",

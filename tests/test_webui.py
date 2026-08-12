@@ -20,6 +20,7 @@ from astrbot_plugin_kirby_catalog.webui import (
     KirbyCatalogWebUI,
     _decode_terminology_id,
 )
+from astrbot_plugin_kirby_catalog.wiki_index import WikiIndexStore
 from astrbot_plugin_kirby_catalog.terminology import (
     KirbyTerminologyStore,
     TerminologyEntry,
@@ -403,6 +404,83 @@ class CatalogAdminServiceTests(unittest.TestCase):
             self.assertTrue(deleted["deleted"])
             self.assertIsNone(terminology.entry(custom["term_id"]))
 
+    def test_manages_all_wiki_indexes_without_creating_group_data(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = CatalogStore(root / "data", image_base_url="")
+            kirby = store.add_asset("卡比（Kirby）", self.make_image(), "星之卡比")
+            dee = store.add_asset("瓦豆鲁迪（Waddle Dee）", self.make_image(), "星之卡比")
+            store._catalog[kirby["filename"]]["page_title"] = "Kirby"
+            store._catalog[dee["filename"]]["page_title"] = "Waddle Dee"
+            store._save_catalog()
+            shinkaku_path = root / "shinkaku.json"
+            shinkaku_path.write_text(
+                json.dumps(
+                    {
+                        "entries": [
+                            {
+                                "id": "shinkaku:fighter-rbp",
+                                "catalog_index": 88,
+                                "title_zh": "格斗家（星之卡比 机器人星球）",
+                                "title_en": "Fighter (Kirby: Planet Robobot)",
+                                "title_ja": "ファイター(RBP)",
+                                "game_zh": "星之卡比 机器人星球",
+                                "section_zh": "能力",
+                            }
+                        ]
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            wiki_index = WikiIndexStore(store, shinkaku_path)
+            service = CatalogAdminService(store, wiki_index=wiki_index)
+
+            self.assertEqual(
+                service.list_wiki_index({"site": "wikirby", "page": 1})["total"],
+                2,
+            )
+            self.assertEqual(
+                service.list_wiki_index({"site": "fandom", "page": 1})["total"],
+                2,
+            )
+            shinkaku = service.list_wiki_index(
+                {"site": "shinkaku", "query": "机器人星球", "page": 1}
+            )
+            self.assertEqual(shinkaku["items"][0]["number"], 88)
+
+            detail = service.wiki_index_detail("wikirby", f"catalog:{kirby['entry_key']}")
+            saved = service.save_wiki_index(
+                {
+                    "site": "wikirby",
+                    "key": detail["key"],
+                    "number": 9001,
+                    "target": "Kirby (series character)",
+                    "enabled": False,
+                },
+                "admin",
+            )
+            self.assertTrue(saved["has_override"])
+            self.assertFalse(saved["enabled"])
+            self.assertIsNone(wiki_index.resolve("wikirby", 9001))
+            with self.assertRaisesRegex(ValueError, "已由"):
+                service.save_wiki_index(
+                    {
+                        "site": "fandom",
+                        "key": f"catalog:{kirby['entry_key']}",
+                        "number": dee["id"],
+                        "target": "Kirby",
+                    },
+                    "admin",
+                )
+
+            restored = service.restore_wiki_index(
+                "wikirby", detail["key"], "admin"
+            )
+            self.assertFalse(restored["has_override"])
+            self.assertEqual(restored["number"], kirby["id"])
+            self.assertEqual(store.group_ids(), [])
+
 
 class KirbyCatalogWebUiRegistrationTests(unittest.TestCase):
     def test_decodes_legacy_terminology_path_ids(self):
@@ -421,7 +499,7 @@ class KirbyCatalogWebUiRegistrationTests(unittest.TestCase):
 
             webui.register()
 
-            self.assertEqual(len(routes), 27)
+            self.assertEqual(len(routes), 31)
             self.assertTrue(
                 all(route[0].startswith(f"/{PLUGIN_ID}/admin/") for route in routes)
             )
@@ -433,6 +511,10 @@ class KirbyCatalogWebUiRegistrationTests(unittest.TestCase):
             self.assertIn(f"/{PLUGIN_ID}/admin/terminology/entry", paths)
             self.assertIn(f"/{PLUGIN_ID}/admin/terminology/<term_id>", paths)
             self.assertIn(f"/{PLUGIN_ID}/admin/terminology/save", paths)
+            self.assertIn(f"/{PLUGIN_ID}/admin/wiki-index", paths)
+            self.assertIn(f"/{PLUGIN_ID}/admin/wiki-index-entry", paths)
+            self.assertIn(f"/{PLUGIN_ID}/admin/wiki-index/save", paths)
+            self.assertIn(f"/{PLUGIN_ID}/admin/wiki-index/restore", paths)
 
     def test_register_replaces_stale_legacy_terminology_route(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -484,6 +566,11 @@ class KirbyCatalogWebUiRegistrationTests(unittest.TestCase):
         self.assertIn('apiGet("admin/terminology-entry"', script)
         self.assertIn('apiPost("admin/terminology/save"', script)
         self.assertIn('apiUpload("admin/terminology/import"', script)
+        self.assertIn('apiGet("admin/wiki-index"', script)
+        self.assertIn('apiPost("admin/wiki-index/save"', script)
+        self.assertIn('apiPost("admin/wiki-index/restore"', script)
+        self.assertIn('data-view="wiki-index"', index)
+        self.assertIn(".wiki-index-table", styles)
         self.assertIn("confirmAction({", script)
         self.assertIn(':root[data-theme="kirby"]', styles)
         self.assertIn(':root[data-effective-theme="dark"]', styles)
@@ -511,7 +598,7 @@ class KirbyCatalogWebUiRegistrationTests(unittest.TestCase):
                 plugin = plugin_main.KirbyCatalogPlugin(context, {})
 
             self.assertIsNotNone(plugin.webui)
-            self.assertEqual(len(routes), 27)
+            self.assertEqual(len(routes), 31)
             self.assertIs(plugin.webui.write_lock, plugin._draw_lock)
 
 

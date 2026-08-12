@@ -236,6 +236,52 @@ class CatalogStoreTests(unittest.TestCase):
                 self.assertGreater(image.width, 0)
                 self.assertGreater(image.height, 0)
 
+    def test_gallery_uses_two_compact_name_lines_and_new_cache_layout(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = CatalogStore(root / "new", image_base_url="")
+            entry = store.add_asset(
+                "非常非常长的能力卡比名称（Extremely Long Kirby Form Name）",
+                self.make_image((240, 94, 145)),
+            )
+            output = root / "gallery" / "long-name.png"
+
+            with patch.object(
+                store,
+                "_wrap_text_lines",
+                wraps=store._wrap_text_lines,
+            ) as wrap:
+                store.render_gallery(
+                    output,
+                    {entry["filename"]},
+                    "长名称图鉴",
+                    columns=4,
+                )
+
+            self.assertTrue(
+                any(call.kwargs.get("max_lines") == 2 for call in wrap.call_args_list)
+            )
+            manifest = json.loads(
+                output.with_suffix(".png.cache.json").read_text(encoding="utf-8")
+            )
+            self.assertTrue(manifest["signature"])
+            with Image.open(output) as image:
+                self.assertEqual(image.height, 208)
+
+    def test_find_entries_supports_page_variant_and_stable_keys(self):
+        with tempfile.TemporaryDirectory() as temp:
+            store = CatalogStore(Path(temp) / "new", image_base_url="")
+            entry = store.add_asset("山石EX（Moundo EX）", self.make_image())
+            stored = store._catalog[entry["filename"]]
+            stored["page_title"] = "Moundo"
+            stored["variant_key"] = "Moundo EX"
+            store._save_catalog()
+
+            self.assertEqual(store.find_entries("Moundo EX")[0]["id"], entry["id"])
+            self.assertEqual(
+                store.find_entries(entry["entry_key"])[0]["id"], entry["id"]
+            )
+
     def test_gallery_only_paginates_when_height_limit_is_exceeded(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

@@ -28,6 +28,22 @@ const state = {
     sort: "category",
   },
   activeTerminology: null,
+  wikiIndex: {
+    items: [],
+    page: 1,
+    pages: 1,
+    total: 0,
+    page_size: 30,
+    sites: [],
+    stats: null,
+  },
+  wikiIndexFilters: {
+    query: "",
+    site: "",
+    status: "all",
+    sort: "number",
+  },
+  activeWikiIndex: null,
   groups: { items: [], page: 1, pages: 1, total: 0, page_size: 30 },
   groupQuery: "",
   selectedGroup: "",
@@ -39,7 +55,15 @@ const state = {
   trash: [],
   audit: [],
   addUpload: null,
-  requestSequence: { entries: 0, groups: 0, users: 0, terminology: 0, current: 0, unlock: 0 },
+  requestSequence: {
+    entries: 0,
+    groups: 0,
+    users: 0,
+    terminology: 0,
+    wikiIndex: 0,
+    current: 0,
+    unlock: 0,
+  },
 };
 
 const numberFormat = new Intl.NumberFormat("zh-CN");
@@ -62,6 +86,8 @@ const actionLabels = {
   "terminology.update": "更新名称库术语",
   "terminology.restore": "恢复名称库内置版本",
   "terminology.import": "导入名称库",
+  "wiki-index.update": "更新百科序号",
+  "wiki-index.restore": "恢复百科内置序号",
 };
 
 const kindLabels = {
@@ -412,6 +438,7 @@ function renderOverview() {
   byId("recentAudit").innerHTML = renderAuditItems(summary.recent_audit || [], true) ||
     '<div class="empty-state"><strong>暂无管理操作</strong></div>';
   renderTerminologyMetrics(summary.terminology);
+  renderWikiIndexMetrics(summary.wiki_index);
   populateEntryFilters();
   refreshIcons();
 }
@@ -812,6 +839,239 @@ async function importTerminology(file) {
   } finally {
     setButtonBusy(button, false);
     byId("terminologyImportInput").value = "";
+  }
+}
+
+function wikiSiteLabel(site) {
+  const match = (state.wikiIndex.sites || []).find((item) => item.value === site);
+  return match?.label || {
+    wikirby: "WiKirby",
+    fandom: "Kirby Fandom",
+    shinkaku: "真格攻略 Wiki",
+  }[site] || site || "未知百科";
+}
+
+function renderWikiIndexMetrics(stats = state.wikiIndex.stats || state.summary?.wiki_index) {
+  const target = byId("wikiIndexMetrics");
+  if (!target || !stats) return;
+  const siteStats = stats.sites || {};
+  const metrics = [
+    {
+      label: "序号总数",
+      value: stats.total,
+      note: "三套百科独立编号",
+      color: "var(--accent)",
+      icon: "list-ordered",
+    },
+    ...["wikirby", "fandom", "shinkaku"].map((site, index) => ({
+      label: siteStats[site]?.label || wikiSiteLabel(site),
+      value: siteStats[site]?.total || 0,
+      note: `启用 ${formatNumber(siteStats[site]?.enabled || 0)}`,
+      color: ["var(--cyan)", "var(--green)", "var(--yellow)"][index],
+      icon: ["book-open", "globe-2", "swords"][index],
+    })),
+    {
+      label: "管理员修改",
+      value: stats.overrides,
+      note: `编号冲突 ${formatNumber(stats.conflicts || 0)}`,
+      color: stats.conflicts ? "var(--red)" : "var(--purple)",
+      icon: stats.conflicts ? "triangle-alert" : "pencil-line",
+    },
+  ];
+  target.innerHTML = metrics
+    .map(
+      (item) => `
+        <article class="metric" style="--metric-color:${item.color}">
+          <div class="metric-label">${icon(item.icon)}<span>${escapeHtml(item.label)}</span></div>
+          <strong class="metric-value">${formatNumber(item.value)}</strong>
+          <span class="metric-note">${escapeHtml(item.note)}</span>
+        </article>
+      `,
+    )
+    .join("");
+  refreshIcons();
+}
+
+function renderWikiIndexFilters(sites = state.wikiIndex.sites) {
+  const select = byId("wikiIndexSiteFilter");
+  if (!select) return;
+  const selected = state.wikiIndexFilters.site;
+  select.innerHTML = `<option value="">全部百科</option>${(sites || [])
+    .map((site) => `<option value="${escapeHtml(site.value)}">${escapeHtml(site.label)}</option>`)
+    .join("")}`;
+  select.value = selected;
+}
+
+function renderWikiIndex() {
+  const body = byId("wikiIndexRows");
+  const empty = byId("wikiIndexEmpty");
+  byId("wikiIndexTotalLabel").textContent = `${formatNumber(state.wikiIndex.total)} 条`;
+  renderWikiIndexMetrics(state.wikiIndex.stats);
+  if (!state.wikiIndex.items.length) {
+    body.innerHTML = "";
+    empty.hidden = false;
+  } else {
+    empty.hidden = true;
+    body.innerHTML = state.wikiIndex.items
+      .map(
+        (entry) => `
+          <tr class="is-clickable" data-wiki-site="${escapeHtml(entry.site)}" data-wiki-key="${escapeHtml(entry.key)}" tabindex="0">
+            <td><span class="wiki-index-number">#${formatNumber(entry.number)}</span></td>
+            <td>
+              <div class="primary-cell wiki-index-identity">
+                <strong>${escapeHtml(entry.label_zh || entry.target)}</strong>
+                <span>${escapeHtml(entry.site_label || wikiSiteLabel(entry.site))}${entry.label_en ? ` · ${escapeHtml(entry.label_en)}` : ""}${entry.label_ja ? ` · ${escapeHtml(entry.label_ja)}` : ""}</span>
+              </div>
+            </td>
+            <td>
+              <div class="secondary-cell wiki-index-target">
+                <strong title="${escapeHtml(entry.target)}">${escapeHtml(entry.target)}</strong>
+                <span title="${escapeHtml(entry.context || entry.key)}">${escapeHtml(entry.context || entry.key)}</span>
+              </div>
+            </td>
+            <td>
+              <div class="badge-row">
+                <span class="badge ${entry.enabled ? "good" : "bad"}">${entry.enabled ? "启用" : "停用"}</span>
+                ${entry.conflict ? '<span class="badge warn">编号冲突</span>' : ""}
+              </div>
+            </td>
+            <td><span class="badge ${entry.has_override ? "info" : ""}">${entry.has_override ? "管理员修改" : "插件内置"}</span></td>
+            <td><button class="icon-button small row-action" type="button" title="编辑百科序号" aria-label="编辑百科序号" data-open-wiki-site="${escapeHtml(entry.site)}" data-open-wiki-key="${escapeHtml(entry.key)}">${icon("pencil")}</button></td>
+          </tr>
+        `,
+      )
+      .join("");
+  }
+  renderPagination(byId("wikiIndexPagination"), state.wikiIndex, "wiki-index");
+  refreshIcons();
+}
+
+async function loadWikiIndex(page = state.wikiIndex.page || 1) {
+  const sequence = ++state.requestSequence.wikiIndex;
+  renderTableSkeleton(byId("wikiIndexRows"), 6, 8);
+  byId("wikiIndexEmpty").hidden = true;
+  try {
+    const data = await apiGet("admin/wiki-index", {
+      ...state.wikiIndexFilters,
+      page,
+      page_size: 30,
+    });
+    if (sequence !== state.requestSequence.wikiIndex) return;
+    state.wikiIndex = data;
+    renderWikiIndexFilters(data.sites || []);
+    state.loaded.add("wiki-index");
+    renderWikiIndex();
+  } catch (error) {
+    if (sequence !== state.requestSequence.wikiIndex) return;
+    byId("wikiIndexRows").innerHTML = "";
+    byId("wikiIndexEmpty").hidden = false;
+    toast("百科序号加载失败", error.message, "error");
+  }
+}
+
+async function openWikiIndex(site, key) {
+  const drawer = byId("wikiIndexDrawer");
+  byId("wikiIndexDrawerBody").innerHTML = '<div class="drawer-loading">正在读取百科序号条目</div>';
+  byId("wikiIndexDrawerFooter").hidden = true;
+  openDrawer(drawer);
+  try {
+    state.activeWikiIndex = await apiGet("admin/wiki-index-entry", { site, key });
+    renderWikiIndexDrawer();
+  } catch (error) {
+    byId("wikiIndexDrawerBody").innerHTML = `<div class="empty-state"><strong>读取失败</strong><span>${escapeHtml(error.message)}</span></div>`;
+    toast("百科序号条目加载失败", error.message, "error");
+  }
+}
+
+function renderWikiIndexDrawer() {
+  const entry = state.activeWikiIndex;
+  if (!entry) return;
+  byId("wikiIndexDrawerTitle").textContent = `${entry.site_label || wikiSiteLabel(entry.site)} #${entry.number}`;
+  byId("wikiIndexDrawerBody").innerHTML = `
+    <section class="form-section wiki-index-summary" style="padding-top:0">
+      <div class="form-section-title">
+        <h3>${escapeHtml(entry.label_zh || entry.target)}</h3>
+        <span>${escapeHtml(entry.has_override ? "管理员覆盖版本" : "插件内置版本")}</span>
+      </div>
+      <div class="badge-row">
+        <span class="badge info">${escapeHtml(entry.site_label || wikiSiteLabel(entry.site))}</span>
+        <span class="badge ${entry.enabled ? "good" : "bad"}">${entry.enabled ? "已启用" : "已停用"}</span>
+        ${entry.conflict ? '<span class="badge warn">当前编号存在冲突</span>' : ""}
+      </div>
+      <dl class="wiki-index-language-list">
+        <div><dt>简体中文</dt><dd>${escapeHtml(entry.label_zh || "未收录")}</dd></div>
+        <div><dt>English</dt><dd>${escapeHtml(entry.label_en || "未收录")}</dd></div>
+        <div><dt>日本語</dt><dd>${escapeHtml(entry.label_ja || "未收录")}</dd></div>
+        <div><dt>条目范围</dt><dd>${escapeHtml(entry.context || "未标注")}</dd></div>
+      </dl>
+    </section>
+    <section class="form-section">
+      <div class="form-section-title"><h3>查询设置</h3><span>仅影响当前百科</span></div>
+      <div class="form-grid two-columns">
+        <label class="field"><span>百科序号</span><input id="wikiIndexNumberInput" type="number" min="1" max="999999" value="${escapeHtml(entry.number)}" /></label>
+        <label class="field"><span>固定条目键</span><input value="${escapeHtml(entry.key)}" readonly /></label>
+      </div>
+      <label class="field"><span>实际查询目标</span><textarea id="wikiIndexTargetInput" maxlength="500" rows="4">${escapeHtml(entry.target)}</textarea></label>
+      <label class="check-field"><input id="wikiIndexEnabledInput" type="checkbox" ${entry.enabled ? "checked" : ""} /><span>允许通过该序号查询</span></label>
+    </section>
+    <section class="form-section">
+      <div class="form-section-title"><h3>内置值对照</h3><span>恢复时使用</span></div>
+      <div class="wiki-index-defaults">
+        <div><span>内置序号</span><strong>#${escapeHtml(entry.default_number)}</strong></div>
+        <div><span>内置查询目标</span><strong>${escapeHtml(entry.default_target)}</strong></div>
+        <div><span>内置状态</span><strong>${entry.default_enabled ? "启用" : "停用"}</strong></div>
+      </div>
+      ${entry.updated_at ? `<p class="form-note">最后修改：${escapeHtml(formatDateTime(entry.updated_at))} · ${escapeHtml(entry.updated_by || "dashboard")}</p>` : ""}
+    </section>
+  `;
+  byId("wikiIndexDrawerFooter").hidden = false;
+  byId("restoreWikiIndexButton").hidden = !entry.has_override;
+  refreshIcons();
+}
+
+async function saveWikiIndex() {
+  const entry = state.activeWikiIndex;
+  if (!entry) return;
+  const button = byId("saveWikiIndexButton");
+  setButtonBusy(button, true, "保存中");
+  try {
+    state.activeWikiIndex = await apiPost("admin/wiki-index/save", {
+      site: entry.site,
+      key: entry.key,
+      number: Number(byId("wikiIndexNumberInput").value || 0),
+      target: byId("wikiIndexTargetInput").value.trim(),
+      enabled: byId("wikiIndexEnabledInput").checked,
+    });
+    renderWikiIndexDrawer();
+    await Promise.all([loadWikiIndex(state.wikiIndex.page), refreshSummary()]);
+    toast("百科序号已保存", `${state.activeWikiIndex.site_label} #${state.activeWikiIndex.number}`);
+  } catch (error) {
+    toast("百科序号保存失败", error.message, "error");
+  } finally {
+    setButtonBusy(button, false);
+  }
+}
+
+async function restoreWikiIndex() {
+  const entry = state.activeWikiIndex;
+  if (!entry?.has_override) return;
+  const accepted = await confirmAction({
+    title: "恢复内置百科序号",
+    message: `删除 ${entry.site_label}“${entry.label_zh}”的管理员覆盖，恢复内置序号 #${entry.default_number} 和查询目标。`,
+    accept: "恢复内置",
+    tone: "warning",
+  });
+  if (!accepted) return;
+  try {
+    state.activeWikiIndex = await apiPost("admin/wiki-index/restore", {
+      site: entry.site,
+      key: entry.key,
+    });
+    renderWikiIndexDrawer();
+    await Promise.all([loadWikiIndex(state.wikiIndex.page), refreshSummary()]);
+    toast("已恢复内置百科序号", `${state.activeWikiIndex.site_label} #${state.activeWikiIndex.number}`);
+  } catch (error) {
+    toast("恢复百科序号失败", error.message, "error");
   }
 }
 
@@ -1592,7 +1852,7 @@ async function refreshSummary() {
 }
 
 async function switchView(view, updateHash = true) {
-  if (!["overview", "catalog", "terminology", "groups", "trash", "audit"].includes(view)) view = "overview";
+  if (!["overview", "catalog", "terminology", "wiki-index", "groups", "trash", "audit"].includes(view)) view = "overview";
   state.view = view;
   all("[data-view-panel]").forEach((panel) => {
     const active = panel.dataset.viewPanel === view;
@@ -1608,6 +1868,7 @@ async function switchView(view, updateHash = true) {
   }
   if (view === "catalog" && !state.loaded.has("catalog")) await loadEntries(1);
   if (view === "terminology" && !state.loaded.has("terminology")) await loadTerminology(1);
+  if (view === "wiki-index" && !state.loaded.has("wiki-index")) await loadWikiIndex(1);
   if (view === "groups" && !state.loaded.has("groups")) await loadGroups(1);
   if (view === "trash" && !state.loaded.has("trash")) await loadTrash();
   if (view === "audit" && !state.loaded.has("audit")) await loadAudit();
@@ -1680,6 +1941,35 @@ function bindEvents() {
   byId("terminologyExportCsvButton").addEventListener("click", () => exportTerminology("csv"));
   byId("terminologyImportButton").addEventListener("click", () => byId("terminologyImportInput").click());
   byId("terminologyImportInput").addEventListener("change", (event) => importTerminology(event.target.files?.[0]));
+  byId("wikiIndexRows").addEventListener("click", (event) => {
+    const button = event.target.closest("[data-open-wiki-key]");
+    const row = event.target.closest("[data-wiki-key]");
+    const site = button?.dataset.openWikiSite || row?.dataset.wikiSite;
+    const key = button?.dataset.openWikiKey || row?.dataset.wikiKey;
+    if (site && key) openWikiIndex(site, key);
+  });
+  byId("wikiIndexRows").addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" && event.key !== " ") return;
+    const row = event.target.closest("[data-wiki-key]");
+    if (row) openWikiIndex(row.dataset.wikiSite, row.dataset.wikiKey);
+  });
+  const wikiIndexSearch = debounce(() => {
+    state.wikiIndexFilters.query = byId("wikiIndexSearch").value;
+    loadWikiIndex(1);
+  });
+  byId("wikiIndexSearch").addEventListener("input", wikiIndexSearch);
+  for (const [id, key] of [
+    ["wikiIndexSiteFilter", "site"],
+    ["wikiIndexStatusFilter", "status"],
+    ["wikiIndexSort", "sort"],
+  ]) {
+    byId(id).addEventListener("change", (event) => {
+      state.wikiIndexFilters[key] = event.target.value;
+      loadWikiIndex(1);
+    });
+  }
+  byId("saveWikiIndexButton").addEventListener("click", saveWikiIndex);
+  byId("restoreWikiIndexButton").addEventListener("click", restoreWikiIndex);
   byId("saveEntryButton").addEventListener("click", saveEntry);
   byId("deleteEntryButton").addEventListener("click", deleteActiveEntry);
 
@@ -1744,6 +2034,7 @@ function bindEvents() {
       if (scope === "groups") loadGroups(page);
       if (scope === "users") loadUsers(page);
       if (scope === "terminology") loadTerminology(page);
+      if (scope === "wiki-index") loadWikiIndex(page);
     }
     if (!event.target.closest(".combo-wrap")) hideComboResults();
   });

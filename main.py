@@ -38,7 +38,6 @@ from .kirby_shinkaku import (
     SHINKAKU_SITE_LABEL,
     KirbyShinkakuClient,
     KirbyShinkakuError,
-    _catalog_index_from_query,
 )
 from .media_delivery import (
     cleanup_staged_media_if_due,
@@ -59,6 +58,7 @@ from .shinkaku_reference import (
 from .shinkaku_reference import render_shinkaku_reference_pages, shinkaku_reference_text
 from .terminology import KirbyTerminologyStore, TerminologyPlaceholderError
 from .webui import KirbyCatalogWebUI
+from .wiki_index import WikiIndexStore, parse_wiki_number
 from .wiki_content import inline_markup_plain
 from .wiki_document import build_wiki_document, cleanup_wiki_documents
 from .wikirby import DEFAULT_API_URL, WikirbyClient, WikirbyError
@@ -79,6 +79,9 @@ DEFAULT_DRAW_MESSAGE_TEMPLATE = (
 )
 DEFAULT_RANDOM_MESSAGE_TEMPLATE = (
     "随机查看的盟友是 {name}，图鉴编号 #{id}{source_text}。"
+)
+DEFAULT_LOOKUP_MESSAGE_TEMPLATE = (
+    "查询到的盟友是 {name}，图鉴编号 #{id}{source_text}。"
 )
 DEFAULT_QUERY_MESSAGE_TEMPLATE = (
     "{nickname} 今天的盟友是 {name}，图鉴编号 #{id}{source_text}{unlock_text}。"
@@ -132,9 +135,13 @@ WIKI_EXPLICIT_OUTPUT_SUFFIXES = {
     "卡片": "card",
     "文档": "document",
 }
+WIKI_INDEX_MISSING_PREFIX = "__kirby_wiki_index_missing__:"
 CATALOG_PROFILES_PATH = Path(__file__).parent / "resources" / "catalog_profiles.json"
 BUNDLED_TERMINOLOGY_PATH = (
     Path(__file__).parent / "resources" / "kirby_terminology.json"
+)
+BUNDLED_SHINKAKU_NAMES_PATH = (
+    Path(__file__).parent / "resources" / "shinkaku_page_names.json"
 )
 
 
@@ -151,7 +158,7 @@ class AllyDrawOutcome:
     PLUGIN_ID,
     "Whereis-Alice",
     "星之卡比盟友抽取、收藏图鉴与三百科查询插件",
-    "3.10.0",
+    "3.11.0",
     "https://github.com/Whereis-Alice/astrbot_plugin_kirby_catalog",
 )
 class KirbyCatalogPlugin(Star):
@@ -172,6 +179,10 @@ class KirbyCatalogPlugin(Star):
             BUNDLED_TERMINOLOGY_PATH,
             self.store.config_dir / TERMINOLOGY_OVERRIDES_FILENAME,
         )
+        self.wiki_index = WikiIndexStore(
+            self.store,
+            BUNDLED_SHINKAKU_NAMES_PATH,
+        )
         terminology_stats = self.terminology.stats()
         logger.info(
             "[%s] 卡比百科名称库已加载: entries=%d, enabled=%d, "
@@ -191,6 +202,7 @@ class KirbyCatalogPlugin(Star):
                 self.store,
                 self._draw_lock,
                 self.terminology,
+                self.wiki_index,
             )
             self.webui.register()
         except Exception as exc:
@@ -558,7 +570,9 @@ class KirbyCatalogPlugin(Star):
 
     def _quoted_target(self, event: AstrMessageEvent) -> str:
         text = self._quoted_text(event)
-        match = re.search(r"(?:#|编号\s*[:：]?)\s*(\d+)", text, re.IGNORECASE)
+        match = re.search(
+            r"(?:#|(?:编号|序号)\s*[:：]?)\s*(\d+)", text, re.IGNORECASE
+        )
         if match:
             return match.group(1)
         match = re.search(r"(?:名称|盟友)\s*[:：]\s*([^\n]+)", text)
@@ -1534,13 +1548,70 @@ class KirbyCatalogPlugin(Star):
                 return candidate
         return self._display_name(entry)
 
-    def _quoted_wiki_query(self, event: AstrMessageEvent) -> str:
+    def _wiki_index_query(self, site: str, value: Any) -> str:
+        index = getattr(self, "wiki_index", None)
+        parsed_number = parse_wiki_number(value)
+        if index is None or parsed_number is None:
+            return ""
+        try:
+            resolved = index.resolve(site, parsed_number)
+        except Exception:
+            return ""
+        return str(resolved.get("target") or "").strip() if resolved else ""
+
+    def _resolve_wiki_tool_query(
+        self, site: str, wiki_name: str, query: Any
+    ) -> Tuple[str, str]:
+        cleaned = str(query or "").strip()
+        number = parse_wiki_number(cleaned)
+        if number is None or getattr(self, "wiki_index", None) is None:
+            return cleaned, ""
+        target = self._wiki_index_query(site, number)
+        if target:
+            return target, ""
+        return "", self._wiki_index_missing_text(wiki_name, number)
+
+    @staticmethod
+    def _missing_wiki_index_query(number: int) -> str:
+        return f"{WIKI_INDEX_MISSING_PREFIX}{int(number)}"
+
+    @staticmethod
+    def _missing_wiki_index_number(query: Any) -> Optional[int]:
+        value = str(query or "")
+        if not value.startswith(WIKI_INDEX_MISSING_PREFIX):
+            return None
+        try:
+            return int(value[len(WIKI_INDEX_MISSING_PREFIX) :])
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _wiki_index_missing_text(wiki_name: str, number: int) -> str:
+        return (
+            f"{wiki_name} 当前没有启用序号 #{number}。"
+            "请检查编号，或让管理员在 WebUI 的“百科序号”中启用或修正该条目。"
+        )
+
+    def _quoted_wiki_query(self, event: AstrMessageEvent, site: str) -> str:
         text = self._quoted_text(event)
         if not text:
             return ""
 
-        id_match = re.search(r"(?:#|编号\s*[:：]?)\s*(\d+)", text, re.IGNORECASE)
+        catalog_id_match = re.search(
+            r"图鉴编号\s*[:：]?\s*#?\s*(\d+)", text, re.IGNORECASE
+        )
+        if catalog_id_match:
+            entry, _ = self._entry_or_error(catalog_id_match.group(1))
+            if entry:
+                return self._entry_wiki_query(entry)
+
+        id_match = re.search(
+            r"(?:#|(?:编号|序号)\s*[:：]?)\s*(\d+)", text, re.IGNORECASE
+        )
         if id_match:
+            indexed_query = self._wiki_index_query(site, id_match.group(1))
+            if indexed_query:
+                return indexed_query
             entry, _ = self._entry_or_error(id_match.group(1))
             if entry:
                 return self._entry_wiki_query(entry)
@@ -3739,13 +3810,19 @@ class KirbyCatalogPlugin(Star):
                 break
 
         query = remainder.strip()
-        numeric_target = query.lstrip("#") if query else ""
-        if numeric_target.isdigit():
-            entry, _ = self._entry_or_error(numeric_target)
-            if entry:
-                query = self._entry_wiki_query(entry)
+        numeric_target = parse_wiki_number(query)
+        if numeric_target is not None:
+            indexed_query = self._wiki_index_query("wikirby", query)
+            if indexed_query:
+                query = indexed_query
+            elif getattr(self, "wiki_index", None) is not None:
+                query = self._missing_wiki_index_query(numeric_target)
+            else:
+                entry, _ = self._entry_or_error(str(numeric_target))
+                if entry:
+                    query = self._entry_wiki_query(entry)
         elif not query:
-            query = self._quoted_wiki_query(event)
+            query = self._quoted_wiki_query(event, "wikirby")
         return query, names_only, output_override
 
     @staticmethod
@@ -3898,12 +3975,17 @@ class KirbyCatalogPlugin(Star):
         这个工具只读取页面的多语言官方名称表，不修改图鉴数据。
 
         Args:
-            query(string): 要查询的角色名、英文页面名或 WiKirby 页面标题。
+            query(string): 要查询的角色名、英文页面名、WiKirby 页面标题，或 WiKirby 百科序号。
         """
         if not self._wikirby_enabled():
             return "WiKirby 查询功能当前已关闭。"
         try:
-            return await self._wikirby_names_text(query.strip())
+            resolved_query, error = self._resolve_wiki_tool_query(
+                "wikirby", "WiKirby", query
+            )
+            if error:
+                return error
+            return await self._wikirby_names_text(resolved_query)
         except WikirbyError as exc:
             logger.warning("[%s] LLM 调用 WiKirby 名称查询失败: %s", PLUGIN_ID, exc)
             return f"WiKirby 查询失败：{exc}"
@@ -3919,7 +4001,7 @@ class KirbyCatalogPlugin(Star):
         不会抽取盟友、修改图鉴或发送消息。
 
         Args:
-            query(string): 角色名、敌人名、关卡名、英文页面名或 WiKirby 页面标题。
+            query(string): 角色名、敌人名、关卡名、英文页面名、WiKirby 页面标题，或 WiKirby 百科序号。
         """
         if not self._wikirby_enabled():
             return "WiKirby 查询功能当前已关闭。"
@@ -3927,7 +4009,12 @@ class KirbyCatalogPlugin(Star):
         if client is None:
             return "WiKirby 查询功能尚未初始化。"
         try:
-            resolved = await client.resolve(query.strip())
+            resolved_query, error = self._resolve_wiki_tool_query(
+                "wikirby", "WiKirby", query
+            )
+            if error:
+                return error
+            resolved = await client.resolve(resolved_query)
             if resolved.get("kind") == "candidates":
                 return self._wikirby_candidate_text(
                     resolved.get("candidates", []), False
@@ -3958,6 +4045,12 @@ class KirbyCatalogPlugin(Star):
             return
 
         query, names_only, output_override = self._wikirby_query_parts(event)
+        missing_number = self._missing_wiki_index_number(query)
+        if missing_number is not None:
+            yield event.plain_result(
+                self._wiki_index_missing_text("WiKirby", missing_number)
+            )
+            return
         if not query:
             yield event.plain_result(
                 "用法：卡比百科 <角色名或页面名>；"
@@ -4124,13 +4217,19 @@ class KirbyCatalogPlugin(Star):
         if mode == "page" and "|" in remainder:
             remainder, section = (part.strip() for part in remainder.split("|", 1))
         query = remainder.strip()
-        numeric_target = query.lstrip("#") if query else ""
-        if numeric_target.isdigit():
-            entry, _ = self._entry_or_error(numeric_target)
-            if entry:
-                query = self._entry_wiki_query(entry)
+        numeric_target = parse_wiki_number(query)
+        if numeric_target is not None:
+            indexed_query = self._wiki_index_query("fandom", query)
+            if indexed_query:
+                query = indexed_query
+            elif getattr(self, "wiki_index", None) is not None:
+                query = self._missing_wiki_index_query(numeric_target)
+            else:
+                entry, _ = self._entry_or_error(str(numeric_target))
+                if entry:
+                    query = self._entry_wiki_query(entry)
         elif not query:
-            query = self._quoted_wiki_query(event)
+            query = self._quoted_wiki_query(event, "fandom")
         return query, mode, section, output_override
 
     @staticmethod
@@ -4385,12 +4484,17 @@ class KirbyCatalogPlugin(Star):
         任天堂官方译名。工具只读，不会修改图鉴数据。
 
         Args:
-            query(string): 要查询的角色名、英文页面名或 Kirby Fandom 页面标题。
+            query(string): 要查询的角色名、英文页面名、Kirby Fandom 页面标题，或 Fandom 百科序号。
         """
         if not self._fandom_enabled():
             return "Kirby Fandom 查询功能当前已关闭。"
         try:
-            return await self._fandom_names_text(query.strip())
+            resolved_query, error = self._resolve_wiki_tool_query(
+                "fandom", "Kirby Fandom", query
+            )
+            if error:
+                return error
+            return await self._fandom_names_text(resolved_query)
         except KirbyFandomError as exc:
             logger.warning(
                 "[%s] LLM 调用 Kirby Fandom 名称查询失败: %s",
@@ -4416,7 +4520,7 @@ class KirbyCatalogPlugin(Star):
         section 时只查询对应章节。工具只读，不会修改图鉴或发送群消息。
 
         Args:
-            query(string): 角色名、作品名、英文页面名或 Kirby Fandom 页面标题。
+            query(string): 角色名、作品名、英文页面名、Kirby Fandom 页面标题，或 Fandom 百科序号。
             section(string): 可选的章节标题，例如 Games、Personality 或 Trivia。
         """
         if not self._fandom_enabled():
@@ -4425,7 +4529,12 @@ class KirbyCatalogPlugin(Star):
         if client is None:
             return "Kirby Fandom 查询功能尚未初始化。"
         try:
-            resolved = await client.resolve(query.strip())
+            resolved_query, error = self._resolve_wiki_tool_query(
+                "fandom", "Kirby Fandom", query
+            )
+            if error:
+                return error
+            resolved = await client.resolve(resolved_query)
             if resolved.get("kind") == "candidates":
                 return self._fandom_candidate_text(
                     resolved.get("candidates", []), "page"
@@ -4456,6 +4565,12 @@ class KirbyCatalogPlugin(Star):
             return
 
         query, mode, section, output_override = self._fandom_query_parts(event)
+        missing_number = self._missing_wiki_index_number(query)
+        if missing_number is not None:
+            yield event.plain_result(
+                self._wiki_index_missing_text("Kirby Fandom", missing_number)
+            )
+            return
         if not query:
             yield event.plain_result(
                 "用法：卡比F <页面名>；卡比F名称 <页面名>；"
@@ -4693,8 +4808,15 @@ class KirbyCatalogPlugin(Star):
         if mode == "page" and "|" in remainder:
             remainder, section = (part.strip() for part in remainder.split("|", 1))
         query = remainder.strip()
-        numeric_target = _catalog_index_from_query(query)
+        numeric_target = parse_wiki_number(query)
         if numeric_target is not None and mode != "reference":
+            indexed_query = self._wiki_index_query("shinkaku", query)
+            if indexed_query:
+                query = indexed_query
+                return query, mode, section, output_override
+            if getattr(self, "wiki_index", None) is not None:
+                query = self._missing_wiki_index_query(numeric_target)
+                return query, mode, section, output_override
             page_name_entry = None
             client = getattr(self, "shinkaku", None)
             getter = getattr(client, "get_page_name_by_index", None)
@@ -4710,7 +4832,7 @@ class KirbyCatalogPlugin(Star):
                 if entry:
                     query = self._entry_wiki_query(entry)
         elif not query:
-            query = self._quoted_wiki_query(event)
+            query = self._quoted_wiki_query(event, "shinkaku")
         return query, mode, section, output_override
 
     def _shinkaku_query_aliases(self, query: str) -> List[str]:
@@ -5194,8 +5316,13 @@ class KirbyCatalogPlugin(Star):
         if client is None:
             return "真格攻略 Wiki 查询功能尚未初始化。"
         try:
+            resolved_query, error = self._resolve_wiki_tool_query(
+                "shinkaku", "真格攻略 Wiki", query
+            )
+            if error:
+                return error
             resolved = await client.resolve(
-                query.strip(), aliases=self._shinkaku_query_aliases(query)
+                resolved_query, aliases=self._shinkaku_query_aliases(resolved_query)
             )
             if resolved.get("kind") == "candidates":
                 return self._shinkaku_candidate_text(
@@ -5223,12 +5350,17 @@ class KirbyCatalogPlugin(Star):
         页面名称表完整覆盖页面一覧中的 301 页，中文优先采用官方译名并标注自译项；
         非页面词会继续查询攻略 Wiki 的日英招式用语表。
         Args:
-            query(string): 中文、英文或日文页面名、Boss、能力、招式或攻略术语。
+            query(string): 中文、英文或日文页面名、Boss、能力、招式、攻略术语，或真格百科序号。
         """
         if not self._shinkaku_enabled():
             return "真格攻略 Wiki 查询功能当前已关闭。"
         try:
-            return await self._shinkaku_terms_text(query.strip())
+            resolved_query, error = self._resolve_wiki_tool_query(
+                "shinkaku", "真格攻略 Wiki", query
+            )
+            if error:
+                return error
+            return await self._shinkaku_terms_text(resolved_query)
         except KirbyShinkakuError as exc:
             logger.warning("[%s] LLM 调用真格用语对照失败: %s", PLUGIN_ID, exc)
             return f"真格攻略 Wiki 查询失败：{exc}"
@@ -5241,6 +5373,12 @@ class KirbyCatalogPlugin(Star):
             yield event.plain_result("真格攻略 Wiki 查询功能当前已关闭。")
             return
         query, mode, section, output_override = self._shinkaku_query_parts(event)
+        missing_number = self._missing_wiki_index_number(query)
+        if missing_number is not None:
+            yield event.plain_result(
+                self._wiki_index_missing_text("真格攻略 Wiki", missing_number)
+            )
+            return
         if mode == "reference":
             _, components = await self._shinkaku_reference_components()
             result = await self._chain_result_with_media(
@@ -6154,7 +6292,7 @@ class KirbyCatalogPlugin(Star):
     @filter.command("查盟友", alias={"我的盟友"})
     @filter.event_message_type(EventMessageType.GROUP_MESSAGE)
     async def query_ally(self, event: AstrMessageEvent):
-        """查看自己或指定成员今天的盟友。"""
+        """精准查看图鉴条目，或查看自己/指定成员今天的盟友。"""
         group_id = self._group_id(event)
         if not group_id:
             yield event.plain_result("该功能仅支持群聊。")
@@ -6162,11 +6300,41 @@ class KirbyCatalogPlugin(Star):
         remainder = self._command_remainder(event, {"查盟友", "我的盟友"})
         config = self.store.load_group(group_id)
         target_id = self._at_target(event)
+        if remainder and not target_id:
+            member_target = remainder in config
+            if not member_target:
+                member_matches = self.store.find_user_by_nickname(config, remainder)
+                if len(member_matches) > 1:
+                    yield event.plain_result("匹配到多个成员，请直接 @ 对方。")
+                    return
+                member_target = len(member_matches) == 1
+            else:
+                member_matches = []
+            if not member_target:
+                entry, error = self._entry_or_error(remainder)
+                if error:
+                    yield event.plain_result(error)
+                    return
+                assert entry is not None
+                values = self._ally_message_values(entry)
+                text = self._formatted_ally_message(
+                    "lookup_message_template",
+                    DEFAULT_LOOKUP_MESSAGE_TEMPLATE,
+                    values,
+                )
+                text = self._ally_detail_message(entry, text)
+                chain = await self._ally_chain(entry, text)
+                result = await self._chain_result_with_media(event, chain)
+                if result is not None:
+                    yield result
+                return
         if not target_id and remainder:
             if remainder in config:
                 target_id = remainder
             else:
-                matches = self.store.find_user_by_nickname(config, remainder)
+                matches = member_matches or self.store.find_user_by_nickname(
+                    config, remainder
+                )
                 if len(matches) == 1:
                     target_id = matches[0]
                 elif len(matches) > 1:

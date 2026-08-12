@@ -34,6 +34,7 @@ CATALOG_METADATA_KEYS = (
 )
 DESCRIPTION_OVERRIDES_FILENAME = "description_overrides.json"
 TERMINOLOGY_OVERRIDES_FILENAME = "terminology_overrides.json"
+WIKI_INDEX_OVERRIDES_FILENAME = "wiki_index_overrides.json"
 WEBUI_DATA_DIRNAME = "webui"
 WEBUI_AUDIT_FILENAME = "audit.json"
 WEBUI_TOMBSTONES_FILENAME = "catalog_tombstones.json"
@@ -43,6 +44,7 @@ NON_GROUP_CONFIG_FILENAMES = frozenset(
         "draw_bonuses.json",
         DESCRIPTION_OVERRIDES_FILENAME,
         TERMINOLOGY_OVERRIDES_FILENAME,
+        WIKI_INDEX_OVERRIDES_FILENAME,
     }
 )
 _UNSET = object()
@@ -929,10 +931,10 @@ class CatalogStore:
         target = _as_text(target)
         if not target:
             return []
-        try:
-            numeric_id = int(target.lstrip("#"))
-        except ValueError:
-            numeric_id = 0
+        numeric_match = re.fullmatch(
+            r"\s*(?:(?:#|编号|序号)\s*)?(\d+)\s*", target, re.IGNORECASE
+        )
+        numeric_id = int(numeric_match.group(1)) if numeric_match else 0
         if numeric_id:
             return [
                 dict(item)
@@ -947,6 +949,9 @@ class CatalogStore:
             candidates = {
                 _as_text(item.get("filename")).casefold(),
                 _as_text(item.get("name")).casefold(),
+                _as_text(item.get("page_title")).casefold(),
+                _as_text(item.get("variant_key")).casefold(),
+                _as_text(item.get("entry_key")).casefold(),
                 _as_text(profile.get("name_zh")).casefold(),
                 _as_text(profile.get("name_en")).casefold(),
                 _as_text(profile.get("display_name")).casefold(),
@@ -2184,6 +2189,59 @@ class CatalogStore:
             text = text[:-1]
         return (text or "?") + suffix
 
+    @staticmethod
+    def _wrap_text_lines(
+        draw: ImageDraw.ImageDraw,
+        text: str,
+        font: ImageFont.ImageFont,
+        width: int,
+        max_lines: int = 2,
+    ) -> List[str]:
+        text = " ".join(str(text or "未命名盟友").split())
+        if not text:
+            return ["未命名盟友"]
+
+        lines: List[str] = []
+        remaining = text
+        for line_index in range(max(1, max_lines)):
+            if draw.textlength(remaining, font=font) <= width:
+                lines.append(remaining)
+                break
+
+            is_last = line_index + 1 >= max_lines
+            suffix = "..." if is_last else ""
+            low, high = 1, len(remaining)
+            best = 1
+            while low <= high:
+                middle = (low + high) // 2
+                candidate = remaining[:middle].rstrip()
+                if draw.textlength(candidate + suffix, font=font) <= width:
+                    best = middle
+                    low = middle + 1
+                else:
+                    high = middle - 1
+
+            split_at = best
+            if not is_last:
+                segment = remaining[:best]
+                natural_breaks = [
+                    index + 1
+                    for index, char in enumerate(segment)
+                    if char.isspace() or char in "·・/（）()[]【】,:，：-"
+                ]
+                if natural_breaks and natural_breaks[-1] >= max(2, best // 2):
+                    split_at = natural_breaks[-1]
+
+            line = remaining[:split_at].strip()
+            if is_last:
+                lines.append((line or "?") + suffix)
+                break
+            lines.append(line or remaining[:best])
+            remaining = remaining[split_at:].strip()
+            if not remaining:
+                break
+        return lines or ["未命名盟友"]
+
     def _thumbnail(
         self, entry: Dict[str, Any], size: Tuple[int, int], unlocked: bool
     ) -> Image.Image:
@@ -2249,8 +2307,8 @@ class CatalogStore:
             raise ValueError("图鉴中没有可显示的盟友")
 
         columns = max(4, min(12, int(columns)))
-        cell_width, thumb_size, label_height = 142, (126, 112), 32
-        cell_height = thumb_size[1] + label_height + 8
+        cell_width, thumb_size, label_height = 136, (122, 106), 39
+        cell_height = thumb_size[1] + label_height + 5
         header_height = 58
         if max_height_px > 0:
             max_rows = max(1, (int(max_height_px) - header_height) // cell_height)
@@ -2264,6 +2322,7 @@ class CatalogStore:
         page_total = len(page_entries)
         manifest_path = output_path.with_suffix(f"{output_path.suffix}.cache.json")
         signature_payload = {
+            "layout_version": 2,
             "title": title,
             "columns": columns,
             "personal": bool(personal),
@@ -2378,7 +2437,8 @@ class CatalogStore:
         )
         draw = ImageDraw.Draw(canvas)
         title_font = self._font(22, True)
-        label_font = self._font(13)
+        label_font = self._font(12)
+        id_font = self._font(11, True)
         draw.text((14, 10), title, fill=(28, 32, 38), font=title_font)
         for index, entry in enumerate(entries):
             row, col = divmod(index, columns)
@@ -2391,15 +2451,28 @@ class CatalogStore:
                 (x, y, x + thumb_size[0] - 1, y + thumb_size[1] - 1),
                 outline=(185, 190, 198),
             )
-            label = self._fit_text(
+            id_label = f"#{entry['id']}"
+            id_width = int(draw.textlength(id_label, font=id_font)) + 8
+            draw.rectangle(
+                (x + 3, y + 3, x + 3 + id_width, y + 21),
+                fill=(37, 42, 50),
+            )
+            draw.text((x + 7, y + 5), id_label, fill="white", font=id_font)
+            labels = self._wrap_text_lines(
                 draw,
-                f"#{entry['id']} {entry.get('name') or '未命名盟友'}",
+                entry.get("name") or "未命名盟友",
                 label_font,
                 cell_width - 16,
+                max_lines=2,
             )
-            draw.text(
-                (x, y + thumb_size[1] + 5), label, fill=(38, 42, 48), font=label_font
-            )
+            label_y = y + thumb_size[1] + 3
+            for line_index, label in enumerate(labels):
+                draw.text(
+                    (x, label_y + line_index * 16),
+                    label,
+                    fill=(38, 42, 48),
+                    font=label_font,
+                )
         output_path.parent.mkdir(parents=True, exist_ok=True)
         canvas.save(output_path, format="PNG", optimize=True)
         return output_path

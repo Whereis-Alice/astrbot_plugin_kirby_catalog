@@ -24,6 +24,7 @@ from .catalog_core import (
     get_today,
 )
 from .terminology import KirbyTerminologyStore, TerminologyError
+from .wiki_index import WIKI_SITE_LABELS, WikiIndexStore
 
 PLUGIN_ID = "astrbot_plugin_kirby_catalog"
 MAX_UPLOAD_BYTES = 16 * 1024 * 1024
@@ -146,9 +147,11 @@ class CatalogAdminService:
         self,
         store: CatalogStore,
         terminology: Optional[KirbyTerminologyStore] = None,
+        wiki_index: Optional[WikiIndexStore] = None,
     ):
         self.store = store
         self.terminology = terminology
+        self.wiki_index = wiki_index
         self.upload_dir = store.webui_dir / "uploads"
         self.preferences_path = store.webui_dir / "preferences.json"
         self.upload_dir.mkdir(parents=True, exist_ok=True)
@@ -369,6 +372,7 @@ class CatalogAdminService:
             "preferences": self.preferences(username),
             "today": get_today(),
             "terminology": self.terminology.stats() if self.terminology else None,
+            "wiki_index": self.wiki_index.stats() if self.wiki_index else None,
         }
 
     def _terminology_store(self) -> KirbyTerminologyStore:
@@ -545,6 +549,108 @@ class CatalogAdminService:
         if was_custom:
             return {"deleted": True, "term_id": key, "revision": store.revision}
         return self.terminology_detail(key)
+
+    def _wiki_index_store(self) -> WikiIndexStore:
+        if self.wiki_index is None:
+            raise ValueError("百科序号库尚未初始化")
+        return self.wiki_index
+
+    def list_wiki_index(self, params: Mapping[str, Any]) -> Dict[str, Any]:
+        store = self._wiki_index_store()
+        site = str(params.get("site") or "").strip()
+        query = str(params.get("query") or "").strip().casefold()[:240]
+        status = str(params.get("status") or "all").strip()
+        sort = str(params.get("sort") or "number").strip()
+        page, page_size = _page_values(params)
+        rows = []
+        for row in store.entries(site):
+            if status == "enabled" and not row["enabled"]:
+                continue
+            if status == "disabled" and row["enabled"]:
+                continue
+            if status == "override" and not row["has_override"]:
+                continue
+            if status == "conflict" and not row["conflict"]:
+                continue
+            if query:
+                haystack = "\n".join(
+                    str(row.get(key) or "")
+                    for key in (
+                        "number",
+                        "label_zh",
+                        "label_en",
+                        "label_ja",
+                        "target",
+                        "context",
+                        "key",
+                    )
+                ).casefold()
+                if query not in haystack:
+                    continue
+            rows.append(row)
+
+        if sort == "label":
+            rows.sort(
+                key=lambda row: (
+                    str(row.get("label_zh") or "").casefold(),
+                    int(row.get("number", 0)),
+                )
+            )
+        elif sort == "target":
+            rows.sort(
+                key=lambda row: (
+                    str(row.get("target") or "").casefold(),
+                    int(row.get("number", 0)),
+                )
+            )
+        else:
+            rows.sort(
+                key=lambda row: (
+                    str(row.get("site") or ""),
+                    int(row.get("number", 0)),
+                )
+            )
+        total = len(rows)
+        start = (page - 1) * page_size
+        return {
+            "items": rows[start : start + page_size],
+            "page": page,
+            "page_size": page_size,
+            "total": total,
+            "pages": max(1, (total + page_size - 1) // page_size),
+            "sites": [
+                {"value": value, "label": WIKI_SITE_LABELS[value]}
+                for value in WIKI_SITE_LABELS
+            ],
+            "stats": store.stats(),
+        }
+
+    def wiki_index_detail(self, site: Any, key: Any) -> Dict[str, Any]:
+        return self._wiki_index_store().detail(site, key)
+
+    def save_wiki_index(
+        self, payload: Mapping[str, Any], username: str
+    ) -> Dict[str, Any]:
+        row = self._wiki_index_store().save(payload, updated_by=username)
+        self._audit(
+            "wiki-index.update",
+            f"{row['site_label']} #{row['number']} {row['label_zh']}",
+            f"查询目标：{row['target']}；状态：{'启用' if row['enabled'] else '停用'}",
+            username,
+        )
+        return row
+
+    def restore_wiki_index(
+        self, site: Any, key: Any, username: str
+    ) -> Dict[str, Any]:
+        row = self._wiki_index_store().restore(site, key)
+        self._audit(
+            "wiki-index.restore",
+            f"{row['site_label']} #{row['number']} {row['label_zh']}",
+            "恢复内置百科序号与查询目标",
+            username,
+        )
+        return row
 
     def export_terminology(self, format_name: str = "json", scope: str = "merged") -> Dict[str, Any]:
         store = self._terminology_store()
@@ -1143,9 +1249,10 @@ class KirbyCatalogWebUI:
         store: CatalogStore,
         write_lock: Optional[asyncio.Lock] = None,
         terminology: Optional[KirbyTerminologyStore] = None,
+        wiki_index: Optional[WikiIndexStore] = None,
     ) -> None:
         self.context = context
-        self.service = CatalogAdminService(store, terminology)
+        self.service = CatalogAdminService(store, terminology, wiki_index)
         self.write_lock = write_lock or asyncio.Lock()
 
     def register(self) -> None:
@@ -1241,6 +1348,25 @@ class KirbyCatalogWebUI:
                 self.import_terminology,
                 ["POST"],
                 "Import terminology",
+            ),
+            ("admin/wiki-index", self.wiki_index, ["GET"], "List wiki index"),
+            (
+                "admin/wiki-index-entry",
+                self.wiki_index_entry,
+                ["GET"],
+                "Get wiki index entry",
+            ),
+            (
+                "admin/wiki-index/save",
+                self.save_wiki_index,
+                ["POST"],
+                "Save wiki index entry",
+            ),
+            (
+                "admin/wiki-index/restore",
+                self.restore_wiki_index,
+                ["POST"],
+                "Restore wiki index entry",
             ),
         ]
         for path, handler, methods, description in routes:
@@ -1466,6 +1592,43 @@ class KirbyCatalogWebUI:
             self.service.import_terminology,
             data,
             filename,
+            _request_username(),
+        )
+
+    async def wiki_index(self):
+        params = {
+            key: _query_value(key, default)
+            for key, default in {
+                "site": "",
+                "query": "",
+                "status": "all",
+                "sort": "number",
+                "page": 1,
+                "page_size": 30,
+            }.items()
+        }
+        return await self._read(self.service.list_wiki_index, params)
+
+    async def wiki_index_entry(self):
+        return await self._read(
+            self.service.wiki_index_detail,
+            _query_value("site", ""),
+            _query_value("key", ""),
+        )
+
+    async def save_wiki_index(self):
+        return await self._write(
+            self.service.save_wiki_index,
+            await _request_json(),
+            _request_username(),
+        )
+
+    async def restore_wiki_index(self):
+        payload = await _request_json()
+        return await self._write(
+            self.service.restore_wiki_index,
+            payload.get("site"),
+            payload.get("key"),
             _request_username(),
         )
 

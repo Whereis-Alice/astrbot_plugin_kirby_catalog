@@ -30,6 +30,9 @@
           <button class="nav-item" type="button" data-view="terminology">
             <i data-lucide="languages"></i><span>名称库</span>
           </button>
+          <button class="nav-item" type="button" data-view="wiki-index">
+            <i data-lucide="list-ordered"></i><span>百科序号</span>
+          </button>
           <button class="nav-item" type="button" data-view="groups">
             <i data-lucide="users-round"></i><span>群数据</span>
           </button>
@@ -274,6 +277,72 @@
           <div id="terminologyPagination" class="pagination"></div>
         </section>
 
+        <section id="view-wiki-index" class="view" data-view-panel="wiki-index" hidden>
+          <div class="page-heading">
+            <div>
+              <p class="eyebrow">WIKI QUICK INDEX</p>
+              <h1>百科序号</h1>
+            </div>
+            <span id="wikiIndexTotalLabel" class="quiet-label">--</span>
+          </div>
+
+          <div id="wikiIndexMetrics" class="metric-grid wiki-index-metrics" aria-live="polite"></div>
+
+          <div class="toolbar wiki-index-toolbar">
+            <label class="search-field grow">
+              <i data-lucide="search"></i>
+              <input id="wikiIndexSearch" type="search" placeholder="搜索序号、名称或查询目标" autocomplete="off" />
+            </label>
+            <label class="select-field">
+              <span class="sr-only">百科来源</span>
+              <select id="wikiIndexSiteFilter"><option value="">全部百科</option></select>
+              <i data-lucide="chevron-down"></i>
+            </label>
+            <label class="select-field">
+              <span class="sr-only">状态</span>
+              <select id="wikiIndexStatusFilter">
+                <option value="all">全部状态</option>
+                <option value="enabled">已启用</option>
+                <option value="disabled">已停用</option>
+                <option value="override">已修改</option>
+                <option value="conflict">编号冲突</option>
+              </select>
+              <i data-lucide="chevron-down"></i>
+            </label>
+            <label class="select-field compact-select">
+              <span class="sr-only">排序</span>
+              <select id="wikiIndexSort">
+                <option value="number">序号升序</option>
+                <option value="label">名称排序</option>
+                <option value="target">查询目标排序</option>
+              </select>
+              <i data-lucide="arrow-up-down"></i>
+            </label>
+          </div>
+
+          <div class="table-shell">
+            <table class="data-table wiki-index-table">
+              <thead>
+                <tr>
+                  <th>序号</th>
+                  <th>百科与条目</th>
+                  <th>查询目标</th>
+                  <th>状态</th>
+                  <th>来源</th>
+                  <th class="actions-column"><span class="sr-only">操作</span></th>
+                </tr>
+              </thead>
+              <tbody id="wikiIndexRows"></tbody>
+            </table>
+            <div id="wikiIndexEmpty" class="empty-state" hidden>
+              <i data-lucide="search-x"></i>
+              <strong>没有匹配的百科序号</strong>
+              <span>调整百科、状态或搜索条件</span>
+            </div>
+          </div>
+          <div id="wikiIndexPagination" class="pagination"></div>
+        </section>
+
         <section id="view-groups" class="view" data-view-panel="groups" hidden>
           <div class="page-heading">
             <div>
@@ -457,6 +526,27 @@
         </button>
         <button id="saveTerminologyButton" class="button primary" type="button">
           <i data-lucide="save"></i>保存术语
+        </button>
+      </footer>
+    </aside>
+
+    <aside id="wikiIndexDrawer" class="drawer" aria-labelledby="wikiIndexDrawerTitle" aria-hidden="true">
+      <header class="drawer-header">
+        <div>
+          <p class="eyebrow">WIKI INDEX ENTRY</p>
+          <h2 id="wikiIndexDrawerTitle">百科序号条目</h2>
+        </div>
+        <button class="icon-button" type="button" data-close-drawer title="关闭" aria-label="关闭">
+          <i data-lucide="x"></i>
+        </button>
+      </header>
+      <div id="wikiIndexDrawerBody" class="drawer-body"></div>
+      <footer id="wikiIndexDrawerFooter" class="drawer-footer" hidden>
+        <button id="restoreWikiIndexButton" class="button warning" type="button">
+          <i data-lucide="rotate-ccw"></i>恢复内置
+        </button>
+        <button id="saveWikiIndexButton" class="button primary" type="button">
+          <i data-lucide="save"></i>保存序号
         </button>
       </footer>
     </aside>

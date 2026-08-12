@@ -639,6 +639,38 @@ class FandomCommandTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("日语：スピン（Spin）", result)
         self.assertIn("不等同于任天堂官方译名", result)
 
+    async def test_fandom_llm_tools_resolve_wiki_index_numbers(self):
+        plugin = self.make_plugin()
+        original_resolve = plugin.fandom.resolve
+        plugin.fandom.resolve = AsyncMock(side_effect=original_resolve)
+        plugin.wiki_index = SimpleNamespace(
+            resolve=lambda site, number: (
+                {"target": "Spinni"}
+                if site == "fandom" and number == 120
+                else None
+            )
+        )
+
+        page_result = await plugin.fandom_lookup_page(FakeEvent(""), "#120")
+        names_result = await plugin.fandom_lookup_names(FakeEvent(""), "序号 120")
+
+        self.assertIn("Kirby Fandom：Spinni", page_result)
+        self.assertIn("多语言页面名称", names_result)
+        self.assertEqual(
+            [call.args[0] for call in plugin.fandom.resolve.await_args_list],
+            ["Spinni", "Spinni"],
+        )
+
+    async def test_fandom_llm_tool_rejects_disabled_wiki_index_number(self):
+        plugin = self.make_plugin()
+        plugin.fandom.resolve = AsyncMock(side_effect=plugin.fandom.resolve)
+        plugin.wiki_index = SimpleNamespace(resolve=lambda _site, _number: None)
+
+        result = await plugin.fandom_lookup_page(FakeEvent(""), "#120")
+
+        self.assertIn("当前没有启用序号 #120", result)
+        plugin.fandom.resolve.assert_not_awaited()
+
     async def test_section_list_keeps_more_than_sixty_entries(self):
         plugin = self.make_plugin()
         plugin.fandom.page["section_index"] = [

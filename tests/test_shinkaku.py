@@ -5,7 +5,7 @@ from io import BytesIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 from urllib.error import HTTPError
 
 from astrbot.api import message_components as Comp
@@ -1049,6 +1049,45 @@ class ShinkakuCommandTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Meta Knight", term_results[0])
         self.assertIn("\u30de\u30db\u30ed\u30a2EX", page_result)
         self.assertIn("\u30e1\u30bf\u30ca\u30a4\u30c8", term_result)
+
+    async def test_shinkaku_llm_tools_resolve_wiki_index_numbers(self):
+        plugin = self.make_plugin()
+        original_resolve = plugin.shinkaku.resolve
+        original_lookup_terms = plugin.shinkaku.lookup_terms
+        plugin.shinkaku.resolve = AsyncMock(side_effect=original_resolve)
+        plugin.shinkaku.lookup_terms = AsyncMock(side_effect=original_lookup_terms)
+        plugin.wiki_index = SimpleNamespace(
+            resolve=lambda site, number: (
+                {"target": "\u30d5\u30a1\u30a4\u30bf\u30fc(RBP)"}
+                if site == "shinkaku" and number == 109
+                else None
+            )
+        )
+
+        page_result = await plugin.shinkaku_lookup_page(FakeEvent(""), "#109")
+        terms_result = await plugin.shinkaku_lookup_terms(
+            FakeEvent(""), "\u7f16\u53f7 109"
+        )
+
+        self.assertIn("\u30de\u30db\u30ed\u30a2EX", page_result)
+        self.assertIn("\u30e1\u30bf\u30ca\u30a4\u30c8", terms_result)
+        self.assertEqual(
+            plugin.shinkaku.resolve.await_args.args[0], "\u30d5\u30a1\u30a4\u30bf\u30fc(RBP)"
+        )
+        self.assertEqual(
+            plugin.shinkaku.lookup_terms.await_args.args[0],
+            "\u30d5\u30a1\u30a4\u30bf\u30fc(RBP)",
+        )
+
+    async def test_shinkaku_llm_tool_rejects_disabled_wiki_index_number(self):
+        plugin = self.make_plugin()
+        plugin.shinkaku.resolve = AsyncMock(side_effect=plugin.shinkaku.resolve)
+        plugin.wiki_index = SimpleNamespace(resolve=lambda _site, _number: None)
+
+        result = await plugin.shinkaku_lookup_page(FakeEvent(""), "#109")
+
+        self.assertIn("\u5f53\u524d\u6ca1\u6709\u542f\u7528\u5e8f\u53f7 #109", result)
+        plugin.shinkaku.resolve.assert_not_awaited()
 
     async def test_page_name_command_uses_static_index_without_network(self):
         plugin = self.make_plugin()

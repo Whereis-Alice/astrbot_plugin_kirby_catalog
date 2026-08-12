@@ -33,12 +33,31 @@ class FakeStore:
         return self.entry if filename == self.entry["filename"] else None
 
     def find_entries(self, target):
-        target = str(target)
-        return (
-            [self.entry]
-            if target in {str(self.entry["id"]), self.entry["name"]}
-            else []
-        )
+        target = str(target).strip().casefold()
+        if target.startswith("#"):
+            target = target[1:].strip()
+        candidates = {
+            str(self.entry.get("id") or "").casefold(),
+            str(self.entry.get("filename") or "").casefold(),
+            str(self.entry.get("name") or "").casefold(),
+            str(self.entry.get("page_title") or "").casefold(),
+            str(self.entry.get("variant_key") or "").casefold(),
+            str(self.entry.get("entry_key") or "").casefold(),
+            *[
+                str(alias).casefold()
+                for alias in self.entry.get("aliases", [])
+            ],
+        }
+        return [self.entry] if target in candidates else []
+
+    @staticmethod
+    def find_user_by_nickname(config, nickname):
+        target = str(nickname or "").strip().casefold()
+        return [
+            str(user_id)
+            for user_id, user in config.items()
+            if str(user.get("nickname") or "").strip().casefold() == target
+        ]
 
     def rename_entry(self, entry, new_name, source=None):
         updated = dict(entry)
@@ -435,6 +454,92 @@ class QuotedWikiQueryTests(unittest.TestCase):
             ),
             ("Driblee", False, ""),
         )
+
+    def test_explicit_output_modes_keep_using_quoted_ally(self):
+        quoted = Comp.Reply(
+            id="reply-modes",
+            message_str="随机查看的盟友是 Papi，图鉴编号 #1202。",
+        )
+
+        self.assertEqual(
+            self.plugin._wikirby_query_parts(
+                FakeEvent("卡比百科文档", [quoted])
+            ),
+            ("Papi", False, "document"),
+        )
+        self.assertEqual(
+            self.plugin._fandom_query_parts(FakeEvent("卡比F卡片", [quoted])),
+            ("Papi", "page", "", "card"),
+        )
+        self.assertEqual(
+            self.plugin._shinkaku_query_parts(
+                FakeEvent("卡比真格文本", [quoted])
+            ),
+            ("Papi", "page", "", "text"),
+        )
+
+    def test_each_wiki_uses_its_own_quick_index(self):
+        class FakeWikiIndex:
+            targets = {
+                "wikirby": "Kirby",
+                "fandom": "Kirby (character)",
+                "shinkaku": "カービィ(WiiDX)",
+            }
+
+            def resolve(self, site, number):
+                return (
+                    {"target": self.targets[site]}
+                    if str(number).strip("# ") == "88"
+                    else None
+                )
+
+        self.plugin.wiki_index = FakeWikiIndex()
+
+        self.assertEqual(
+            self.plugin._wikirby_query_parts(FakeEvent("卡比百科文档 序号 88")),
+            ("Kirby", False, "document"),
+        )
+        self.assertEqual(
+            self.plugin._fandom_query_parts(FakeEvent("卡比F卡片 #88")),
+            ("Kirby (character)", "page", "", "card"),
+        )
+        self.assertEqual(
+            self.plugin._shinkaku_query_parts(FakeEvent("卡比真格文本 编号 88")),
+            ("カービィ(WiiDX)", "page", "", "text"),
+        )
+
+    def test_quoted_catalog_id_still_resolves_entry_after_wiki_reindex(self):
+        class ReindexedWiki:
+            def resolve(self, _site, number):
+                return {"target": "Wrong target"} if int(number) == 1202 else None
+
+        self.plugin.wiki_index = ReindexedWiki()
+        quoted = Comp.Reply(
+            id="reply-catalog-id",
+            message_str="随机查看的盟友是 Papi，图鉴编号 #1202。",
+        )
+
+        self.assertEqual(
+            self.plugin._wikirby_query_parts(FakeEvent("卡比百科文档", [quoted])),
+            ("Papi", False, "document"),
+        )
+
+    def test_disabled_or_missing_wiki_number_does_not_fall_back_to_catalog_id(self):
+        class MissingWikiIndex:
+            def resolve(self, _site, _number):
+                return None
+
+        self.plugin.wiki_index = MissingWikiIndex()
+
+        query, names_only, output = self.plugin._wikirby_query_parts(
+            FakeEvent("卡比百科 #1202")
+        )
+        self.assertEqual(
+            self.plugin._missing_wiki_index_number(query),
+            1202,
+        )
+        self.assertFalse(names_only)
+        self.assertEqual(output, "")
 
 
 class DrawManagementTests(unittest.IsolatedAsyncioTestCase):
@@ -1095,6 +1200,46 @@ class DrawManagementTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("爱丽丝 今天的盟友是 Papi，图鉴编号 #1202", text)
         self.assertIn("解锁于 2026-08-01", text)
         self.assertIn("简介：\n这是一段简体中文盟友简介。", text)
+
+    async def test_query_ally_can_precisely_lookup_name_or_number_without_writes(self):
+        entry = {
+            **self.entry,
+            "name": "滴水鳗（Driblee）",
+            "page_title": "Driblee",
+            "variant_key": "Driblee",
+            "aliases": ["滴水鳗"],
+        }
+        for query in ("Driblee", "滴水鳗", "#1202"):
+            with self.subTest(query=query):
+                plugin = make_plugin(entry)
+                plugin.store.asset_bytes = lambda _entry, download=False: b"image-bytes"
+
+                results = [
+                    result
+                    async for result in plugin.query_ally(
+                        FakeEvent(f"查盟友 {query}")
+                    )
+                ]
+
+                self.assertIn("查询到的盟友是 滴水鳗（Driblee）", results[0][0].text)
+                self.assertIn("图鉴编号 #1202", results[0][0].text)
+                self.assertIsInstance(results[0][-1], Comp.Image)
+                self.assertFalse(plugin.store.group)
+                self.assertFalse(plugin.store.draws)
+
+    async def test_query_ally_keeps_ambiguous_member_lookup_behavior(self):
+        plugin = make_plugin(self.entry)
+        plugin.store.group = {
+            "1": {"nickname": "同名群友"},
+            "2": {"nickname": "同名群友"},
+        }
+
+        results = [
+            result
+            async for result in plugin.query_ally(FakeEvent("查盟友 同名群友"))
+        ]
+
+        self.assertEqual(results, ["匹配到多个成员，请直接 @ 对方。"])
 
     async def test_admin_can_edit_and_restore_description_from_quote(self):
         plugin = make_plugin(self.entry)
