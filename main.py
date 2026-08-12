@@ -56,7 +56,11 @@ from .shinkaku_reference import (
     DEFAULT_ENTRIES_PER_PAGE as _REFERENCE_DEFAULT_ENTRIES_PER_PAGE,
 )
 from .shinkaku_reference import render_shinkaku_reference_pages, shinkaku_reference_text
-from .terminology import KirbyTerminologyStore, TerminologyPlaceholderError
+from .terminology import (
+    PLACEHOLDER_FORMAT_VERSION,
+    KirbyTerminologyStore,
+    TerminologyPlaceholderError,
+)
 from .webui import KirbyCatalogWebUI
 from .wiki_index import WikiIndexStore, parse_wiki_number
 from .wiki_content import inline_markup_plain
@@ -158,7 +162,7 @@ class AllyDrawOutcome:
     PLUGIN_ID,
     "Whereis-Alice",
     "星之卡比盟友抽取、收藏图鉴与三百科查询插件",
-    "3.11.0",
+    "3.11.1",
     "https://github.com/Whereis-Alice/astrbot_plugin_kirby_catalog",
 )
 class KirbyCatalogPlugin(Star):
@@ -215,7 +219,7 @@ class KirbyCatalogPlugin(Star):
         self._guess_sessions: Dict[str, Dict[str, Any]] = {}
         self._guess_timeout_tasks: Dict[str, asyncio.Task[None]] = {}
         self._wiki_translation_cache: Dict[
-            Tuple[str, str, str, str], Tuple[float, str]
+            Tuple[str, str, str, str, str], Tuple[float, str]
         ] = {}
         self._shinkaku_table_icon_cache: Dict[str, str] = {}
         self.wikirby = WikirbyClient(
@@ -2642,6 +2646,7 @@ class KirbyCatalogPlugin(Star):
         cache_key = (
             source_name.casefold(),
             provider_id,
+            PLACEHOLDER_FORMAT_VERSION,
             self._terminology_revision(),
             hashlib.sha256(text.encode("utf-8")).hexdigest(),
         )
@@ -2716,13 +2721,30 @@ class KirbyCatalogPlugin(Star):
                     getattr(response, "completion_text", "") or ""
                 ).strip()
                 if translated and protected:
+                    translated, repaired_placeholders = (
+                        protected.normalise_placeholders(translated)
+                    )
+                    surplus_placeholders = protected.surplus_placeholders(translated)
+                    if repaired_placeholders or surplus_placeholders:
+                        logger.info(
+                            "[%s] %s LLM 翻译术语占位符已安全修复: "
+                            "provider=%s, chunk=%d/%d, formatting_repairs=%d, "
+                            "known_surplus=%d",
+                            PLUGIN_ID,
+                            source_name,
+                            provider_id,
+                            index,
+                            len(chunks),
+                            repaired_placeholders,
+                            sum(surplus_placeholders.values()),
+                        )
                     translated = protected.restore(
                         translated,
                         strict=self._terminology_strict_placeholders(),
                     )
             except TerminologyPlaceholderError as exc:
                 logger.warning(
-                    "[%s] %s LLM 翻译破坏名称库占位符，保留规范化原文: "
+                    "[%s] %s LLM 翻译丢失或生成未知名称库占位符，保留规范化原文: "
                     "provider=%s, chunk=%d/%d, error=%s",
                     PLUGIN_ID,
                     source_name,

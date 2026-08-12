@@ -125,7 +125,15 @@ AMBIGUOUS_ENGLISH_ALIASES = {
     "yo-yo",
 }
 URL_RE = re.compile(r"(?:https?://|ftp://|www\.)[^\s<>\]\[)）]+", re.IGNORECASE)
-PLACEHOLDER_RE = re.compile(r"__KTERM_[A-F0-9]{8}_[0-9]{4}__")
+PLACEHOLDER_FORMAT_VERSION = "v2"
+PLACEHOLDER_RE = re.compile(
+    r"(?:__KTERM_[A-F0-9]{8}_[0-9]{4}__|"
+    r"⟦KTERM-[A-F0-9]{8}-[0-9]{4}⟧)"
+)
+PLACEHOLDER_CORE_RE = re.compile(
+    r"(?<![A-Za-z0-9])KTERM(?:\\?[_-])([A-F0-9]{8})"
+    r"(?:\\?[_-])([0-9]{4})(?![A-Za-z0-9])"
+)
 ASCII_WORD_RE = re.compile(r"[A-Za-z0-9_]")
 SPACE_RE = re.compile(r"\s+")
 CSV_FIELDS = (
@@ -353,43 +361,123 @@ class ProtectedTerminologyText:
         if not self.bindings:
             return ""
         lines = [
-            "术语占位符（每个占位符必须逐字、逐次保留，不要翻译或改写）："
+            "术语参考（仅用于理解，不要输出本列表；正文占位符仍须原样保留）："
         ]
-        for binding in self.bindings:
+        for index, binding in enumerate(self.bindings, start=1):
             lines.append(
-                f"{binding.token} = {binding.label} [{binding.category}]"
+                f"{index:04d} = {binding.label} [{binding.category}]"
             )
         return "\n".join(lines)
 
-    def validate(self, value: str) -> tuple[bool, list[str]]:
-        errors: list[str] = []
+    @staticmethod
+    def _token_parts(token: str) -> tuple[str, str] | None:
+        match = re.search(
+            r"KTERM[_-]([A-F0-9]{8})[_-]([0-9]{4})",
+            str(token or ""),
+        )
+        return (match.group(1), match.group(2)) if match else None
+
+    @classmethod
+    def _token_variant_pattern(cls, token: str) -> re.Pattern[str] | None:
+        parts = cls._token_parts(token)
+        if parts is None:
+            return None
+        nonce, index = parts
+        separator = r"(?:-|_|\\_)"
+        left_wrapper = r"(?:⟦|\[\[|__|\\_\\_|\*\*|`)?"
+        right_wrapper = r"(?:⟧|\]\]|__|\\_\\_|\*\*|`)?"
+        return re.compile(
+            rf"(?<![A-Za-z0-9]){left_wrapper}\s*"
+            rf"KTERM{separator}{nonce}{separator}{index}"
+            rf"\s*{right_wrapper}(?![A-Za-z0-9])"
+        )
+
+    def normalise_placeholders(self, value: str) -> tuple[str, int]:
+        """Repair reversible Markdown/escaping changes made by an LLM."""
+
+        text = str(value or "")
+        repaired = 0
         for binding in self.bindings:
-            found = str(value or "").count(binding.token)
-            if found != binding.count:
+            pattern = self._token_variant_pattern(binding.token)
+            if pattern is None:
+                continue
+
+            def replace(match: re.Match[str]) -> str:
+                nonlocal repaired
+                if match.group(0) != binding.token:
+                    repaired += 1
+                return binding.token
+
+            text = pattern.sub(replace, text)
+        return text, repaired
+
+    def _validate_normalised(self, text: str) -> tuple[bool, list[str]]:
+        errors: list[str] = []
+        known_parts = {
+            parts
+            for binding in self.bindings
+            if (parts := self._token_parts(binding.token)) is not None
+        }
+        unknown_parts = sorted(
+            {
+                (match.group(1), match.group(2))
+                for match in PLACEHOLDER_CORE_RE.finditer(text)
+                if (match.group(1), match.group(2)) not in known_parts
+            }
+        )
+        for nonce, index in unknown_parts:
+            errors.append(f"unknown=KTERM-{nonce}-{index}")
+        for binding in self.bindings:
+            found = text.count(binding.token)
+            if found < binding.count:
                 errors.append(
-                    f"{binding.token}: expected={binding.count}, actual={found}"
+                    f"{binding.token}: expected_at_least={binding.count}, actual={found}"
                 )
         return not errors, errors
 
+    def validate(self, value: str) -> tuple[bool, list[str]]:
+        text, _ = self.normalise_placeholders(value)
+        return self._validate_normalised(text)
+
+    def surplus_placeholders(self, value: str) -> dict[str, int]:
+        text, _ = self.normalise_placeholders(value)
+        return {
+            binding.token: found - binding.count
+            for binding in self.bindings
+            if (found := text.count(binding.token)) > binding.count
+        }
+
     def restore(self, value: str, *, strict: bool = True) -> str:
-        text = str(value or "")
+        text, _ = self.normalise_placeholders(value)
         if strict:
-            valid, errors = self.validate(text)
+            valid, errors = self._validate_normalised(text)
             if not valid:
                 raise TerminologyPlaceholderError(
-                    "术语占位符数量不一致：" + "; ".join(errors)
+                    "术语占位符缺失或未知：" + "; ".join(errors)
                 )
         for binding in self.bindings:
             text = text.replace(binding.token, binding.label)
         return text
 
     def restore_object(self, value: Any, *, strict: bool = True) -> Any:
+        def normalise_item(item: Any) -> Any:
+            if isinstance(item, str):
+                return self.normalise_placeholders(item)[0]
+            if isinstance(item, list):
+                return [normalise_item(child) for child in item]
+            if isinstance(item, tuple):
+                return tuple(normalise_item(child) for child in item)
+            if isinstance(item, dict):
+                return {key: normalise_item(child) for key, child in item.items()}
+            return item
+
+        value = normalise_item(value)
         if strict:
             serialised = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
-            valid, errors = self.validate(serialised)
+            valid, errors = self._validate_normalised(serialised)
             if not valid:
                 raise TerminologyPlaceholderError(
-                    "结构化翻译中的术语占位符数量不一致：" + "; ".join(errors)
+                    "结构化翻译中的术语占位符缺失或未知：" + "; ".join(errors)
                 )
 
         def restore_item(item: Any) -> Any:
@@ -847,7 +935,7 @@ class KirbyTerminologyStore:
                 pieces.append(source[cursor : match.start])
                 token = token_by_id.get(match.entry.term_id)
                 if token is None:
-                    token = f"__KTERM_{nonce}_{len(token_by_id) + 1:04d}__"
+                    token = f"⟦KTERM-{nonce}-{len(token_by_id) + 1:04d}⟧"
                     token_by_id[match.entry.term_id] = token
                     binding_data[token] = {
                         "term_id": match.entry.term_id,
@@ -970,6 +1058,7 @@ def terminology_document(entries: Iterable[TerminologyEntry], *, metadata: Mappi
 __all__ = [
     "CSV_FIELDS",
     "KirbyTerminologyStore",
+    "PLACEHOLDER_FORMAT_VERSION",
     "ProtectedTerminologyText",
     "TerminologyEntry",
     "TerminologyError",

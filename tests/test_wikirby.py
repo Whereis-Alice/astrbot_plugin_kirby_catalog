@@ -1,4 +1,5 @@
 import json
+import re
 import unittest
 from io import BytesIO
 from pathlib import Path
@@ -98,6 +99,19 @@ class TerminologyTranslationContext:
         self.calls.append(kwargs)
         source = kwargs["prompt"].split("原文：\n", 1)[1]
         return SimpleNamespace(completion_text=source.replace(" met ", " 遇见 "))
+
+
+class MutatedPlaceholderTranslationContext:
+    async def get_current_chat_provider_id(self, _umo):
+        return "provider"
+
+    async def llm_generate(self, **kwargs):
+        source = kwargs["prompt"].split("原文：\n", 1)[1]
+        match = re.search(r"⟦KTERM-([A-F0-9]{8})-([0-9]{4})⟧", source)
+        assert match is not None
+        legacy = f"**KTERM\\_{match.group(1)}\\_{match.group(2)}**"
+        translated = source.replace(match.group(0), legacy).replace(" met ", " 遇见 ")
+        return SimpleNamespace(completion_text=f"{translated} 附注：{legacy}。")
 
 
 class FakeResponse:
@@ -1062,7 +1076,56 @@ class WikirbyCommandTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("卡比（Kirby）", result)
             self.assertIn("魅塔骑士（Meta Knight）", result)
             self.assertIn("遇见", result)
-            self.assertIn("__KTERM_", plugin.context.calls[0]["prompt"])
+            self.assertIn("⟦KTERM-", plugin.context.calls[0]["prompt"])
+
+    async def test_translation_keeps_text_when_model_mutates_and_duplicates_token(self):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            bundled_path = root / "terms.json"
+            bundled_path.write_text(
+                json.dumps(
+                    terminology_document(
+                        [
+                            TerminologyEntry.from_mapping(
+                                {
+                                    "term_id": "character:kirby",
+                                    "category": "character",
+                                    "zh_cn": "卡比",
+                                    "en": "Kirby",
+                                    "ja": "カービィ",
+                                    "zh_status": "official",
+                                }
+                            )
+                        ]
+                    ),
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            plugin = KirbyCatalogPlugin.__new__(KirbyCatalogPlugin)
+            plugin.config = {
+                "wikirby_translate_provider_id": "provider",
+                "wikirby_cache_ttl_seconds": 0,
+                "terminology_enabled": True,
+                "terminology_strict_placeholders": True,
+            }
+            plugin.terminology = KirbyTerminologyStore(
+                bundled_path, root / "overrides.json"
+            )
+            plugin.context = MutatedPlaceholderTranslationContext()
+
+            result = await plugin._wiki_translate_text(
+                FakeEvent("卡比百科 Kirby"),
+                "Kirby met Kirby. Kirby waved. Kirby won. Kirby left.",
+                enabled=True,
+                provider_key="wikirby_translate_provider_id",
+                source_name="WiKirby",
+            )
+
+            self.assertIn("遇见", result)
+            self.assertIn("附注：卡比（Kirby）。", result)
+            self.assertEqual(result.count("卡比（Kirby）"), 6)
+            self.assertNotIn("KTERM", result)
 
     async def test_card_mode_uses_astrbot_html_renderer(self):
         plugin = KirbyCatalogPlugin.__new__(KirbyCatalogPlugin)

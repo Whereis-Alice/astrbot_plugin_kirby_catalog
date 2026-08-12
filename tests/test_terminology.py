@@ -136,6 +136,47 @@ def test_placeholder_validation_rejects_lost_tokens(terminology_store):
         protected.restore(translated)
 
 
+def test_placeholder_restore_repairs_markdown_and_escaped_legacy_shape(
+    terminology_store,
+):
+    protected = terminology_store.protect("Kirby met Meta Knight.")
+    kirby, meta = protected.bindings
+    kirby_parts = protected._token_parts(kirby.token)
+    meta_parts = protected._token_parts(meta.token)
+    assert kirby_parts is not None
+    assert meta_parts is not None
+    translated = (
+        f"**KTERM\\_{kirby_parts[0]}\\_{kirby_parts[1]}** 遇见了 "
+        f"__KTERM_{meta_parts[0]}_{meta_parts[1]}__。"
+    )
+
+    restored = protected.restore(translated)
+
+    assert restored == "卡比（Kirby） 遇见了 魅塔骑士（Meta Knight）。"
+
+
+def test_placeholder_restore_accepts_known_surplus_without_losing_translation(
+    terminology_store,
+):
+    protected = terminology_store.protect("Kirby met Kirby. Kirby waved. Kirby won. Kirby left.")
+    token = protected.bindings[0].token
+    assert protected.bindings[0].count == 5
+    translated = protected.protected_text + f" 附注：{token}。"
+
+    restored = protected.restore(translated)
+
+    assert "附注：卡比（Kirby）。" in restored
+    assert restored.count("卡比（Kirby）") == 6
+
+
+def test_placeholder_validation_rejects_unknown_tokens(terminology_store):
+    protected = terminology_store.protect("Kirby")
+    translated = protected.protected_text + " ⟦KTERM-DEADBEEF-9999⟧"
+
+    with pytest.raises(TerminologyPlaceholderError, match="unknown"):
+        protected.restore(translated)
+
+
 def test_structured_restore_validates_across_nested_values(terminology_store):
     protected = terminology_store.protect(
         json.dumps(
