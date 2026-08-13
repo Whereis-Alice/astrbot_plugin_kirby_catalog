@@ -192,6 +192,53 @@ class CatalogStoreTests(unittest.TestCase):
             self.assertIsNotNone(store.resolve_entry(filename))
             self.assertIsNone(store.resolve_entry("旧素材.png"))
 
+    def test_fast_start_manual_migration_temporarily_mounts_legacy_data(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "stable"
+            root.mkdir(parents=True)
+            (root / "catalog.json").write_text(
+                json.dumps({"version": 2, "items": []}, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            legacy = Path(temp) / "legacy"
+            legacy_assets = legacy / "img" / "wife"
+            legacy_config = legacy / "config"
+            legacy_assets.mkdir(parents=True)
+            legacy_config.mkdir(parents=True)
+            filename = "星之卡比.卡比.png"
+            legacy_assets.joinpath(filename).write_bytes(self.make_image())
+            (legacy / "wife_index.json").write_text(
+                json.dumps({filename: 7}, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            legacy_config.joinpath("123.json").write_text(
+                json.dumps(
+                    {"42": [filename, "2026-08-01", "测试用户"]},
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            store = CatalogStore(
+                root,
+                legacy_dirs=(),
+                image_base_url="",
+                startup_migrate_legacy=False,
+                startup_full_scan=False,
+                lazy_profiles=True,
+            )
+
+            store.migrate_legacy([legacy])
+
+            entry = store.resolve_entry("7")
+            self.assertIsNotNone(entry)
+            self.assertEqual(entry["filename"], filename)
+            self.assertTrue((store.assets_dir / filename).is_file())
+            self.assertEqual(
+                store.load_group("123")["42"]["unlocked"][0]["ally_filename"],
+                filename,
+            )
+            self.assertEqual(store.legacy_dirs, [])
+
     def test_reset_group_draws_rejects_unsafe_group_id(self):
         with tempfile.TemporaryDirectory() as temp:
             store = CatalogStore(Path(temp) / "new", image_base_url="")

@@ -7027,7 +7027,6 @@ class KirbyCatalogPlugin(Star):
                 self.store.migrate_legacy,
                 self._legacy_data_dirs(),
             )
-            await asyncio.to_thread(self.store.refresh)
         except Exception as exc:
             logger.exception("[%s] 迁移失败: %s", PLUGIN_ID, exc)
             yield event.plain_result("迁移失败，请查看 AstrBot 日志。")

@@ -973,6 +973,8 @@ class CatalogStore:
             self._migrate_legacy_data()
             self._load_draw_limits()
             self._load_draw_bonuses()
+            if legacy_dirs is not None:
+                self._refresh_catalog()
         finally:
             self.legacy_dirs = previous_legacy_dirs
 
