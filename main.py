@@ -4,6 +4,7 @@ import asyncio
 import base64
 import hashlib
 import json
+import os
 import random
 import re
 import time
@@ -162,41 +163,44 @@ class AllyDrawOutcome:
     PLUGIN_ID,
     "Whereis-Alice",
     "星之卡比盟友抽取、收藏图鉴与三百科查询插件",
-    "3.11.1",
+    "3.11.2",
     "https://github.com/Whereis-Alice/astrbot_plugin_kirby_catalog",
 )
 class KirbyCatalogPlugin(Star):
     """星之卡比盟友抽取和收藏图鉴。"""
 
     def __init__(self, context: Context, config: Optional[Any] = None):
+        startup_started = time.perf_counter()
         super().__init__(context)
         self.config = config or {}
         data_dir = Path(StarTools.get_data_dir(PLUGIN_ID))
-        legacy_dirs = self._legacy_data_dirs()
+        catalog_started = time.perf_counter()
         self.store = CatalogStore(
             data_dir,
-            legacy_dirs=legacy_dirs,
+            legacy_dirs=(),
             image_base_url=self._config_value("image_base_url", IMAGE_BASE_URL),
             profiles_path=CATALOG_PROFILES_PATH,
+            startup_migrate_legacy=False,
+            startup_full_scan=False,
+            lazy_profiles=True,
         )
+        catalog_elapsed = time.perf_counter() - catalog_started
         self.terminology = KirbyTerminologyStore(
             BUNDLED_TERMINOLOGY_PATH,
             self.store.config_dir / TERMINOLOGY_OVERRIDES_FILENAME,
+            lazy=True,
         )
         self.wiki_index = WikiIndexStore(
             self.store,
             BUNDLED_SHINKAKU_NAMES_PATH,
         )
-        terminology_stats = self.terminology.stats()
         logger.info(
-            "[%s] 卡比百科名称库已加载: entries=%d, enabled=%d, "
-            "overrides=%d, conflicts=%d, revision=%s",
+            "[%s] 快速启动数据已就绪: catalog_entries=%d, catalog_elapsed=%.3fs, "
+            "profiles=lazy, terminology=lazy, rss_mb=%s",
             PLUGIN_ID,
-            terminology_stats["entries"],
-            terminology_stats["enabled"],
-            terminology_stats["overrides"],
-            terminology_stats["conflicts"],
-            terminology_stats["revision"],
+            self.store.catalog_size,
+            catalog_elapsed,
+            self._rss_megabytes_text(),
         )
         self._draw_lock = asyncio.Lock()
         self.webui: Optional[KirbyCatalogWebUI] = None
@@ -277,6 +281,21 @@ class KirbyCatalogPlugin(Star):
             proxy_url=shinkaku_proxy_url,
             proxy_token=shinkaku_proxy_token,
         )
+        logger.info(
+            "[%s] 插件初始化完成: elapsed=%.3fs, rss_mb=%s",
+            PLUGIN_ID,
+            time.perf_counter() - startup_started,
+            self._rss_megabytes_text(),
+        )
+
+    @staticmethod
+    def _rss_megabytes_text() -> str:
+        try:
+            with open("/proc/self/statm", "r", encoding="ascii") as handle:
+                resident_pages = int(handle.read().split()[1])
+            return f"{resident_pages * os.sysconf('SC_PAGE_SIZE') / 1024 / 1024:.1f}"
+        except (OSError, ValueError, IndexError, AttributeError):
+            return "unavailable"
 
     def _cancel_guess_timeout(self, group_id: str) -> None:
         task = self._guess_timeout_tasks.pop(group_id, None)
@@ -361,6 +380,19 @@ class KirbyCatalogPlugin(Star):
             await asyncio.gather(
                 *(client.close() for client in clients), return_exceptions=True
             )
+        getattr(self, "_shinkaku_table_icon_cache", {}).clear()
+        webui = getattr(self, "webui", None)
+        webui_release = getattr(webui, "release", None)
+        if callable(webui_release):
+            webui_release()
+        terminology = getattr(self, "terminology", None)
+        terminology_release = getattr(terminology, "release", None)
+        if callable(terminology_release):
+            terminology_release()
+        store = getattr(self, "store", None)
+        store_release = getattr(store, "release", None)
+        if callable(store_release):
+            store_release()
 
     def _legacy_data_dirs(self) -> List[Path]:
         candidates = [Path("data") / "plugins" / LEGACY_PLUGIN_ID]
@@ -6991,8 +7023,11 @@ class KirbyCatalogPlugin(Star):
     async def migrate_command(self, event: AstrMessageEvent):
         """管理员重新扫描旧插件数据并补齐迁移。"""
         try:
-            self.store.migrate_legacy()
-            self.store.refresh()
+            await asyncio.to_thread(
+                self.store.migrate_legacy,
+                self._legacy_data_dirs(),
+            )
+            await asyncio.to_thread(self.store.refresh)
         except Exception as exc:
             logger.exception("[%s] 迁移失败: %s", PLUGIN_ID, exc)
             yield event.plain_result("迁移失败，请查看 AstrBot 日志。")

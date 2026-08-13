@@ -600,6 +600,9 @@ class KirbyCatalogWebUiRegistrationTests(unittest.TestCase):
             self.assertIsNotNone(plugin.webui)
             self.assertEqual(len(routes), 31)
             self.assertIs(plugin.webui.write_lock, plugin._draw_lock)
+            self.assertEqual(plugin.store.legacy_dirs, [])
+            self.assertFalse(plugin.store._profiles_loaded)
+            self.assertFalse(plugin.terminology.loaded)
 
 
 if __name__ == "__main__":

@@ -217,6 +217,34 @@ def test_override_reload_changes_revision_and_restore_returns_to_base(
     assert terminology_store.canonicalize("Kirby") == "卡比（Kirby）"
 
 
+def test_lazy_store_loads_on_first_use_and_can_reload_after_release(tmp_path):
+    bundled = tmp_path / "terms.json"
+    bundled.write_text(
+        json.dumps(
+            terminology_document(
+                [_entry("character:kirby", "卡比", "Kirby", "カービィ")]
+            ),
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    store = KirbyTerminologyStore(
+        bundled,
+        tmp_path / "overrides.json",
+        lazy=True,
+    )
+
+    assert store.loaded is False
+    assert store.canonicalize("Kirby") == "卡比（Kirby）"
+    assert store.loaded is True
+
+    store.release()
+
+    assert store.loaded is False
+    assert store.canonicalize("Kirby") == "卡比（Kirby）"
+    assert store.loaded is True
+
+
 def test_conflicts_are_reported_and_priority_selects_winner(tmp_path):
     entries = [
         _entry("character:a", "甲", "Shared", "エー", priority=10),

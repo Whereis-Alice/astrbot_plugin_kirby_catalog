@@ -257,6 +257,10 @@ class CatalogStore:
         legacy_dirs: Sequence[Path] = (),
         image_base_url: str = "",
         profiles_path: Optional[Path] = None,
+        *,
+        startup_migrate_legacy: bool = True,
+        startup_full_scan: bool = True,
+        lazy_profiles: bool = False,
     ) -> None:
         self.root = Path(data_dir)
         self.config_dir = self.root / "config"
@@ -275,10 +279,14 @@ class CatalogStore:
         self.profiles_path = Path(profiles_path) if profiles_path else None
         self.legacy_dirs = [Path(path) for path in legacy_dirs]
         self.image_base_url = image_base_url.strip()
+        self.startup_migrate_legacy = bool(startup_migrate_legacy)
+        self.startup_full_scan = bool(startup_full_scan)
+        self.lazy_profiles = bool(lazy_profiles)
         self._catalog: Dict[str, Dict[str, Any]] = {}
         self._draw_limits: Dict[str, Any] = {}
         self._draw_bonuses: Dict[str, Any] = {}
         self._profiles: Dict[str, Dict[str, Any]] = {}
+        self._profiles_loaded = False
         self._description_overrides: Dict[str, Dict[str, Any]] = {}
         self._audit_entries: List[Dict[str, Any]] = []
         self._tombstones: Dict[str, Dict[str, Any]] = {}
@@ -294,16 +302,29 @@ class CatalogStore:
         self._load_tombstones()
         self._load_audit_entries()
         self._load_catalog()
-        self._migrate_legacy_data()
+        if self.startup_migrate_legacy:
+            self._migrate_legacy_data()
         self._load_draw_limits()
         self._load_draw_bonuses()
-        self._load_profiles()
+        if not self.lazy_profiles:
+            self._load_profiles()
         self._load_description_overrides()
-        self._refresh_catalog()
+        if self.startup_full_scan:
+            self._refresh_catalog()
+        elif not self._catalog:
+            self._refresh_catalog(
+                include_legacy=False,
+                repair_legacy_assets=False,
+            )
 
     @property
     def catalog_path_value(self) -> Path:
         return self.catalog_path
+
+    @property
+    def catalog_size(self) -> int:
+        with self._lock:
+            return len(self._catalog)
 
     def _load_catalog(self) -> None:
         raw = _read_json(self.catalog_path, {})
@@ -506,6 +527,13 @@ class CatalogStore:
 
     def _migrate_legacy_assets(self) -> None:
         """Copy legacy local assets so the new plugin is self-contained."""
+        legacy_asset_dirs = [
+            legacy_dir / "img" / "wife"
+            for legacy_dir in self.legacy_dirs
+            if (legacy_dir / "img" / "wife").is_dir()
+        ]
+        if not legacy_asset_dirs:
+            return
         existing_digests = {
             digest
             for path in self.assets_dir.iterdir()
@@ -513,10 +541,7 @@ class CatalogStore:
             for digest in [self._asset_digest(path)]
             if digest
         }
-        for legacy_dir in self.legacy_dirs:
-            legacy_assets_dir = legacy_dir / "img" / "wife"
-            if not legacy_assets_dir.is_dir():
-                continue
+        for legacy_assets_dir in legacy_asset_dirs:
             for source in legacy_assets_dir.iterdir():
                 if (
                     not source.is_file()
@@ -560,6 +585,14 @@ class CatalogStore:
             for key, value in items.items()
             if _as_text(key) and isinstance(value, dict)
         }
+        self._profiles_loaded = True
+
+    def _ensure_profiles_loaded(self) -> None:
+        if self._profiles_loaded:
+            return
+        with self._lock:
+            if not self._profiles_loaded:
+                self._load_profiles()
 
     def _load_description_overrides(self) -> None:
         raw = _read_json(self.description_overrides_path, {})
@@ -588,6 +621,7 @@ class CatalogStore:
 
     def profile_for(self, entry: Mapping[str, Any]) -> Dict[str, Any]:
         """Return bundled metadata with an administrator override applied."""
+        self._ensure_profiles_loaded()
         entry_key = _as_text(entry.get("entry_key"))
         profile = dict(self._profiles.get(entry_key, {}))
         override = self._description_overrides.get(self._description_key(entry))
@@ -709,6 +743,13 @@ class CatalogStore:
         catalogue entry on the next reload.  The digest match lets us repair
         those records without guessing from display names.
         """
+        legacy_asset_dirs = [
+            legacy_dir / "img" / "wife"
+            for legacy_dir in self.legacy_dirs
+            if (legacy_dir / "img" / "wife").is_dir()
+        ]
+        if not legacy_asset_dirs:
+            return
         local_paths = [
             path
             for path in self.assets_dir.iterdir()
@@ -720,10 +761,7 @@ class CatalogStore:
             if digest:
                 by_digest.setdefault(digest, []).append(path)
 
-        for legacy_dir in self.legacy_dirs:
-            legacy_assets_dir = legacy_dir / "img" / "wife"
-            if not legacy_assets_dir.is_dir():
-                continue
+        for legacy_assets_dir in legacy_asset_dirs:
             for old_path in legacy_assets_dir.iterdir():
                 if (
                     not old_path.is_file()
@@ -877,14 +915,22 @@ class CatalogStore:
                 [],
             )
 
-    def _refresh_catalog(self) -> None:
+    def _refresh_catalog(
+        self,
+        *,
+        include_legacy: bool = True,
+        repair_legacy_assets: bool = True,
+    ) -> None:
         with self._lock:
-            self._merge_legacy_duplicate_assets()
-            self._restore_named_alias_assets()
-            for asset_dir in [
-                self.assets_dir,
-                *[legacy / "img" / "wife" for legacy in self.legacy_dirs],
-            ]:
+            if repair_legacy_assets:
+                self._merge_legacy_duplicate_assets()
+                self._restore_named_alias_assets()
+            asset_dirs = [self.assets_dir]
+            if include_legacy:
+                asset_dirs.extend(
+                    legacy / "img" / "wife" for legacy in self.legacy_dirs
+                )
+            for asset_dir in asset_dirs:
                 if not asset_dir.is_dir():
                     continue
                 for path in asset_dir.iterdir():
@@ -915,11 +961,33 @@ class CatalogStore:
     def refresh(self) -> None:
         self._refresh_catalog()
 
-    def migrate_legacy(self) -> None:
+    def migrate_legacy(
+        self,
+        legacy_dirs: Optional[Sequence[Path]] = None,
+    ) -> None:
         """Run the idempotent legacy scan again after an administrator requests it."""
-        self._migrate_legacy_data()
-        self._load_draw_limits()
-        self._load_draw_bonuses()
+        previous_legacy_dirs = self.legacy_dirs
+        if legacy_dirs is not None:
+            self.legacy_dirs = [Path(path) for path in legacy_dirs]
+        try:
+            self._migrate_legacy_data()
+            self._load_draw_limits()
+            self._load_draw_bonuses()
+        finally:
+            self.legacy_dirs = previous_legacy_dirs
+
+    def release(self) -> None:
+        """Drop in-memory indexes promptly during an AstrBot plugin reload."""
+        with self._lock:
+            self._draw_pool_cache = None
+            self._catalog.clear()
+            self._draw_limits.clear()
+            self._draw_bonuses.clear()
+            self._profiles.clear()
+            self._profiles_loaded = False
+            self._description_overrides.clear()
+            self._audit_entries.clear()
+            self._tombstones.clear()
 
     def entries(self) -> List[Dict[str, Any]]:
         return sorted(
@@ -941,6 +1009,7 @@ class CatalogStore:
                 for item in self._catalog.values()
                 if int(item.get("id", 0)) == numeric_id
             ]
+        self._ensure_profiles_loaded()
         folded = target.casefold()
         exact: List[Dict[str, Any]] = []
         partial: List[Dict[str, Any]] = []

@@ -116,6 +116,82 @@ class CatalogStoreTests(unittest.TestCase):
             )
             self.assertEqual(len(calls), 5)
 
+    def test_fast_start_trusts_existing_catalog_without_legacy_or_asset_scan(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "stable"
+            assets = root / "img" / "allies"
+            assets.mkdir(parents=True)
+            filename = "星之卡比.卡比.png"
+            assets.joinpath(filename).write_bytes(self.make_image())
+            (root / "catalog.json").write_text(
+                json.dumps(
+                    {
+                        "version": 2,
+                        "items": [
+                            {
+                                "id": 1,
+                                "filename": filename,
+                                "name": "卡比",
+                                "source": "星之卡比",
+                                "aliases": [],
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            legacy = Path(temp) / "legacy"
+            legacy_assets = legacy / "img" / "wife"
+            legacy_assets.mkdir(parents=True)
+            legacy_assets.joinpath("旧素材.png").write_bytes(self.make_image())
+
+            with patch.object(
+                CatalogStore,
+                "_refresh_catalog",
+                side_effect=AssertionError("fast start must not scan assets"),
+            ), patch.object(
+                CatalogStore,
+                "_migrate_legacy_data",
+                side_effect=AssertionError("fast start must not migrate legacy data"),
+            ):
+                store = CatalogStore(
+                    root,
+                    [legacy],
+                    image_base_url="",
+                    startup_migrate_legacy=False,
+                    startup_full_scan=False,
+                    lazy_profiles=True,
+                )
+
+            self.assertEqual(store.catalog_size, 1)
+            self.assertEqual(store.resolve_entry("1")["name"], "卡比")
+
+    def test_fast_start_recovers_empty_catalog_from_current_assets_only(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "empty"
+            assets = root / "img" / "allies"
+            assets.mkdir(parents=True)
+            filename = "星之卡比.卡比.png"
+            assets.joinpath(filename).write_bytes(self.make_image())
+            legacy = Path(temp) / "legacy"
+            legacy_assets = legacy / "img" / "wife"
+            legacy_assets.mkdir(parents=True)
+            legacy_assets.joinpath("旧素材.png").write_bytes(self.make_image())
+
+            store = CatalogStore(
+                root,
+                [legacy],
+                image_base_url="",
+                startup_migrate_legacy=False,
+                startup_full_scan=False,
+                lazy_profiles=True,
+            )
+
+            self.assertEqual(store.catalog_size, 1)
+            self.assertIsNotNone(store.resolve_entry(filename))
+            self.assertIsNone(store.resolve_entry("旧素材.png"))
+
     def test_reset_group_draws_rejects_unsafe_group_id(self):
         with tempfile.TemporaryDirectory() as temp:
             store = CatalogStore(Path(temp) / "new", image_base_url="")

@@ -680,6 +680,7 @@ class KirbyTerminologyStore:
         overrides_path: Path | str,
         *,
         protection_cache_size: int = 256,
+        lazy: bool = False,
     ) -> None:
         self.bundled_path = Path(bundled_path)
         self.overrides_path = Path(overrides_path)
@@ -690,8 +691,10 @@ class KirbyTerminologyStore:
         self._entries: dict[str, TerminologyEntry] = {}
         self._matcher = _AhoCorasickMatcher(())
         self._revision = "empty"
+        self._loaded = False
         self._protect_cache: OrderedDict[str, ProtectedTerminologyText] = OrderedDict()
-        self.reload()
+        if not lazy:
+            self.reload()
 
     @staticmethod
     def _read_entries(path: Path) -> dict[str, TerminologyEntry]:
@@ -745,15 +748,40 @@ class KirbyTerminologyStore:
             self._entries = entries
             self._matcher = matcher
             self._revision = revision
+            self._loaded = True
             self._protect_cache.clear()
         return revision
 
+    def _ensure_loaded(self) -> None:
+        with self._lock:
+            if self._loaded:
+                return
+            base = self._read_entries(self.bundled_path)
+            overrides = self._read_entries(self.overrides_path)
+            entries = {**base, **overrides}
+            matcher = _AhoCorasickMatcher(entries.values())
+            revision = self._revision_for(entries.values())
+            self._base = base
+            self._overrides = overrides
+            self._entries = entries
+            self._matcher = matcher
+            self._revision = revision
+            self._loaded = True
+            self._protect_cache.clear()
+
+    @property
+    def loaded(self) -> bool:
+        with self._lock:
+            return self._loaded
+
     @property
     def revision(self) -> str:
+        self._ensure_loaded()
         with self._lock:
             return self._revision
 
     def entries(self) -> list[TerminologyEntry]:
+        self._ensure_loaded()
         with self._lock:
             return sorted(
                 self._entries.values(),
@@ -766,16 +794,19 @@ class KirbyTerminologyStore:
             )
 
     def entry(self, term_id: str) -> TerminologyEntry | None:
+        self._ensure_loaded()
         with self._lock:
             return self._entries.get(str(term_id or "").strip())
 
     def origin(self, term_id: str) -> str:
+        self._ensure_loaded()
         with self._lock:
             if term_id in self._overrides:
                 return "override" if term_id in self._base else "custom"
             return "bundled" if term_id in self._base else "unknown"
 
     def has_override(self, term_id: str) -> bool:
+        self._ensure_loaded()
         with self._lock:
             return term_id in self._overrides
 
@@ -791,6 +822,7 @@ class KirbyTerminologyStore:
         _atomic_write_json(self.overrides_path, payload)
 
     def upsert(self, raw: Mapping[str, Any]) -> TerminologyEntry:
+        self._ensure_loaded()
         payload = dict(raw)
         term_id = _normalise_space(payload.get("term_id"))
         if not term_id:
@@ -805,6 +837,7 @@ class KirbyTerminologyStore:
         return self.entry(entry.term_id) or entry
 
     def restore(self, term_id: str) -> TerminologyEntry | None:
+        self._ensure_loaded()
         key = _normalise_space(term_id)
         if not key:
             raise TerminologyError("术语 ID 不能为空")
@@ -823,6 +856,7 @@ class KirbyTerminologyStore:
         *,
         replace_overrides: bool = False,
     ) -> dict[str, int]:
+        self._ensure_loaded()
         parsed: dict[str, TerminologyEntry] = {}
         for index, row in enumerate(rows, start=1):
             payload = dict(row)
@@ -874,6 +908,7 @@ class KirbyTerminologyStore:
         return self.import_rows(rows, replace_overrides=replace_overrides)
 
     def export_json(self, *, overrides_only: bool = False) -> bytes:
+        self._ensure_loaded()
         with self._lock:
             entries = self._overrides if overrides_only else self._entries
             payload = {
@@ -889,6 +924,7 @@ class KirbyTerminologyStore:
         return (json.dumps(payload, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
 
     def export_csv(self, *, overrides_only: bool = False) -> bytes:
+        self._ensure_loaded()
         with self._lock:
             entries = list(
                 (self._overrides if overrides_only else self._entries).values()
@@ -904,12 +940,14 @@ class KirbyTerminologyStore:
         return ("\ufeff" + output.getvalue()).encode("utf-8")
 
     def find(self, text: str) -> list[TerminologyMatch]:
+        self._ensure_loaded()
         with self._lock:
             matcher = self._matcher
         return matcher.find(str(text or ""))
 
     def protect(self, text: str) -> ProtectedTerminologyText:
         source = str(text or "")
+        self._ensure_loaded()
         with self._lock:
             revision = self._revision
             cache_key = hashlib.sha256(
@@ -1040,6 +1078,17 @@ class KirbyTerminologyStore:
             "categories": category_counts,
             "statuses": status_counts,
         }
+
+    def release(self) -> None:
+        """Drop the matcher and parsed entries during an AstrBot reload."""
+        with self._lock:
+            self._base.clear()
+            self._overrides.clear()
+            self._entries.clear()
+            self._matcher = _AhoCorasickMatcher(())
+            self._revision = "released"
+            self._loaded = False
+            self._protect_cache.clear()
 
 
 def terminology_document(entries: Iterable[TerminologyEntry], *, metadata: Mapping[str, Any] | None = None) -> dict[str, Any]:

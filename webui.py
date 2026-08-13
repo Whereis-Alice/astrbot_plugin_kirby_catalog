@@ -180,6 +180,13 @@ class CatalogAdminService:
             except OSError:
                 continue
 
+    def release(self) -> None:
+        with self._thumbnail_lock:
+            self._thumbnail_cache.clear()
+        self.store = None  # type: ignore[assignment]
+        self.terminology = None
+        self.wiki_index = None
+
     def _entry(self, entry_id: Any) -> Dict[str, Any]:
         entry = self.store.resolve_entry(str(entry_id or "").strip())
         if entry is None:
@@ -1373,6 +1380,9 @@ class KirbyCatalogWebUI:
             self.context.register_web_api(
                 f"/{PLUGIN_ID}/{path}", handler, methods, description
             )
+
+    def release(self) -> None:
+        self.service.release()
 
     async def _read(self, operation: Callable[..., Any], *args: Any) -> Any:
         try:

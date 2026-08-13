@@ -779,7 +779,7 @@
         "description": "旧插件数据目录（可选）",
         "type": "string",
         "default": "",
-        "hint": "旧插件使用标准 data/plugins/astrbot_plugin_AnimeWife 目录时无需填写。"
+        "hint": "仅在管理员执行“星之卡比图鉴迁移”时读取。旧插件使用标准 data/plugins/astrbot_plugin_AnimeWife 目录时无需填写；日常启动和重载不会扫描旧目录。"
       }
     }
   }
