@@ -1195,6 +1195,21 @@ class WikirbyCommandTests(unittest.IsolatedAsyncioTestCase):
             any("⟪ファイター⟫" in sample for sample in metrics["japanese_samples"])
         )
 
+    def test_japanese_layout_symbols_do_not_count_as_untranslated_kana(self):
+        errors, metrics = KirbyCatalogPlugin._wiki_translation_validation_errors(
+            "用語集・テクニックでは攻略方法を紹介します。",
+            "术语集・技巧・操作・首领战・时间评价・补充说明",
+            source_language="ja",
+            marker_ok=True,
+            require_marker=False,
+            strict_validation=True,
+        )
+
+        self.assertFalse(any(error.startswith("japanese_residue:") for error in errors))
+        self.assertEqual(metrics["candidate_japanese"], 0)
+        self.assertGreater(metrics["candidate_japanese_symbols"], 0)
+        self.assertEqual(metrics["japanese_samples"], [])
+
     async def test_japanese_residue_uses_corrective_retry_before_fallback(self):
         plugin = KirbyCatalogPlugin.__new__(KirbyCatalogPlugin)
         plugin.config = {

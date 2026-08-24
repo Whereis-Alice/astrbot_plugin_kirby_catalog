@@ -130,7 +130,7 @@ MAX_SHINKAKU_TABLE_ICON_IMAGES = 160
 DEFAULT_WIKI_TRANSLATION_CHUNK_CHARS = 6000
 DEFAULT_WIKI_TRANSLATION_RETRY_DEPTH = 2
 DEFAULT_WIKI_TRANSLATION_MIN_CHUNK_CHARS = 800
-WIKI_TRANSLATION_PIPELINE_VERSION = "v5-residue-repair"
+WIKI_TRANSLATION_PIPELINE_VERSION = "v6-kana-residue"
 DEFAULT_WIKI_DOCUMENT_RETENTION_MINUTES = 1440.0
 DEFAULT_SHINKAKU_REFERENCE_ENTRIES_PER_PAGE = _REFERENCE_DEFAULT_ENTRIES_PER_PAGE
 DEFAULT_SHINKAKU_REFERENCE_COLUMNS = _REFERENCE_DEFAULT_COLUMNS
@@ -192,7 +192,7 @@ class WikiTranslationIncompleteError(RuntimeError):
     PLUGIN_ID,
     "Whereis-Alice",
     "星之卡比盟友抽取、收藏图鉴与三百科查询插件",
-    "3.12.1",
+    "3.12.2",
     "https://github.com/Whereis-Alice/astrbot_plugin_kirby_catalog",
 )
 class KirbyCatalogPlugin(Star):
@@ -2771,6 +2771,8 @@ class KirbyCatalogPlugin(Star):
         seen: set[str] = set()
         for match in re.finditer(r"[ぁ-ゖァ-ヺーｦ-ﾟ]+", value):
             span = match.group(0)
+            if not re.search(r"[ぁ-ゖァ-ヺｦ-ﾝ]", span):
+                continue
             if len(span) > max_span_chars:
                 span = f"{span[: max_span_chars - 3]}..."
             before_start = max(0, match.start() - context_chars)
@@ -2867,10 +2869,10 @@ class KirbyCatalogPlugin(Star):
             if missing_numbers:
                 errors.append(f"missing_numbers:{missing_numbers}")
 
-        source_japanese = len(re.findall(r"[぀-ヿｦ-ﾟ]", source))
-        candidate_japanese = len(
-            re.findall(r"[぀-ヿｦ-ﾟ]", candidate)
-        )
+        source_japanese_block = len(re.findall(r"[぀-ヿｦ-ﾟ]", source))
+        candidate_japanese_block = len(re.findall(r"[぀-ヿｦ-ﾟ]", candidate))
+        source_japanese = len(re.findall(r"[ぁ-ゖァ-ヺｦ-ﾝ]", source))
+        candidate_japanese = len(re.findall(r"[ぁ-ゖァ-ヺｦ-ﾝ]", candidate))
         japanese_ratio = candidate_japanese / max(1, source_japanese)
         if source_language == "ja" and source_japanese >= 4:
             allowed_ratio = 0.02 if strict_validation else 0.05
@@ -2892,6 +2894,11 @@ class KirbyCatalogPlugin(Star):
             "source_japanese": source_japanese,
             "candidate_japanese": candidate_japanese,
             "japanese_ratio": japanese_ratio,
+            "source_japanese_block": source_japanese_block,
+            "candidate_japanese_block": candidate_japanese_block,
+            "candidate_japanese_symbols": max(
+                0, candidate_japanese_block - candidate_japanese
+            ),
             "japanese_samples": KirbyCatalogPlugin._wiki_japanese_residue_samples(
                 candidate
             ),
@@ -3115,7 +3122,7 @@ class KirbyCatalogPlugin(Star):
             logger.info(
                 "[%s] %s LLM 翻译分块校验通过: provider=%s, chunk=%s, "
                 "depth=%d, source_chars=%d, translated_chars=%d, ratio=%.3f, "
-                "jp=%d/%d, marker=%s, finish_reason=%s, elapsed=%.2fs, "
+                "jp=%d/%d, jp_symbols=%d, marker=%s, finish_reason=%s, elapsed=%.2fs, "
                 "context=%r, stage=%s",
                 PLUGIN_ID,
                 source_name,
@@ -3127,6 +3134,7 @@ class KirbyCatalogPlugin(Star):
                 metrics.get("length_ratio", 0.0),
                 metrics.get("candidate_japanese", 0),
                 metrics.get("source_japanese", 0),
+                metrics.get("candidate_japanese_symbols", 0),
                 metrics.get("marker_ok", False),
                 metrics.get("finish_reason") or "unknown",
                 metrics.get("elapsed", 0.0),
@@ -3137,7 +3145,7 @@ class KirbyCatalogPlugin(Star):
 
         logger.warning(
             "[%s] %s LLM 翻译分块校验失败: provider=%s, chunk=%s, "
-            "depth=%d/%d, chars=%d, error=%s, ratio=%.3f, jp=%d/%d, "
+            "depth=%d/%d, chars=%d, error=%s, ratio=%.3f, jp=%d/%d, jp_symbols=%d, "
             "marker=%s, finish_reason=%s, elapsed=%.2fs, jp_samples=%s, "
             "context=%r, stage=%s",
             PLUGIN_ID,
@@ -3151,6 +3159,7 @@ class KirbyCatalogPlugin(Star):
             metrics.get("length_ratio", 0.0),
             metrics.get("candidate_japanese", 0),
             metrics.get("source_japanese", 0),
+            metrics.get("candidate_japanese_symbols", 0),
             metrics.get("marker_ok", False),
             metrics.get("finish_reason") or "unknown",
             metrics.get("elapsed", 0.0),
@@ -3193,7 +3202,7 @@ class KirbyCatalogPlugin(Star):
                 logger.info(
                     "[%s] %s LLM 翻译分块纠错校验通过: provider=%s, "
                     "chunk=%s, depth=%d, source_chars=%d, translated_chars=%d, "
-                    "ratio=%.3f, jp=%d/%d, marker=%s, finish_reason=%s, "
+                    "ratio=%.3f, jp=%d/%d, jp_symbols=%d, marker=%s, finish_reason=%s, "
                     "elapsed=%.2fs, context=%r, stage=%s",
                     PLUGIN_ID,
                     source_name,
@@ -3205,6 +3214,7 @@ class KirbyCatalogPlugin(Star):
                     repair_metrics.get("length_ratio", 0.0),
                     repair_metrics.get("candidate_japanese", 0),
                     repair_metrics.get("source_japanese", 0),
+                    repair_metrics.get("candidate_japanese_symbols", 0),
                     repair_metrics.get("marker_ok", False),
                     repair_metrics.get("finish_reason") or "unknown",
                     repair_metrics.get("elapsed", 0.0),
@@ -3215,6 +3225,7 @@ class KirbyCatalogPlugin(Star):
             logger.warning(
                 "[%s] %s LLM 翻译分块纠错仍未通过: provider=%s, "
                 "chunk=%s, depth=%d/%d, error=%s, ratio=%.3f, jp=%d/%d, "
+                "jp_symbols=%d, "
                 "marker=%s, finish_reason=%s, elapsed=%.2fs, jp_samples=%s, "
                 "context=%r, stage=%s",
                 PLUGIN_ID,
@@ -3227,6 +3238,7 @@ class KirbyCatalogPlugin(Star):
                 repair_metrics.get("length_ratio", 0.0),
                 repair_metrics.get("candidate_japanese", 0),
                 repair_metrics.get("source_japanese", 0),
+                repair_metrics.get("candidate_japanese_symbols", 0),
                 repair_metrics.get("marker_ok", False),
                 repair_metrics.get("finish_reason") or "unknown",
                 repair_metrics.get("elapsed", 0.0),
@@ -4246,7 +4258,8 @@ class KirbyCatalogPlugin(Star):
                     logger.info(
                         "[%s] %s结构化翻译分批完成: provider=%s, "
                         "batch=%s, depth=%d/%d, attempt=%d/%d, fragments=%d, chars=%d, "
-                        "output_chars=%d, ratio=%.3f, jp=%d/%d, finish_reason=%s, "
+                        "output_chars=%d, ratio=%.3f, jp=%d/%d, jp_symbols=%d, "
+                        "finish_reason=%s, "
                         "elapsed=%.2fs, context=%r",
                         PLUGIN_ID,
                         source_label,
@@ -4262,6 +4275,7 @@ class KirbyCatalogPlugin(Star):
                         metrics.get("length_ratio", 0.0),
                         metrics.get("candidate_japanese", 0),
                         metrics.get("source_japanese", 0),
+                        metrics.get("candidate_japanese_symbols", 0),
                         finish_reason or "unknown",
                         time.monotonic() - attempt_started_at,
                         context_label,
@@ -4276,7 +4290,7 @@ class KirbyCatalogPlugin(Star):
                         "[%s] %s结构化翻译分批失败: provider=%s, "
                         "batch=%s, depth=%d/%d, attempt=%d/%d, fragments=%d, chars=%d, "
                         "output_chars=%d, finish_reason=%s, elapsed=%.2fs, "
-                        "error=%s, jp=%d/%d, jp_samples=%s, context=%r",
+                        "error=%s, jp=%d/%d, jp_symbols=%d, jp_samples=%s, context=%r",
                         PLUGIN_ID,
                         source_label,
                         provider_id,
@@ -4293,6 +4307,7 @@ class KirbyCatalogPlugin(Star):
                         last_error,
                         metrics.get("candidate_japanese", 0),
                         metrics.get("source_japanese", 0),
+                        metrics.get("candidate_japanese_symbols", 0),
                         " | ".join(previous_samples) or "-",
                         context_label,
                     )
