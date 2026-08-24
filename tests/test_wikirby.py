@@ -157,6 +157,28 @@ class RetryingCompleteTranslationContext:
         )
 
 
+class JapaneseResidueRepairContext:
+    def __init__(self):
+        self.calls = []
+
+    async def get_current_chat_provider_id(self, _umo):
+        return "provider"
+
+    async def llm_generate(self, **kwargs):
+        self.calls.append(kwargs)
+        marked_source = kwargs["prompt"].split("原文：\n", 1)[1]
+        begin_marker = marked_source.splitlines()[0]
+        end_marker = marked_source.splitlines()[-1]
+        if len(self.calls) == 1:
+            body = "【概览】\n这是中文说明，但招式名仍写作ファイター。"
+        else:
+            body = "【概览】\n这是已彻底翻译的中文说明，招式名称也已改为格斗家。"
+        return SimpleNamespace(
+            completion_text=f"{begin_marker}\n{body}\n{end_marker}",
+            finish_reason="stop",
+        )
+
+
 class FakeCacheClient:
     def __init__(self, count):
         self.count = count
@@ -1156,6 +1178,54 @@ class WikirbyCommandTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(first_error.exception.stage, "details")
         self.assertFalse(getattr(plugin, "_wiki_translation_cache", {}))
         self.assertGreater(len(plugin.context.calls), first_call_count)
+
+    def test_japanese_residue_diagnostics_include_bounded_context_samples(self):
+        errors, metrics = KirbyCatalogPlugin._wiki_translation_validation_errors(
+            "ファイターの攻略方法を紹介します。",
+            "这段已经翻译，但招式名仍写作ファイター，需要继续处理。",
+            source_language="ja",
+            marker_ok=True,
+            require_marker=False,
+            strict_validation=True,
+        )
+
+        self.assertTrue(any(error.startswith("japanese_residue:") for error in errors))
+        self.assertLessEqual(len(metrics["japanese_samples"]), 5)
+        self.assertTrue(
+            any("⟪ファイター⟫" in sample for sample in metrics["japanese_samples"])
+        )
+
+    async def test_japanese_residue_uses_corrective_retry_before_fallback(self):
+        plugin = KirbyCatalogPlugin.__new__(KirbyCatalogPlugin)
+        plugin.config = {
+            "shinkaku_translate_provider_id": "provider",
+            "shinkaku_cache_ttl_seconds": 3600,
+            "wiki_translation_chunk_chars": 6000,
+            "wiki_translation_retry_depth": 1,
+            "wiki_translation_min_chunk_chars": 800,
+            "terminology_enabled": False,
+        }
+        plugin.context = JapaneseResidueRepairContext()
+        source = "【概要】\nファイターの攻略動画と操作方法を紹介します。"
+
+        translated = await plugin._wiki_translate_text(
+            FakeEvent("卡比真格文档 ファイター(RBP)"),
+            source,
+            enabled=True,
+            provider_key="shinkaku_translate_provider_id",
+            source_name="卡比真格攻略 Wiki",
+            require_complete=True,
+            context_label="ファイター(RBP)",
+            stage="summary",
+        )
+
+        self.assertEqual(len(plugin.context.calls), 2)
+        repair_prompt = plugin.context.calls[1]["prompt"]
+        self.assertIn("这是一次纠错重译", repair_prompt)
+        self.assertIn("japanese_residue", repair_prompt)
+        self.assertIn("⟪ファイター⟫", repair_prompt)
+        self.assertNotRegex(translated, r"[ぁ-ゖァ-ヺーｦ-ﾟ]")
+        self.assertIn("格斗家", translated)
 
     def test_japanese_source_matching_avoids_common_word_substrings(self):
         with TemporaryDirectory() as temporary:

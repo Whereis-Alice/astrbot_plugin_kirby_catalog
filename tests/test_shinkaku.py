@@ -1,5 +1,6 @@
 import hashlib
 import json
+import re
 import unittest
 from io import BytesIO
 from pathlib import Path
@@ -97,6 +98,40 @@ class RetryingBatchTranslationContext(BatchTranslationContext):
             self.calls.append(kwargs)
             return SimpleNamespace(completion_text="{", finish_reason="length")
         return await super().llm_generate(**kwargs)
+
+
+class ResidueThenRowSplitTranslationContext:
+    def __init__(self, *, always_residue=False):
+        self.calls = []
+        self.row_counts = []
+        self.always_residue = always_residue
+
+    async def get_current_chat_provider_id(self, _umo):
+        return "provider"
+
+    async def llm_generate(self, **kwargs):
+        self.calls.append(kwargs)
+        payload = json.loads(kwargs["prompt"].rsplit("JSON：\n", 1)[1])
+        row_count = sum(
+            len(section.get("rows", []) or []) for section in payload
+        )
+        self.row_counts.append(row_count)
+        if self.always_residue or row_count > 1:
+            return SimpleNamespace(
+                completion_text=json.dumps(payload, ensure_ascii=False),
+                finish_reason="stop",
+            )
+
+        for section in payload:
+            section["title"] = "招式列表"
+            section["headers"] = ["招式", "说明", "评价"]
+            for row in section.get("rows", []) or []:
+                row[0] = re.sub(r"\D+", "招式", str(row[0]))
+                row[1] = "这是完整翻译后的中文攻略说明。" * 40
+        return SimpleNamespace(
+            completion_text=json.dumps(payload, ensure_ascii=False),
+            finish_reason="stop",
+        )
 
 
 def sample_page():
@@ -1277,6 +1312,82 @@ class ShinkakuCommandTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(plugin.context.calls), 2)
         self.assertEqual(raised.exception.context_label, "用語集・テクニック(RBP)")
         self.assertEqual(raised.exception.stage, "structured")
+
+    async def test_strict_table_translation_repairs_then_splits_by_complete_rows(self):
+        plugin = self.make_plugin()
+        plugin.config.update(
+            {
+                "shinkaku_translate_enabled": True,
+                "wiki_translation_chunk_chars": 6000,
+                "wiki_translation_retry_depth": 2,
+                "terminology_enabled": False,
+            }
+        )
+        plugin.context = ResidueThenRowSplitTranslationContext()
+        source = [
+            {
+                "kind": "table",
+                "title": "技一覧",
+                "headers": ["技名", "説明", "評価"],
+                "rows": [
+                    [f"技 {index}", "長い攻略説明です。" * 55, "SS"]
+                    for index in range(4)
+                ],
+            }
+        ]
+
+        translated = await plugin._shinkaku_translate_rich_sections(
+            FakeEvent(""),
+            source,
+            require_complete=True,
+            context_label="動画館(STA)",
+        )
+
+        self.assertEqual(len(translated[0]["rows"]), 4)
+        self.assertTrue(all(row[0].startswith("招式") for row in translated[0]["rows"]))
+        self.assertTrue(all(row[2] == "SS" for row in translated[0]["rows"]))
+        self.assertGreater(max(plugin.context.row_counts), 1)
+        self.assertIn(1, plugin.context.row_counts)
+        self.assertTrue(
+            any(
+                "这是一次纠错重译" in call["prompt"]
+                and "⟪" in call["prompt"]
+                for call in plugin.context.calls
+            )
+        )
+
+    async def test_persistent_structured_japanese_residue_is_still_rejected(self):
+        plugin = self.make_plugin()
+        plugin.config.update(
+            {
+                "shinkaku_translate_enabled": True,
+                "wiki_translation_chunk_chars": 6000,
+                "wiki_translation_retry_depth": 2,
+                "terminology_enabled": False,
+            }
+        )
+        plugin.context = ResidueThenRowSplitTranslationContext(
+            always_residue=True
+        )
+        source = [
+            {
+                "kind": "table",
+                "title": "技一覧",
+                "headers": ["技名", "説明", "評価"],
+                "rows": [["技 1", "長い攻略説明です。" * 20, "SS"]],
+            }
+        ]
+
+        with self.assertRaises(WikiTranslationIncompleteError) as raised:
+            await plugin._shinkaku_translate_rich_sections(
+                FakeEvent(""),
+                source,
+                require_complete=True,
+                context_label="動画館(STA)",
+            )
+
+        self.assertIn("japanese_residue", str(raised.exception))
+        self.assertEqual(plugin.context.row_counts, [1, 1])
 
     async def test_document_command_does_not_generate_half_translated_file(self):
         plugin = self.make_plugin()

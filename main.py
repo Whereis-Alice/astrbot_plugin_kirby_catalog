@@ -130,7 +130,7 @@ MAX_SHINKAKU_TABLE_ICON_IMAGES = 160
 DEFAULT_WIKI_TRANSLATION_CHUNK_CHARS = 6000
 DEFAULT_WIKI_TRANSLATION_RETRY_DEPTH = 2
 DEFAULT_WIKI_TRANSLATION_MIN_CHUNK_CHARS = 800
-WIKI_TRANSLATION_PIPELINE_VERSION = "v4-complete"
+WIKI_TRANSLATION_PIPELINE_VERSION = "v5-residue-repair"
 DEFAULT_WIKI_DOCUMENT_RETENTION_MINUTES = 1440.0
 DEFAULT_SHINKAKU_REFERENCE_ENTRIES_PER_PAGE = _REFERENCE_DEFAULT_ENTRIES_PER_PAGE
 DEFAULT_SHINKAKU_REFERENCE_COLUMNS = _REFERENCE_DEFAULT_COLUMNS
@@ -192,7 +192,7 @@ class WikiTranslationIncompleteError(RuntimeError):
     PLUGIN_ID,
     "Whereis-Alice",
     "星之卡比盟友抽取、收藏图鉴与三百科查询插件",
-    "3.12.0",
+    "3.12.1",
     "https://github.com/Whereis-Alice/astrbot_plugin_kirby_catalog",
 )
 class KirbyCatalogPlugin(Star):
@@ -2742,6 +2742,56 @@ class KirbyCatalogPlugin(Star):
         folded = str(source_name or "").casefold()
         return "ja" if "真格" in folded or "shinkaku" in folded else "en"
 
+    @classmethod
+    def _wiki_translation_language_rules(cls, source_name: str) -> str:
+        if cls._wiki_translation_language(source_name) != "ja":
+            return ""
+        return (
+            "日文原文中的所有自然语言都必须翻译，包括页面标题、栏目名、"
+            "人名、招式名、短句、括号内说明和引用。名称库命中的专名会通过"
+            "占位符恢复为中文（English）；未命中的专名也要自行翻译或音译，"
+            "不得为了风格、辨识度或保留原味而留下日文假名或片假名。"
+            "除 URL、型号、按键和无需翻译的符号外，最终译文不得残留日文假名。"
+        )
+
+    @staticmethod
+    def _wiki_japanese_residue_samples(
+        text: str,
+        *,
+        max_samples: int = 5,
+        context_chars: int = 24,
+        max_span_chars: int = 48,
+    ) -> List[str]:
+        """Return compact kana spans with enough context for retry diagnostics."""
+
+        value = str(text or "")
+        if not value:
+            return []
+        samples: List[str] = []
+        seen: set[str] = set()
+        for match in re.finditer(r"[ぁ-ゖァ-ヺーｦ-ﾟ]+", value):
+            span = match.group(0)
+            if len(span) > max_span_chars:
+                span = f"{span[: max_span_chars - 3]}..."
+            before_start = max(0, match.start() - context_chars)
+            after_end = min(len(value), match.end() + context_chars)
+            before = re.sub(r"\s+", " ", value[before_start : match.start()]).strip()
+            after = re.sub(r"\s+", " ", value[match.end() : after_end]).strip()
+            sample = (
+                ("..." if before_start else "")
+                + before
+                + f"⟪{span}⟫"
+                + after
+                + ("..." if after_end < len(value) else "")
+            )
+            sample = sample.strip()
+            if sample and sample not in seen:
+                seen.add(sample)
+                samples.append(sample)
+            if len(samples) >= max(1, int(max_samples)):
+                break
+        return samples
+
     @staticmethod
     def _wiki_translation_marker(
         source_name: str,
@@ -2842,6 +2892,9 @@ class KirbyCatalogPlugin(Star):
             "source_japanese": source_japanese,
             "candidate_japanese": candidate_japanese,
             "japanese_ratio": japanese_ratio,
+            "japanese_samples": KirbyCatalogPlugin._wiki_japanese_residue_samples(
+                candidate
+            ),
             "marker_ok": marker_ok,
         }
 
@@ -2855,6 +2908,9 @@ class KirbyCatalogPlugin(Star):
         require_complete: bool,
         context_label: str = "",
         stage: str = "content",
+        previous_candidate: str = "",
+        correction_error: str = "",
+        correction_samples: Iterable[str] = (),
     ) -> Tuple[str, str, Dict[str, Any]]:
         started_at = time.monotonic()
         languages = self._wiki_source_languages(source_name)
@@ -2870,6 +2926,26 @@ class KirbyCatalogPlugin(Star):
             source_name, chunk, chunk_label
         )
         marked_source = f"{begin_marker}\n{source_chunk}\n{end_marker}"
+        language_rules = self._wiki_translation_language_rules(source_name)
+        correction_block = ""
+        if previous_candidate:
+            sample_text = " | ".join(
+                str(value).strip()
+                for value in correction_samples
+                if str(value).strip()
+            )
+            correction_block = (
+                "\n\n这是一次纠错重译。上一次完整输出没有通过校验："
+                f"{str(correction_error or 'unknown')[:500]}。"
+                "请以原文为准修复上一次译文，并重新返回从首标记到尾标记的"
+                "完整译文，绝不能只返回修改片段。"
+            )
+            if sample_text:
+                correction_block += (
+                    "重点检查并翻译这些残留日文片段及其上下文："
+                    f"{sample_text}。"
+                )
+            correction_block += f"\n上一次输出：\n{previous_candidate}"
         if protected:
             self._log_terminology_matches(
                 protected,
@@ -2877,6 +2953,7 @@ class KirbyCatalogPlugin(Star):
                 stage=f"translate-chunk-{chunk_label}",
             )
 
+        normalized_completion = ""
         try:
             response = await self.context.llm_generate(
                 chat_provider_id=provider_id,
@@ -2888,8 +2965,10 @@ class KirbyCatalogPlugin(Star):
                     "必须保留标记及其包围范围；"
                     "角色名、作品名和专有名词使用给定术语占位符，绝不能修改、"
                     "删除、拆分或增加占位符。"
+                    f"{language_rules}"
                     f"完整性标记 {begin_marker} 和 {end_marker} 必须原样各保留一次，"
                     "并且必须位于译文的最开头和最结尾。"
+                    f"{correction_block}"
                     f"{glossary_block}\n\n"
                     f"原文：\n{marked_source}"
                 ),
@@ -2905,11 +2984,14 @@ class KirbyCatalogPlugin(Star):
                 or getattr(response, "stop_reason", "")
                 or ""
             ).strip()
+            normalized_completion = translated
             if translated and protected:
-                translated, repaired_placeholders = (
-                    protected.normalise_placeholders(translated)
+                normalized_completion, repaired_placeholders = (
+                    protected.normalise_placeholders(normalized_completion)
                 )
-                surplus_placeholders = protected.surplus_placeholders(translated)
+                surplus_placeholders = protected.surplus_placeholders(
+                    normalized_completion
+                )
                 if repaired_placeholders or surplus_placeholders:
                     logger.info(
                         "[%s] %s LLM 翻译术语占位符已安全修复: "
@@ -2923,9 +3005,11 @@ class KirbyCatalogPlugin(Star):
                         sum(surplus_placeholders.values()),
                     )
                 translated = protected.restore(
-                    translated,
+                    normalized_completion,
                     strict=self._terminology_strict_placeholders(),
                 )
+            else:
+                translated = normalized_completion
         except TerminologyPlaceholderError as exc:
             logger.warning(
                 "[%s] %s LLM 翻译术语占位符校验失败: provider=%s, "
@@ -2943,6 +3027,10 @@ class KirbyCatalogPlugin(Star):
             return "", f"placeholder:{exc}", {
                 "finish_reason": "",
                 "elapsed": time.monotonic() - started_at,
+                "repair_candidate": normalized_completion,
+                "japanese_samples": self._wiki_japanese_residue_samples(
+                    normalized_completion
+                ),
             }
         except Exception as exc:
             logger.exception(
@@ -2994,6 +3082,7 @@ class KirbyCatalogPlugin(Star):
         )
         metrics["finish_reason"] = finish_reason
         metrics["elapsed"] = time.monotonic() - started_at
+        metrics["repair_candidate"] = normalized_completion
         if errors:
             return "", ",".join(errors), metrics
         return translated, "", metrics
@@ -3021,6 +3110,7 @@ class KirbyCatalogPlugin(Star):
             context_label=context_label,
             stage=stage,
         )
+        calls = 1
         if translated:
             logger.info(
                 "[%s] %s LLM 翻译分块校验通过: provider=%s, chunk=%s, "
@@ -3043,12 +3133,13 @@ class KirbyCatalogPlugin(Star):
                 context_label,
                 stage,
             )
-            return translated, True, 1, []
+            return translated, True, calls, []
 
         logger.warning(
             "[%s] %s LLM 翻译分块校验失败: provider=%s, chunk=%s, "
             "depth=%d/%d, chars=%d, error=%s, ratio=%.3f, jp=%d/%d, "
-            "marker=%s, finish_reason=%s, elapsed=%.2fs, context=%r, stage=%s",
+            "marker=%s, finish_reason=%s, elapsed=%.2fs, jp_samples=%s, "
+            "context=%r, stage=%s",
             PLUGIN_ID,
             source_name,
             provider_id,
@@ -3063,9 +3154,91 @@ class KirbyCatalogPlugin(Star):
             metrics.get("marker_ok", False),
             metrics.get("finish_reason") or "unknown",
             metrics.get("elapsed", 0.0),
+            " | ".join(metrics.get("japanese_samples", []) or []) or "-",
             context_label,
             stage,
         )
+
+        repair_candidate = str(metrics.get("repair_candidate", "") or "").strip()
+        if depth < max_depth and repair_candidate:
+            logger.info(
+                "[%s] %s LLM 翻译分块定点纠错重试: provider=%s, "
+                "chunk=%s, depth=%d/%d, chars=%d, error=%s, jp_samples=%s",
+                PLUGIN_ID,
+                source_name,
+                provider_id,
+                chunk_label,
+                depth,
+                max_depth,
+                len(chunk),
+                error or "unknown",
+                " | ".join(metrics.get("japanese_samples", []) or []) or "-",
+            )
+            repaired, repair_error, repair_metrics = (
+                await self._wiki_translate_chunk_once(
+                    provider_id=provider_id,
+                    source_name=source_name,
+                    chunk=chunk,
+                    chunk_label=chunk_label,
+                    require_complete=require_complete,
+                    context_label=context_label,
+                    stage=stage,
+                    previous_candidate=repair_candidate,
+                    correction_error=error,
+                    correction_samples=metrics.get("japanese_samples", []) or [],
+                )
+            )
+            calls += 1
+            if repaired:
+                logger.info(
+                    "[%s] %s LLM 翻译分块纠错校验通过: provider=%s, "
+                    "chunk=%s, depth=%d, source_chars=%d, translated_chars=%d, "
+                    "ratio=%.3f, jp=%d/%d, marker=%s, finish_reason=%s, "
+                    "elapsed=%.2fs, context=%r, stage=%s",
+                    PLUGIN_ID,
+                    source_name,
+                    provider_id,
+                    chunk_label,
+                    depth,
+                    repair_metrics.get("source_chars", len(chunk)),
+                    repair_metrics.get("candidate_chars", len(repaired)),
+                    repair_metrics.get("length_ratio", 0.0),
+                    repair_metrics.get("candidate_japanese", 0),
+                    repair_metrics.get("source_japanese", 0),
+                    repair_metrics.get("marker_ok", False),
+                    repair_metrics.get("finish_reason") or "unknown",
+                    repair_metrics.get("elapsed", 0.0),
+                    context_label,
+                    stage,
+                )
+                return repaired, True, calls, []
+            logger.warning(
+                "[%s] %s LLM 翻译分块纠错仍未通过: provider=%s, "
+                "chunk=%s, depth=%d/%d, error=%s, ratio=%.3f, jp=%d/%d, "
+                "marker=%s, finish_reason=%s, elapsed=%.2fs, jp_samples=%s, "
+                "context=%r, stage=%s",
+                PLUGIN_ID,
+                source_name,
+                provider_id,
+                chunk_label,
+                depth,
+                max_depth,
+                repair_error or "unknown",
+                repair_metrics.get("length_ratio", 0.0),
+                repair_metrics.get("candidate_japanese", 0),
+                repair_metrics.get("source_japanese", 0),
+                repair_metrics.get("marker_ok", False),
+                repair_metrics.get("finish_reason") or "unknown",
+                repair_metrics.get("elapsed", 0.0),
+                " | ".join(
+                    repair_metrics.get("japanese_samples", []) or []
+                )
+                or "-",
+                context_label,
+                stage,
+            )
+            error = repair_error
+            metrics = repair_metrics
 
         if depth < max_depth and len(chunk) > min_chunk_chars:
             retry_size = max(min_chunk_chars, len(chunk) // 2)
@@ -3090,7 +3263,6 @@ class KirbyCatalogPlugin(Star):
                 )
                 translated_parts: List[str] = []
                 failures: List[str] = []
-                calls = 1
                 all_complete = True
                 for part_index, part in enumerate(parts, start=1):
                     part_text, part_complete, part_calls, part_failures = (
@@ -3131,7 +3303,9 @@ class KirbyCatalogPlugin(Star):
             require_complete,
         )
         fallback = self._wiki_canonicalize_text(chunk, source_name=source_name).strip()
-        return fallback, False, 1, [f"chunk={chunk_label}, error={error or 'unknown'}"]
+        return fallback, False, calls, [
+            f"chunk={chunk_label}, error={error or 'unknown'}"
+        ]
 
     async def _wiki_translate_text(
         self,
@@ -3795,6 +3969,45 @@ class KirbyCatalogPlugin(Star):
         return batches
 
     @classmethod
+    def _split_rich_translation_fragment(
+        cls,
+        fragment: Dict[str, Any],
+        max_chars: int,
+    ) -> List[Dict[str, Any]]:
+        """Split a failed fragment only at complete row or item boundaries."""
+
+        source = fragment.get("source")
+        if not isinstance(source, dict):
+            return []
+        children = cls._rich_translation_fragments([source], max_chars)
+        if len(children) <= 1:
+            return []
+
+        section_index = int(fragment.get("section_index", 0) or 0)
+        parent_slice_type = str(fragment.get("slice_type") or "whole")
+        parent_start = int(fragment.get("start", 0) or 0)
+        raw_group_index = fragment.get("group_index", -1)
+        parent_group_index = int(
+            raw_group_index if raw_group_index is not None else -1
+        )
+        mapped: List[Dict[str, Any]] = []
+        for child in children:
+            item = deepcopy(child)
+            child_slice_type = str(item.get("slice_type") or "whole")
+            item["section_index"] = section_index
+            if parent_slice_type in {"quotes", "table_rows"}:
+                if child_slice_type != parent_slice_type:
+                    return []
+                item["start"] = parent_start + int(item.get("start", 0) or 0)
+            elif parent_slice_type == "technique_rows":
+                if child_slice_type != "technique_rows":
+                    return []
+                item["start"] = parent_start + int(item.get("start", 0) or 0)
+                item["group_index"] = parent_group_index
+            mapped.append(item)
+        return mapped
+
+    @classmethod
     def _merge_rich_translation_fragment(
         cls,
         result: List[Dict[str, Any]],
@@ -3881,15 +4094,15 @@ class KirbyCatalogPlugin(Star):
         group_labels_done: set[Tuple[int, int]] = set()
         started_at = time.monotonic()
         translated_fragments = 0
+        total_work_fragments = len(fragments)
         failures: List[str] = []
-        attempt_limit = 1 + (
-            self._wiki_translation_retry_depth()
-            if require_complete
-            else min(1, self._wiki_translation_retry_depth())
-        )
+        retry_depth = self._wiki_translation_retry_depth()
+        attempt_limit = 1 + (1 if retry_depth > 0 else 0)
+        language_rules = self._wiki_translation_language_rules(source_label)
         logger.info(
             "[%s] %s结构化翻译开始: provider=%s, sections=%d, fragments=%d, "
-            "batches=%d, chunk_chars=%d, attempts=%d, strict=%s, context=%r",
+            "batches=%d, chunk_chars=%d, corrective_attempts=%d, "
+            "split_depth=%d, strict=%s, context=%r",
             PLUGIN_ID,
             source_label,
             provider_id,
@@ -3898,11 +4111,18 @@ class KirbyCatalogPlugin(Star):
             len(batches),
             max_chars,
             attempt_limit,
+            retry_depth if require_complete else 0,
             require_complete,
             context_label,
         )
 
-        for batch_index, batch in enumerate(batches, start=1):
+        async def translate_batch(
+            batch: List[Dict[str, Any]],
+            *,
+            batch_label: str,
+            depth: int,
+        ) -> Tuple[bool, List[str]]:
+            nonlocal translated_fragments, total_work_fragments
             payload = [fragment["payload"] for fragment in batch]
             source_json = json.dumps(
                 payload, ensure_ascii=False, separators=(",", ":")
@@ -3922,34 +4142,50 @@ class KirbyCatalogPlugin(Star):
                 self._log_terminology_matches(
                     protected,
                     source_name=source_label,
-                    stage=f"structured-batch-{batch_index}",
+                    stage=f"structured-batch-{batch_label}",
                 )
-            batch_complete = False
             last_error = "unknown"
+            previous_output = ""
+            previous_samples: List[str] = []
             for attempt in range(1, attempt_limit + 1):
                 attempt_started_at = time.monotonic()
                 raw_chars = 0
                 finish_reason = ""
+                metrics: Dict[str, Any] = {}
+                raw_completion = ""
+                correction_block = ""
+                if previous_output:
+                    sample_text = " | ".join(previous_samples) or "-"
+                    correction_block = (
+                        " 这是一次纠错重译。上一次完整 JSON 未通过校验："
+                        f"{last_error[:500]}。请以本次 JSON 原文为准修复上一次输出，"
+                        "返回结构和坐标完全相同的完整 JSON，绝不能只返回改动片段。"
+                        "逐个检查每个字符串，尤其要处理这些残留日文片段："
+                        f"{sample_text}。\n上一次输出：\n{previous_output}\n"
+                    )
                 try:
                     response = await self.context.llm_generate(
                         chat_provider_id=provider_id,
                         prompt=(
                             f"{prompt_prefix}"
+                            f" {language_rules}"
                             " 名称库占位符必须逐字、逐次保留，不能翻译、改写、"
                             "拆分、删除或增加。"
+                            f"{correction_block}"
                             f"{glossary_block}\n\nJSON：\n{protected_json}"
                         ),
                         system_prompt=system_prompt,
                     )
-                    raw = str(
+                    raw_completion = str(
                         getattr(response, "completion_text", "") or ""
                     ).strip()
-                    raw_chars = len(raw)
+                    raw_chars = len(raw_completion)
                     finish_reason = str(
                         getattr(response, "finish_reason", "")
                         or getattr(response, "stop_reason", "")
                         or ""
                     ).strip()
+                    raw = raw_completion
                     if raw.startswith("```"):
                         raw = re.sub(
                             r"^```(?:json)?\s*|\s*```$", "", raw, flags=re.I
@@ -4009,14 +4245,15 @@ class KirbyCatalogPlugin(Star):
                         translated_fragments += 1
                     logger.info(
                         "[%s] %s结构化翻译分批完成: provider=%s, "
-                        "batch=%d/%d, attempt=%d/%d, fragments=%d, chars=%d, "
+                        "batch=%s, depth=%d/%d, attempt=%d/%d, fragments=%d, chars=%d, "
                         "output_chars=%d, ratio=%.3f, jp=%d/%d, finish_reason=%s, "
                         "elapsed=%.2fs, context=%r",
                         PLUGIN_ID,
                         source_label,
                         provider_id,
-                        batch_index,
-                        len(batches),
+                        batch_label,
+                        depth,
+                        retry_depth,
                         attempt,
                         attempt_limit,
                         len(batch),
@@ -4029,20 +4266,23 @@ class KirbyCatalogPlugin(Star):
                         time.monotonic() - attempt_started_at,
                         context_label,
                     )
-                    batch_complete = True
-                    break
+                    return True, []
                 except Exception as exc:
                     last_error = f"{type(exc).__name__}:{exc}"
+                    previous_samples = list(
+                        metrics.get("japanese_samples", []) or []
+                    ) or self._wiki_japanese_residue_samples(raw_completion)
                     logger.warning(
                         "[%s] %s结构化翻译分批失败: provider=%s, "
-                        "batch=%d/%d, attempt=%d/%d, fragments=%d, chars=%d, "
+                        "batch=%s, depth=%d/%d, attempt=%d/%d, fragments=%d, chars=%d, "
                         "output_chars=%d, finish_reason=%s, elapsed=%.2fs, "
-                        "error=%s, context=%r",
+                        "error=%s, jp=%d/%d, jp_samples=%s, context=%r",
                         PLUGIN_ID,
                         source_label,
                         provider_id,
-                        batch_index,
-                        len(batches),
+                        batch_label,
+                        depth,
+                        retry_depth,
                         attempt,
                         attempt_limit,
                         len(batch),
@@ -4051,12 +4291,60 @@ class KirbyCatalogPlugin(Star):
                         finish_reason or "unknown",
                         time.monotonic() - attempt_started_at,
                         last_error,
+                        metrics.get("candidate_japanese", 0),
+                        metrics.get("source_japanese", 0),
+                        " | ".join(previous_samples) or "-",
                         context_label,
                     )
-            if not batch_complete:
-                failures.append(
-                    f"batch={batch_index}/{len(batches)}, error={last_error}"
+                    previous_output = raw_completion
+
+            if require_complete and depth < retry_depth and len(batch) == 1:
+                retry_size = max(1000, len(source_json) // 2)
+                children = self._split_rich_translation_fragment(
+                    batch[0], retry_size
                 )
+                if children:
+                    total_work_fragments += len(children) - 1
+                    logger.info(
+                        "[%s] %s结构化翻译按完整项目拆分重试: provider=%s, "
+                        "batch=%s, depth=%d->%d, chars=%d, parts=%d, target=%d, "
+                        "slice_type=%s, context=%r",
+                        PLUGIN_ID,
+                        source_label,
+                        provider_id,
+                        batch_label,
+                        depth,
+                        depth + 1,
+                        len(source_json),
+                        len(children),
+                        retry_size,
+                        batch[0].get("slice_type", "whole"),
+                        context_label,
+                    )
+                    child_failures: List[str] = []
+                    all_children_complete = True
+                    for child_index, child in enumerate(children, start=1):
+                        child_complete, current_failures = await translate_batch(
+                            [child],
+                            batch_label=f"{batch_label}.{child_index}",
+                            depth=depth + 1,
+                        )
+                        all_children_complete = (
+                            all_children_complete and child_complete
+                        )
+                        child_failures.extend(current_failures)
+                    return all_children_complete, child_failures
+
+            return False, [f"batch={batch_label}, error={last_error}"]
+
+        for batch_index, batch in enumerate(batches, start=1):
+            batch_complete, batch_failures = await translate_batch(
+                batch,
+                batch_label=f"{batch_index}/{len(batches)}",
+                depth=0,
+            )
+            if not batch_complete:
+                failures.extend(batch_failures)
 
         logger.info(
             "[%s] %s结构化翻译结束: provider=%s, translated_fragments=%d/%d, "
@@ -4065,7 +4353,7 @@ class KirbyCatalogPlugin(Star):
             source_label,
             provider_id,
             translated_fragments,
-            len(fragments),
+            total_work_fragments,
             len(failures),
             require_complete,
             time.monotonic() - started_at,

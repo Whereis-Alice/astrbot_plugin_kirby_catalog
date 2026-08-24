@@ -839,12 +839,12 @@ AstrBot 与 NapCat 运行在同一系统、NapCat 能读取 AstrBot 文件路径
 | --- | ---: | --- |
 | `wiki_text_command_use_forward` | 开启 | `卡比百科文本`、`卡比F文本`、`卡比真格文本` 是否按栏目使用合并转发；关闭后发送普通文字 |
 | `wiki_document_translate_enabled` | 开启 | 文档模式是否调用对应百科配置的 AstrBot Provider 翻译为简体中文 |
-| `wiki_document_require_complete_translation` | 开启 | 文档翻译必须全部通过完整性校验；失败时拒绝生成半翻译文件 |
+| `wiki_document_require_complete_translation` | 开启 | 文档翻译必须全部通过完整性校验；失败时先定点纠错、再安全拆分，最终仍失败才拒绝生成文件 |
 | `wiki_document_include_image` | 开启 | 是否把页面首图写入 HTML；真格攻略表格图标仍会尽量以内嵌图片保留 |
 | `wiki_document_retention_minutes` | `1440` | 服务器上已生成 HTML 的保留时间；下次生成文档时清理过期文件，`0` 表示不自动清理 |
 | `wiki_translation_chunk_chars` | `6000` | 长正文和结构化表格每次交给模型的目标字符数；模型上下文较小时建议 `4000-6000` |
-| `wiki_translation_retry_depth` | `2` | 分块校验失败后递归拆小重试的最大层数；范围 `0-4` |
-| `wiki_translation_min_chunk_chars` | `800` | 自动拆小时的最小目标字符数；术语或表格密集页面建议 `600-1000` |
+| `wiki_translation_retry_depth` | `2` | 分块校验失败后定点纠错和递归拆小的最大层数；范围 `0-4` |
+| `wiki_translation_min_chunk_chars` | `800` | 普通正文自动拆小时的目标下限；略小于该值的失败块仍可执行残留纠错 |
 
 文档保存在 `data/plugin_data/astrbot_plugin_kirby_catalog/wiki_documents`，随后以文件消息发送。HTML 比超长图片更轻，能够保留可复制文字、原始链接和宽表格的横向滚动，也比 PDF 更适合手机与电脑自适应。文件不依赖外部样式；启用图片内嵌后，接收者保存到本地仍能查看首图和已取得的表格图标。
 
@@ -858,10 +858,10 @@ AstrBot 与 NapCat 运行在同一系统、NapCat 能读取 AstrBot 文件路径
 - Provider 留空时使用当前聊天会话的模型；
 - 普通文本和卡片查询在个别分块最终失败时只回退受影响的规范化原文；文档模式默认要求全部翻译通过校验，否则不生成半翻译文件；
 - 只有全部通过校验的译文才会写入插件进程内缓存。缓存键包含翻译管线、分块、重试、严格模式和名称库 revision；修改这些配置后不会误用旧结果；
-- 每个普通文本分块都带独立首尾标记，并校验长度、标题层级、项目符号、段落、数字、URL、强调标记和源语言残留。失败块按 `wiki_translation_retry_depth` 自动递归拆小，不再需要反复手动降低全局分块大小；
-- Fandom 语录、招式和真格攻略表格会按栏目、语录、招式组或完整行拆分为多批 JSON，并校验栏目、表格行列和单元格数量；严格文档模式下失败批次会重试，仍失败则拒绝生成文件；
+- 每个普通文本分块都带独立首尾标记，并校验长度、标题层级、项目符号、段落、数字、URL、强调标记和源语言残留。失败后会把上一次译文、校验错误和残留日文上下文交给模型定点修复；仍失败才按 `wiki_translation_retry_depth` 递归拆小；
+- Fandom 语录、招式和真格攻略表格会按栏目、语录、招式组或完整行拆分为多批 JSON，并校验栏目、表格行列和单元格数量。失败批次会先做带反馈的完整 JSON 纠错，再按完整表格行、语录或招式项目递归拆分，绝不会从中间切开一行；
 - Fandom 语录和招式使用结构化 JSON 翻译，LLM 可以翻译操作中的自然语言，但按键、方向、加号、平台对应关系和换行由插件校验；布局和伤害数字不交给 LLM 决定；
-- 真格攻略的日文正文和表格由 `shinkaku_translate_enabled` 单独控制，默认关闭；文档模式可以由 `wiki_document_translate_enabled` 单独要求翻译。严格文档默认不会混入失败批次的日文原文；
+- 真格攻略的日文正文和表格由 `shinkaku_translate_enabled` 单独控制，默认关闭；文档模式可以由 `wiki_document_translate_enabled` 单独要求翻译。翻译提示明确要求标题、专名、短句和括号说明全部转成中文，后台日志会列出有限数量的日文残留片段及上下文；严格文档不会混入失败批次的日文原文；
 - LLM 工具调用本身不会再次触发嵌套翻译。
 
 #### 名称库与翻译
