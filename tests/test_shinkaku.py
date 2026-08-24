@@ -16,7 +16,10 @@ from astrbot_plugin_kirby_catalog.kirby_shinkaku import (
     KirbyShinkakuClient,
     _normalise_term,
 )
-from astrbot_plugin_kirby_catalog.main import KirbyCatalogPlugin
+from astrbot_plugin_kirby_catalog.main import (
+    KirbyCatalogPlugin,
+    WikiTranslationIncompleteError,
+)
 from astrbot_plugin_kirby_catalog.shinkaku_reference import (
     render_shinkaku_reference_pages,
 )
@@ -71,13 +74,29 @@ class BatchTranslationContext:
         self.calls.append(kwargs)
         payload = json.loads(kwargs["prompt"].split("JSON：\n", 1)[1])
         for section in payload:
-            section["title"] = f"译文：{section['title']}"
+            section["title"] = "译文：招式列表"
+            section["headers"] = ["招式", "说明", "评价"]
             for row in section.get("rows", []) or []:
                 if row and row[0]:
-                    row[0] = f"译文：{row[0]}"
+                    index = "".join(value for value in str(row[0]) if value.isdigit())
+                    row[0] = f"译文：招式 {index}".strip()
+                if len(row) > 1 and row[1]:
+                    row[1] = "完整的中文攻略说明。" * 35
         return SimpleNamespace(
             completion_text=json.dumps(payload, ensure_ascii=False)
         )
+
+
+class RetryingBatchTranslationContext(BatchTranslationContext):
+    def __init__(self, *, always_fail=False):
+        super().__init__()
+        self.always_fail = always_fail
+
+    async def llm_generate(self, **kwargs):
+        if self.always_fail or not self.calls:
+            self.calls.append(kwargs)
+            return SimpleNamespace(completion_text="{", finish_reason="length")
+        return await super().llm_generate(**kwargs)
 
 
 def sample_page():
@@ -1197,6 +1216,94 @@ class ShinkakuCommandTests(unittest.IsolatedAsyncioTestCase):
             all(row[0].startswith("译文：") for row in translated[0]["rows"])
         )
         self.assertTrue(all(row[2] == "SS" for row in translated[0]["rows"]))
+
+    async def test_strict_table_translation_retries_failed_batch(self):
+        plugin = self.make_plugin()
+        plugin.config.update(
+            {
+                "shinkaku_translate_enabled": True,
+                "wiki_translation_chunk_chars": 1000,
+                "wiki_translation_retry_depth": 1,
+            }
+        )
+        plugin.context = RetryingBatchTranslationContext()
+        source = [
+            {
+                "kind": "table",
+                "title": "技一覧",
+                "headers": ["技名", "説明", "評価"],
+                "rows": [["技 1", "長い攻略説明 " * 20, "SS"]],
+            }
+        ]
+
+        translated = await plugin._shinkaku_translate_rich_sections(
+            FakeEvent(""),
+            source,
+            require_complete=True,
+            context_label="用語集・テクニック(RBP)",
+        )
+
+        self.assertEqual(len(plugin.context.calls), 2)
+        self.assertEqual(translated[0]["title"], "译文：招式列表")
+        self.assertTrue(translated[0]["rows"][0][0].startswith("译文："))
+
+    async def test_strict_table_translation_raises_after_all_retries_fail(self):
+        plugin = self.make_plugin()
+        plugin.config.update(
+            {
+                "shinkaku_translate_enabled": True,
+                "wiki_translation_chunk_chars": 1000,
+                "wiki_translation_retry_depth": 1,
+            }
+        )
+        plugin.context = RetryingBatchTranslationContext(always_fail=True)
+        source = [
+            {
+                "kind": "table",
+                "title": "技一覧",
+                "headers": ["技名", "説明", "評価"],
+                "rows": [["技 1", "長い攻略説明 " * 20, "SS"]],
+            }
+        ]
+
+        with self.assertRaises(WikiTranslationIncompleteError) as raised:
+            await plugin._shinkaku_translate_rich_sections(
+                FakeEvent(""),
+                source,
+                require_complete=True,
+                context_label="用語集・テクニック(RBP)",
+            )
+
+        self.assertEqual(len(plugin.context.calls), 2)
+        self.assertEqual(raised.exception.context_label, "用語集・テクニック(RBP)")
+        self.assertEqual(raised.exception.stage, "structured")
+
+    async def test_document_command_does_not_generate_half_translated_file(self):
+        plugin = self.make_plugin()
+        plugin.config.update(
+            {
+                "shinkaku_translate_enabled": True,
+                "shinkaku_translate_provider_id": "provider",
+                "wiki_document_translate_enabled": True,
+                "wiki_document_require_complete_translation": True,
+                "wiki_translation_retry_depth": 0,
+                "terminology_enabled": False,
+            }
+        )
+        plugin.context = RetryingBatchTranslationContext(always_fail=True)
+        plugin._wiki_document_component = AsyncMock()
+
+        results = [
+            result
+            async for result in plugin._shinkaku_query_impl(
+                FakeEvent("/卡比真格文档 Magolor EX")
+            )
+        ]
+
+        self.assertEqual(len(results), 1)
+        self.assertIn("文档未生成", results[0])
+        self.assertIn("不会缓存本次失败结果", results[0])
+        plugin._wiki_document_component.assert_not_awaited()
 
     async def test_card_layout_keeps_table_rows_structured(self):
         layouts = build_card_pages(

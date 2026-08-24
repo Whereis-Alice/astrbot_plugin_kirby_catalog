@@ -316,6 +316,12 @@
         "default": true,
         "hint": "开启后，文档指令会使用对应百科设置中的 AstrBot 翻译模型；关闭后文档保留原文。文档模式会读取完整可解析栏目，不受“显示详细资料”开关影响。"
       },
+      "wiki_document_require_complete_translation": {
+        "description": "百科文档必须通过完整翻译校验",
+        "type": "bool",
+        "default": true,
+        "hint": "开启后，每个翻译分块都必须通过首尾标记、长度、标题/URL、术语占位符和源语言残留校验。失败时自动拆小重试；仍不完整则拒绝生成半翻译文档，并且不缓存失败结果。"
+      },
       "wiki_document_include_image": {
         "description": "百科文档嵌入页面首图",
         "type": "bool",
@@ -336,7 +342,23 @@
         "default": 6000,
         "min": 1000,
         "max": 20000,
-        "hint": "超长页面会按此大小分块翻译，避免一次请求过长而漏译。模型上下文较小时建议 4000 至 6000；数值越小调用次数越多。"
+        "hint": "超长页面会先按此大小分块翻译。每块返回后还会做完整性校验；失败时会自动继续拆小，不再需要只靠手动调得很小。常规可使用 4000 至 6000。"
+      },
+      "wiki_translation_retry_depth": {
+        "description": "百科翻译失败自动拆分重试层数",
+        "type": "int",
+        "default": 2,
+        "min": 0,
+        "max": 4,
+        "hint": "默认失败块最多再递归拆小 2 层。0 表示不自动拆分；数值越大越稳，但模型调用次数和耗时也会增加。"
+      },
+      "wiki_translation_min_chunk_chars": {
+        "description": "百科翻译自动重译最小分块字符数",
+        "type": "int",
+        "default": 800,
+        "min": 300,
+        "max": 5000,
+        "hint": "失败分块递归拆小时的下限。表格或术语密集的超长页面建议保持 600 至 1000；过小会明显增加请求数。"
       },
       "wiki_card_auto_paginate": {
         "description": "超长百科卡片自动分页",

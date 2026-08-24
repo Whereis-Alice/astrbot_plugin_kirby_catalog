@@ -135,6 +135,8 @@ PLACEHOLDER_CORE_RE = re.compile(
     r"(?:\\?[_-])([0-9]{4})(?![A-Za-z0-9])"
 )
 ASCII_WORD_RE = re.compile(r"[A-Za-z0-9_]")
+HIRAGANA_CHAR_RE = re.compile(r"[\u3040-\u309f]")
+KATAKANA_CHAR_RE = re.compile(r"[\u30a0-\u30ff\uff66-\uff9fー]")
 SPACE_RE = re.compile(r"\s+")
 CSV_FIELDS = (
     "term_id",
@@ -595,6 +597,50 @@ class _AhoCorasickMatcher:
         return True
 
     @staticmethod
+    def _japanese_boundary_ok(
+        text: str,
+        start: int,
+        end: int,
+        alias: str,
+        language: str,
+    ) -> bool:
+        if language != "ja":
+            return True
+        compact = SPACE_RE.sub("", alias)
+        if not compact:
+            return True
+
+        if all(KATAKANA_CHAR_RE.fullmatch(char) for char in compact):
+            if start > 0 and KATAKANA_CHAR_RE.fullmatch(text[start - 1]):
+                return False
+            if end < len(text):
+                following = text[end]
+                if KATAKANA_CHAR_RE.fullmatch(following):
+                    return False
+                if HIRAGANA_CHAR_RE.fullmatch(following) and following not in {
+                    "の",
+                    "が",
+                    "は",
+                    "を",
+                    "に",
+                    "と",
+                    "で",
+                    "へ",
+                    "も",
+                    "や",
+                    "か",
+                }:
+                    return False
+            return True
+
+        if all(HIRAGANA_CHAR_RE.fullmatch(char) for char in compact):
+            if start > 0 and HIRAGANA_CHAR_RE.fullmatch(text[start - 1]):
+                return False
+            if end < len(text) and HIRAGANA_CHAR_RE.fullmatch(text[end]):
+                return False
+        return True
+
+    @staticmethod
     def _excluded_intervals(text: str) -> list[tuple[int, int]]:
         intervals = [match.span() for match in URL_RE.finditer(text)]
         intervals.extend(match.span() for match in PLACEHOLDER_RE.finditer(text))
@@ -621,9 +667,19 @@ class _AhoCorasickMatcher:
             match.entry.term_id,
         )
 
-    def find(self, text: str) -> list[TerminologyMatch]:
+    def find(
+        self,
+        text: str,
+        *,
+        languages: Iterable[str] | None = None,
+    ) -> list[TerminologyMatch]:
         if not text:
             return []
+        allowed_languages = (
+            {str(value).strip().casefold() for value in languages if str(value).strip()}
+            if languages is not None
+            else None
+        )
         normalised = text.lower()
         excluded = self._excluded_intervals(text)
         candidates: list[TerminologyMatch] = []
@@ -640,9 +696,24 @@ class _AhoCorasickMatcher:
                 if start < 0:
                     continue
                 actual = text[start:end]
+                if allowed_languages is not None and output.language not in allowed_languages:
+                    canonical_variants = {
+                        output.entry.canonical_label.casefold(),
+                        f"{output.entry.zh_cn} ({output.entry.en})".casefold(),
+                    }
+                    if output.language != "zh" or actual.casefold() not in canonical_variants:
+                        continue
                 if output.exact_case and actual != output.alias:
                     continue
                 if not self._ascii_boundary_ok(text, start, end, output.alias):
+                    continue
+                if not self._japanese_boundary_ok(
+                    text,
+                    start,
+                    end,
+                    output.alias,
+                    output.language,
+                ):
                     continue
                 if self._inside_excluded(start, end, excluded):
                     continue
@@ -939,26 +1010,45 @@ class KirbyTerminologyStore:
             writer.writerow({key: row.get(key, "") for key in CSV_FIELDS})
         return ("\ufeff" + output.getvalue()).encode("utf-8")
 
-    def find(self, text: str) -> list[TerminologyMatch]:
+    def find(
+        self,
+        text: str,
+        *,
+        languages: Iterable[str] | None = None,
+    ) -> list[TerminologyMatch]:
         self._ensure_loaded()
         with self._lock:
             matcher = self._matcher
-        return matcher.find(str(text or ""))
+        return matcher.find(str(text or ""), languages=languages)
 
-    def protect(self, text: str) -> ProtectedTerminologyText:
+    def protect(
+        self,
+        text: str,
+        *,
+        languages: Iterable[str] | None = None,
+    ) -> ProtectedTerminologyText:
         source = str(text or "")
         self._ensure_loaded()
+        language_key = tuple(
+            sorted(
+                {
+                    str(value).strip().casefold()
+                    for value in languages or ()
+                    if str(value).strip()
+                }
+            )
+        )
         with self._lock:
             revision = self._revision
             cache_key = hashlib.sha256(
-                f"{revision}\0{source}".encode("utf-8")
+                f"{revision}\0{','.join(language_key)}\0{source}".encode("utf-8")
             ).hexdigest()
             cached = self._protect_cache.get(cache_key)
             if cached is not None:
                 self._protect_cache.move_to_end(cache_key)
                 return cached
             matcher = self._matcher
-        matches = matcher.find(source)
+        matches = matcher.find(source, languages=language_key or None)
         if not matches:
             protected = ProtectedTerminologyText(source, source, (), revision)
         else:
@@ -1002,20 +1092,35 @@ class KirbyTerminologyStore:
                 self._protect_cache.popitem(last=False)
         return protected
 
-    def canonicalize(self, text: str) -> str:
-        protected = self.protect(text)
+    def canonicalize(
+        self,
+        text: str,
+        *,
+        languages: Iterable[str] | None = None,
+    ) -> str:
+        protected = self.protect(text, languages=languages)
         return protected.canonical_source()
 
-    def canonicalize_object(self, value: Any) -> Any:
+    def canonicalize_object(
+        self,
+        value: Any,
+        *,
+        languages: Iterable[str] | None = None,
+    ) -> Any:
         if isinstance(value, str):
-            return self.canonicalize(value)
+            return self.canonicalize(value, languages=languages)
         if isinstance(value, list):
-            return [self.canonicalize_object(child) for child in value]
+            return [
+                self.canonicalize_object(child, languages=languages) for child in value
+            ]
         if isinstance(value, tuple):
-            return tuple(self.canonicalize_object(child) for child in value)
+            return tuple(
+                self.canonicalize_object(child, languages=languages) for child in value
+            )
         if isinstance(value, dict):
             return {
-                key: self.canonicalize_object(child) for key, child in value.items()
+                key: self.canonicalize_object(child, languages=languages)
+                for key, child in value.items()
             }
         return value
 

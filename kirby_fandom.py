@@ -686,7 +686,12 @@ class KirbyFandomClient:
         self._request_limit = asyncio.Semaphore(2)
 
     async def close(self) -> None:
+        self.clear_cache()
+
+    def clear_cache(self) -> int:
+        count = len(self._cache)
         self._cache.clear()
+        return count
 
     def _cache_get(self, key: str) -> Any:
         item = self._cache.get(key)

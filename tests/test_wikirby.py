@@ -12,7 +12,10 @@ from urllib.error import HTTPError
 import astrbot.api.message_components as Comp
 from jinja2 import BaseLoader, Environment
 
-from astrbot_plugin_kirby_catalog.main import KirbyCatalogPlugin
+from astrbot_plugin_kirby_catalog.main import (
+    KirbyCatalogPlugin,
+    WikiTranslationIncompleteError,
+)
 from astrbot_plugin_kirby_catalog.terminology import (
     KirbyTerminologyStore,
     TerminologyEntry,
@@ -112,6 +115,58 @@ class MutatedPlaceholderTranslationContext:
         legacy = f"**KTERM\\_{match.group(1)}\\_{match.group(2)}**"
         translated = source.replace(match.group(0), legacy).replace(" met ", " 遇见 ")
         return SimpleNamespace(completion_text=f"{translated} 附注：{legacy}。")
+
+
+class RetryingCompleteTranslationContext:
+    def __init__(self, *, always_incomplete=False):
+        self.calls = []
+        self.always_incomplete = always_incomplete
+
+    async def get_current_chat_provider_id(self, _umo):
+        return "provider"
+
+    @staticmethod
+    def _complete_translation(marked_source):
+        lines = marked_source.splitlines()
+        begin_marker = lines[0]
+        end_marker = lines[-1]
+        source = "\n".join(lines[1:-1])
+        structural = "\n".join(
+            ["【完整译文】"] * source.count("【")
+            + ["◆ 完整小节"] * source.count("◆")
+            + ["• 完整条目"] * source.count("•")
+        )
+        urls = "\n".join(re.findall(r"https?://[^\s<>》」』】）)]+", source))
+        target_chars = max(80, int(len(re.sub(r"\s+", "", source)) * 0.55))
+        body = ("这是经过完整性校验的简体中文译文。" * 200)[:target_chars]
+        translated = "\n".join(value for value in (structural, body, urls) if value)
+        return f"{begin_marker}\n{translated}\n{end_marker}"
+
+    async def llm_generate(self, **kwargs):
+        self.calls.append(kwargs)
+        marked_source = kwargs["prompt"].split("原文：\n", 1)[1]
+        begin_marker = marked_source.splitlines()[0]
+        if self.always_incomplete or len(self.calls) == 1:
+            return SimpleNamespace(
+                completion_text=f"{begin_marker}\n这是一段被截断的译文。",
+                finish_reason="length",
+            )
+        return SimpleNamespace(
+            completion_text=self._complete_translation(marked_source),
+            finish_reason="stop",
+        )
+
+
+class FakeCacheClient:
+    def __init__(self, count):
+        self.count = count
+        self.calls = 0
+
+    def clear_cache(self):
+        self.calls += 1
+        count = self.count
+        self.count = 0
+        return count
 
 
 class FakeResponse:
@@ -1018,6 +1073,171 @@ class WikirbyCommandTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(second, first)
         generate_calls = [call for call in plugin.context.calls if call[0] == "generate"]
         self.assertEqual(len(generate_calls), 1)
+
+    async def test_strict_translation_splits_truncated_chunk_and_then_caches(self):
+        plugin = KirbyCatalogPlugin.__new__(KirbyCatalogPlugin)
+        plugin.config = {
+            "wikirby_translate_provider_id": "provider",
+            "wikirby_cache_ttl_seconds": 3600,
+            "wiki_translation_chunk_chars": 2000,
+            "wiki_translation_retry_depth": 1,
+            "wiki_translation_min_chunk_chars": 300,
+            "terminology_enabled": False,
+        }
+        plugin.context = RetryingCompleteTranslationContext()
+        source = "【Overview】\n" + ("Kirby explores the area and records every detail. " * 35)
+
+        first = await plugin._wiki_translate_text(
+            FakeEvent("卡比百科文档 Kirby"),
+            source,
+            enabled=True,
+            provider_key="wikirby_translate_provider_id",
+            source_name="WiKirby",
+            require_complete=True,
+            context_label="Kirby",
+            stage="details",
+        )
+        calls_after_first = len(plugin.context.calls)
+        second = await plugin._wiki_translate_text(
+            FakeEvent("卡比百科文档 Kirby"),
+            source,
+            enabled=True,
+            provider_key="wikirby_translate_provider_id",
+            source_name="WiKirby",
+            require_complete=True,
+            context_label="Kirby",
+            stage="details",
+        )
+
+        self.assertGreater(calls_after_first, 1)
+        self.assertIn("完整性校验", first)
+        self.assertNotIn("KDOC-", first)
+        self.assertEqual(second, first)
+        self.assertEqual(len(plugin.context.calls), calls_after_first)
+
+    async def test_incomplete_strict_translation_is_not_cached(self):
+        plugin = KirbyCatalogPlugin.__new__(KirbyCatalogPlugin)
+        plugin.config = {
+            "wikirby_translate_provider_id": "provider",
+            "wikirby_cache_ttl_seconds": 3600,
+            "wiki_translation_chunk_chars": 2000,
+            "wiki_translation_retry_depth": 1,
+            "wiki_translation_min_chunk_chars": 300,
+            "terminology_enabled": False,
+        }
+        plugin.context = RetryingCompleteTranslationContext(always_incomplete=True)
+        source = "【Overview】\n" + ("Kirby explores the area and records every detail. " * 35)
+
+        with self.assertRaises(WikiTranslationIncompleteError) as first_error:
+            await plugin._wiki_translate_text(
+                FakeEvent("卡比百科文档 Kirby"),
+                source,
+                enabled=True,
+                provider_key="wikirby_translate_provider_id",
+                source_name="WiKirby",
+                require_complete=True,
+                context_label="Kirby",
+                stage="details",
+            )
+        first_call_count = len(plugin.context.calls)
+        with self.assertRaises(WikiTranslationIncompleteError):
+            await plugin._wiki_translate_text(
+                FakeEvent("卡比百科文档 Kirby"),
+                source,
+                enabled=True,
+                provider_key="wikirby_translate_provider_id",
+                source_name="WiKirby",
+                require_complete=True,
+                context_label="Kirby",
+                stage="details",
+            )
+
+        self.assertEqual(first_error.exception.context_label, "Kirby")
+        self.assertEqual(first_error.exception.stage, "details")
+        self.assertFalse(getattr(plugin, "_wiki_translation_cache", {}))
+        self.assertGreater(len(plugin.context.calls), first_call_count)
+
+    def test_japanese_source_matching_avoids_common_word_substrings(self):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            bundled_path = root / "terms.json"
+            entries = [
+                ("character:pata", "啪嗒弹", "Pata", "パタ"),
+                ("character:trakker", "追踪者", "Trakker", "タイ"),
+                ("character:coo", "空", "Coo", "クー"),
+                ("item:master-sword", "大师剑", "Master Sword", "マスター"),
+                ("ability:normal", "普通", "Normal", "ノーマル"),
+                ("character:kirby", "卡比", "Kirby", "カービィ"),
+                ("character:meta-knight", "魅塔骑士", "Meta Knight", "メタナイト"),
+            ]
+            bundled_path.write_text(
+                json.dumps(
+                    terminology_document(
+                        [
+                            TerminologyEntry.from_mapping(
+                                {
+                                    "term_id": term_id,
+                                    "category": term_id.split(":", 1)[0],
+                                    "zh_cn": zh_cn,
+                                    "en": en,
+                                    "ja": ja,
+                                    "zh_status": "official",
+                                }
+                            )
+                            for term_id, zh_cn, en, ja in entries
+                        ]
+                    ),
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            store = KirbyTerminologyStore(bundled_path, root / "overrides.json")
+            source = (
+                "パターン、タイミング、クールタイム、普通、マスターしよう。"
+                "カービィとメタナイト。"
+            )
+
+            result = store.canonicalize(source, languages=("ja", "en"))
+
+            self.assertIn("パターン", result)
+            self.assertIn("タイミング", result)
+            self.assertIn("クールタイム", result)
+            self.assertIn("普通", result)
+            self.assertIn("マスターしよう", result)
+            self.assertNotIn("啪嗒弹", result)
+            self.assertNotIn("追踪者", result)
+            self.assertNotIn("空（Coo）ルタイム", result)
+            self.assertNotIn("大师剑", result)
+            self.assertIn("卡比（Kirby）", result)
+            self.assertIn("魅塔骑士（Meta Knight）", result)
+
+    async def test_clear_wiki_cache_can_target_shinkaku_only(self):
+        plugin = KirbyCatalogPlugin.__new__(KirbyCatalogPlugin)
+        plugin.config = {}
+        plugin._wiki_translation_cache = {
+            ("wikirby", "provider"): (999999.0, "wiki"),
+            ("卡比真格攻略 wiki", "provider"): (999999.0, "shinkaku"),
+        }
+        plugin.wikirby = FakeCacheClient(2)
+        plugin.fandom = FakeCacheClient(3)
+        plugin.shinkaku = FakeCacheClient(4)
+        plugin._shinkaku_table_icon_cache = {"icon": "data"}
+
+        results = [
+            result
+            async for result in plugin.clear_wiki_cache(
+                FakeEvent("/清除卡比百科缓存 真格")
+            )
+        ]
+
+        self.assertEqual(plugin.wikirby.calls, 0)
+        self.assertEqual(plugin.fandom.calls, 0)
+        self.assertEqual(plugin.shinkaku.calls, 1)
+        self.assertEqual(len(plugin._wiki_translation_cache), 1)
+        self.assertIn(("wikirby", "provider"), plugin._wiki_translation_cache)
+        self.assertFalse(plugin._shinkaku_table_icon_cache)
+        self.assertIn("翻译 1 项", results[0])
+        self.assertIn("页面/搜索 4 项", results[0])
 
     async def test_translation_protects_and_restores_terminology(self):
         with TemporaryDirectory() as temporary:

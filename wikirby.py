@@ -811,7 +811,12 @@ class WikirbyClient:
             return 0.4 * (2**attempt)
 
     async def close(self) -> None:
+        self.clear_cache()
+
+    def clear_cache(self) -> int:
+        count = len(self._cache)
         self._cache.clear()
+        return count
 
     def _cache_get(self, key: str) -> Any:
         item = self._cache.get(key)
