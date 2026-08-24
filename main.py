@@ -130,7 +130,7 @@ MAX_SHINKAKU_TABLE_ICON_IMAGES = 160
 DEFAULT_WIKI_TRANSLATION_CHUNK_CHARS = 6000
 DEFAULT_WIKI_TRANSLATION_RETRY_DEPTH = 2
 DEFAULT_WIKI_TRANSLATION_MIN_CHUNK_CHARS = 800
-WIKI_TRANSLATION_PIPELINE_VERSION = "v6-kana-residue"
+WIKI_TRANSLATION_PIPELINE_VERSION = "v7-number-protection"
 DEFAULT_WIKI_DOCUMENT_RETENTION_MINUTES = 1440.0
 DEFAULT_SHINKAKU_REFERENCE_ENTRIES_PER_PAGE = _REFERENCE_DEFAULT_ENTRIES_PER_PAGE
 DEFAULT_SHINKAKU_REFERENCE_COLUMNS = _REFERENCE_DEFAULT_COLUMNS
@@ -192,7 +192,7 @@ class WikiTranslationIncompleteError(RuntimeError):
     PLUGIN_ID,
     "Whereis-Alice",
     "星之卡比盟友抽取、收藏图鉴与三百科查询插件",
-    "3.12.2",
+    "3.12.3",
     "https://github.com/Whereis-Alice/astrbot_plugin_kirby_catalog",
 )
 class KirbyCatalogPlugin(Star):
@@ -2806,6 +2806,85 @@ class KirbyCatalogPlugin(Star):
         return f"⟦KDOC-{nonce}-BEGIN⟧", f"⟦KDOC-{nonce}-END⟧"
 
     @staticmethod
+    def _wiki_protect_numbers(text: str) -> Tuple[str, List[Tuple[str, str]]]:
+        """Protect numeric facts without changing URLs or terminology tokens."""
+
+        value = str(text or "")
+        if not value:
+            return value, []
+        excluded = [
+            (match.start(), match.end())
+            for match in re.finditer(
+                r"⟦KTERM-[A-F0-9]{8}-[0-9]{4}⟧|"
+                r"https?://[^\s<>》」』】）)]+",
+                value,
+            )
+        ]
+        number_pattern = re.compile(
+            r"(?<![A-Za-z0-9])\d+(?:\.\d+)?(?:F|%)?",
+            re.IGNORECASE,
+        )
+        bindings: List[Tuple[str, str]] = []
+        pieces: List[str] = []
+        cursor = 0
+        for match in number_pattern.finditer(value):
+            if any(
+                match.start() < excluded_end and match.end() > excluded_start
+                for excluded_start, excluded_end in excluded
+            ):
+                continue
+            token = f"⟦KNUM-{len(bindings) + 1:04d}⟧"
+            pieces.append(value[cursor : match.start()])
+            pieces.append(token)
+            bindings.append((token, match.group(0)))
+            cursor = match.end()
+        if not bindings:
+            return value, []
+        pieces.append(value[cursor:])
+        return "".join(pieces), bindings
+
+    @staticmethod
+    def _wiki_normalise_number_placeholders(
+        value: str,
+        bindings: Iterable[Tuple[str, str]],
+    ) -> Tuple[str, int, List[str]]:
+        text = str(value or "")
+        repaired = 0
+        errors: List[str] = []
+        for token, _original in bindings:
+            index_match = re.search(r"([0-9]{4})", token)
+            if index_match is None:
+                continue
+            index = index_match.group(1)
+            pattern = re.compile(
+                r"(?:⟦|\[\[|__|\\_\\_|\*\*|`)?\s*"
+                rf"KNUM(?:-|_|\\_)\s*{index}\s*"
+                r"(?:⟧|\]\]|__|\\_\\_|\*\*|`)?"
+            )
+
+            def replace(match: re.Match[str]) -> str:
+                nonlocal repaired
+                if match.group(0) != token:
+                    repaired += 1
+                return token
+
+            text = pattern.sub(replace, text)
+            found = text.count(token)
+            if found != 1:
+                errors.append(f"{token}: expected=1, actual={found}")
+        return text, repaired, errors
+
+    @staticmethod
+    def _wiki_restore_number_placeholders(
+        value: str,
+        bindings: Iterable[Tuple[str, str]],
+    ) -> str:
+        text = str(value or "")
+        for token, original in bindings:
+            text = text.replace(token, original)
+        return text
+
+    @staticmethod
     def _wiki_translation_validation_errors(
         source: str,
         candidate: str,
@@ -2927,6 +3006,9 @@ class KirbyCatalogPlugin(Star):
             else None
         )
         source_chunk = protected.protected_text if protected else chunk
+        number_bindings: List[Tuple[str, str]] = []
+        if require_complete:
+            source_chunk, number_bindings = self._wiki_protect_numbers(source_chunk)
         glossary = protected.glossary() if protected else ""
         glossary_block = f"\n\n{glossary}" if glossary else ""
         begin_marker, end_marker = self._wiki_translation_marker(
@@ -2934,6 +3016,13 @@ class KirbyCatalogPlugin(Star):
         )
         marked_source = f"{begin_marker}\n{source_chunk}\n{end_marker}"
         language_rules = self._wiki_translation_language_rules(source_name)
+        number_rules = ""
+        if number_bindings:
+            number_rules = (
+                "正文中的数字已替换为 KNUM 占位符；每个 KNUM 占位符必须"
+                "原样、原位置且恰好保留一次，不得翻译成中文数字、删除、复制、"
+                "拆分或移动。"
+            )
         correction_block = ""
         if previous_candidate:
             sample_text = " | ".join(
@@ -2972,6 +3061,7 @@ class KirbyCatalogPlugin(Star):
                     "必须保留标记及其包围范围；"
                     "角色名、作品名和专有名词使用给定术语占位符，绝不能修改、"
                     "删除、拆分或增加占位符。"
+                    f"{number_rules}"
                     f"{language_rules}"
                     f"完整性标记 {begin_marker} 和 {end_marker} 必须原样各保留一次，"
                     "并且必须位于译文的最开头和最结尾。"
@@ -3011,12 +3101,61 @@ class KirbyCatalogPlugin(Star):
                         repaired_placeholders,
                         sum(surplus_placeholders.values()),
                     )
+            if normalized_completion and number_bindings:
+                (
+                    normalized_completion,
+                    repaired_number_placeholders,
+                    number_placeholder_errors,
+                ) = self._wiki_normalise_number_placeholders(
+                    normalized_completion,
+                    number_bindings,
+                )
+                if repaired_number_placeholders:
+                    logger.info(
+                        "[%s] %s LLM 翻译数字占位符已安全修复: "
+                        "provider=%s, chunk=%s, formatting_repairs=%d, "
+                        "numbers=%d",
+                        PLUGIN_ID,
+                        source_name,
+                        provider_id,
+                        chunk_label,
+                        repaired_number_placeholders,
+                        len(number_bindings),
+                    )
+                if number_placeholder_errors:
+                    error_text = "; ".join(number_placeholder_errors[:8])
+                    logger.warning(
+                        "[%s] %s LLM 翻译数字占位符校验失败: provider=%s, "
+                        "context=%r, stage=%s, chunk=%s, numbers=%d, error=%s",
+                        PLUGIN_ID,
+                        source_name,
+                        provider_id,
+                        context_label,
+                        stage,
+                        chunk_label,
+                        len(number_bindings),
+                        error_text,
+                    )
+                    return "", f"number_placeholders:{error_text}", {
+                        "finish_reason": finish_reason,
+                        "elapsed": time.monotonic() - started_at,
+                        "repair_candidate": normalized_completion,
+                        "japanese_samples": self._wiki_japanese_residue_samples(
+                            normalized_completion
+                        ),
+                    }
+            if translated and protected:
                 translated = protected.restore(
                     normalized_completion,
                     strict=self._terminology_strict_placeholders(),
                 )
             else:
                 translated = normalized_completion
+            if number_bindings:
+                translated = self._wiki_restore_number_placeholders(
+                    translated,
+                    number_bindings,
+                )
         except TerminologyPlaceholderError as exc:
             logger.warning(
                 "[%s] %s LLM 翻译术语占位符校验失败: provider=%s, "

@@ -179,6 +179,31 @@ class JapaneseResidueRepairContext:
         )
 
 
+class NumberPlaceholderTranslationContext:
+    def __init__(self):
+        self.calls = []
+
+    async def get_current_chat_provider_id(self, _umo):
+        return "provider"
+
+    async def llm_generate(self, **kwargs):
+        self.calls.append(kwargs)
+        marked_source = kwargs["prompt"].split("原文：\n", 1)[1]
+        begin_marker = marked_source.splitlines()[0]
+        end_marker = marked_source.splitlines()[-1]
+        tokens = re.findall(r"⟦KNUM-[0-9]{4}⟧", marked_source)
+        assert len(tokens) == 3
+        body = (
+            "【数据】\n"
+            f"攻击发生为 {tokens[0]}，威力为 {tokens[1]}，"
+            f"成功率为 {tokens[2]}。"
+        )
+        return SimpleNamespace(
+            completion_text=f"{begin_marker}\n{body}\n{end_marker}",
+            finish_reason="stop",
+        )
+
+
 class FakeCacheClient:
     def __init__(self, count):
         self.count = count
@@ -1241,6 +1266,61 @@ class WikirbyCommandTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("⟪ファイター⟫", repair_prompt)
         self.assertNotRegex(translated, r"[ぁ-ゖァ-ヺーｦ-ﾟ]")
         self.assertIn("格斗家", translated)
+
+    async def test_strict_translation_protects_numbers_before_calling_llm(self):
+        plugin = KirbyCatalogPlugin.__new__(KirbyCatalogPlugin)
+        plugin.config = {
+            "shinkaku_translate_provider_id": "provider",
+            "shinkaku_cache_ttl_seconds": 3600,
+            "wiki_translation_chunk_chars": 6000,
+            "wiki_translation_retry_depth": 2,
+            "wiki_translation_min_chunk_chars": 800,
+            "terminology_enabled": False,
+        }
+        plugin.context = NumberPlaceholderTranslationContext()
+        source = "【数据】\n攻撃発生は10F、威力120、成功率50%です。"
+
+        translated = await plugin._wiki_translate_text(
+            FakeEvent("卡比真格文档 测试"),
+            source,
+            enabled=True,
+            provider_key="shinkaku_translate_provider_id",
+            source_name="卡比真格攻略 Wiki",
+            require_complete=True,
+            context_label="数字保护测试",
+            stage="details",
+        )
+
+        self.assertEqual(len(plugin.context.calls), 1)
+        self.assertIn("KNUM 占位符", plugin.context.calls[0]["prompt"])
+        self.assertNotIn("KNUM-", translated)
+        self.assertIn("10F", translated)
+        self.assertIn("120", translated)
+        self.assertIn("50%", translated)
+
+    def test_number_placeholder_validation_rejects_missing_tokens(self):
+        source = (
+            "10F https://example.test/2026 "
+            "⟦KTERM-ABCDEF12-0001⟧ 50%"
+        )
+        protected, bindings = KirbyCatalogPlugin._wiki_protect_numbers(source)
+
+        self.assertEqual([value for _token, value in bindings], ["10F", "50%"])
+        self.assertIn("https://example.test/2026", protected)
+        self.assertIn("⟦KTERM-ABCDEF12-0001⟧", protected)
+        broken = protected.replace(bindings[0][0], "", 1)
+        _normalised, _repairs, errors = (
+            KirbyCatalogPlugin._wiki_normalise_number_placeholders(
+                broken, bindings
+            )
+        )
+        self.assertTrue(errors)
+        self.assertEqual(
+            KirbyCatalogPlugin._wiki_restore_number_placeholders(
+                protected, bindings
+            ),
+            source,
+        )
 
     def test_japanese_source_matching_avoids_common_word_substrings(self):
         with TemporaryDirectory() as temporary:
