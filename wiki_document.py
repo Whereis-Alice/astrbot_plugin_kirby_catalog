@@ -9,6 +9,7 @@ from collections.abc import Iterable
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from .wiki_content import build_content_groups, inline_markup_html, parse_detail_blocks
 
@@ -118,11 +119,203 @@ def _plain_text_html(text: str) -> str:
     return "\n".join(output)
 
 
-def _cell_value(cell: Any) -> tuple[str, str]:
+def _safe_link(value: Any) -> str:
+    url = str(value or "").strip()
+    return url if urlparse(url).scheme.casefold() in {"http", "https"} else ""
+
+
+def _cell_value(
+    cell: Any,
+) -> tuple[str, list[dict[str, str]], list[dict[str, Any]], str]:
     if not isinstance(cell, dict):
-        return str(cell or ""), ""
-    image = str(cell.get("icon_data_uri") or cell.get("icon_url") or "").strip()
-    return str(cell.get("text") or "").strip(), image
+        return str(cell or ""), [], [], ""
+
+    icons: list[dict[str, str]] = []
+    for raw_icon in cell.get("icons", []) or []:
+        if not isinstance(raw_icon, dict):
+            continue
+        source = str(
+            raw_icon.get("data_uri")
+            or raw_icon.get("icon_data_uri")
+            or raw_icon.get("url")
+            or ""
+        ).strip()
+        if not source:
+            continue
+        icons.append(
+            {
+                "source": source,
+                "link_url": _safe_link(raw_icon.get("link_url")),
+                "alt": str(raw_icon.get("alt") or "").strip(),
+            }
+        )
+    if not icons:
+        legacy_image = str(
+            cell.get("icon_data_uri") or cell.get("icon_url") or ""
+        ).strip()
+        if legacy_image:
+            icons.append({"source": legacy_image, "link_url": "", "alt": ""})
+
+    links: list[dict[str, Any]] = []
+    seen_links: set[str] = set()
+    for raw_link in cell.get("links", []) or []:
+        if not isinstance(raw_link, dict):
+            continue
+        url = _safe_link(raw_link.get("url"))
+        if not url or url in seen_links:
+            continue
+        seen_links.add(url)
+        links.append(
+            {
+                "url": url,
+                "label": str(raw_link.get("label") or "").strip(),
+                "is_media": bool(raw_link.get("is_media")),
+                "platform": str(raw_link.get("platform") or "").strip(),
+            }
+        )
+    return (
+        str(cell.get("text") or "").strip(),
+        icons,
+        links,
+        str(cell.get("icon_separator") or "×").strip() or "×",
+    )
+
+
+def _cell_icons_html(icons: list[dict[str, str]], separator: str) -> str:
+    if not icons:
+        return ""
+    output: list[str] = []
+    for index, icon in enumerate(icons):
+        if index:
+            output.append(
+                f'<span class="table-icon-separator">{html.escape(separator)}</span>'
+            )
+        image = (
+            f'<img class="table-icon" src="{html.escape(icon["source"], quote=True)}" '
+            f'alt="{html.escape(icon.get("alt", ""), quote=True)}" />'
+        )
+        link_url = icon.get("link_url", "")
+        if link_url:
+            image = (
+                f'<a class="table-icon-link" href="{html.escape(link_url, quote=True)}" '
+                f'target="_blank" rel="noreferrer">{image}</a>'
+            )
+        output.append(image)
+    return '<span class="table-icon-set">' + "".join(output) + "</span>"
+
+
+def _cell_text_html(text: str, links: list[dict[str, Any]]) -> str:
+    if text and len(links) == 1:
+        link = links[0]
+        return (
+            f'<a class="table-cell-link" href="{html.escape(link["url"], quote=True)}" '
+            f'target="_blank" rel="noreferrer">{_linkify(text)}</a>'
+        )
+    output = f'<span class="table-cell-text">{_linkify(text)}</span>' if text else ""
+    if not links:
+        return output
+    link_rows: list[str] = []
+    for index, link in enumerate(links, start=1):
+        label = str(link.get("label") or "").strip()
+        if not label or label == text:
+            platform = str(link.get("platform") or "").strip()
+            label = f"{platform or '链接'} {index}"
+        link_rows.append(
+            f'<a href="{html.escape(link["url"], quote=True)}" target="_blank" '
+            f'rel="noreferrer">{html.escape(label)}</a>'
+        )
+    return output + '<span class="table-cell-links">' + "".join(link_rows) + "</span>"
+
+
+def _rich_section_link_urls(rich_sections: Iterable[dict[str, Any]]) -> set[str]:
+    urls: set[str] = set()
+    for section in rich_sections:
+        if not isinstance(section, dict) or section.get("kind") != "table":
+            continue
+        for row in section.get("rows", []) or []:
+            for cell in row if isinstance(row, list) else []:
+                if not isinstance(cell, dict):
+                    continue
+                for link in cell.get("links", []) or []:
+                    if not isinstance(link, dict):
+                        continue
+                    url = _safe_link(link.get("url"))
+                    if url:
+                        urls.add(url)
+    return urls
+
+
+def _media_platform(value: str) -> str:
+    host = (urlparse(value).hostname or "").casefold()
+    if host == "youtu.be" or host == "youtube.com" or host.endswith(".youtube.com"):
+        return "YouTube"
+    if host == "nico.ms" or host == "nicovideo.jp" or host.endswith(".nicovideo.jp"):
+        return "Niconico"
+    return "其他媒体"
+
+
+def _media_entries(
+    media_links: Iterable[dict[str, Any]],
+    media_urls: Iterable[str],
+    *,
+    excluded_urls: set[str],
+) -> list[dict[str, str]]:
+    candidates: list[dict[str, str]] = []
+    for raw_link in media_links:
+        if not isinstance(raw_link, dict):
+            continue
+        candidates.append(
+            {
+                "url": str(raw_link.get("url") or "").strip(),
+                "label": str(raw_link.get("label") or "").strip(),
+                "platform": str(raw_link.get("platform") or "").strip(),
+            }
+        )
+    candidates.extend(
+        {"url": str(value or "").strip(), "label": "", "platform": ""}
+        for value in media_urls
+    )
+
+    output: list[dict[str, str]] = []
+    seen: set[str] = set()
+    platform_counts: dict[str, int] = {}
+    for row in candidates:
+        url = _safe_link(row.get("url"))
+        if not url or url in seen or url in excluded_urls:
+            continue
+        seen.add(url)
+        platform = row.get("platform") or _media_platform(url)
+        platform_counts[platform] = platform_counts.get(platform, 0) + 1
+        label = str(row.get("label") or "").strip()
+        if not label or label == url or label.casefold() in {"相关视频", "相关媒体"}:
+            label = f"{platform} {platform_counts[platform]}"
+        output.append({"url": url, "label": label, "platform": platform})
+    return output
+
+
+def _media_section_html(media: list[dict[str, str]]) -> str:
+    if not media:
+        return ""
+    grouped: dict[str, list[dict[str, str]]] = {}
+    for row in media:
+        grouped.setdefault(row["platform"], []).append(row)
+    groups: list[str] = []
+    for platform, rows in grouped.items():
+        links = "".join(
+            f'<a href="{html.escape(row["url"], quote=True)}" target="_blank" '
+            f'rel="noreferrer">{html.escape(row["label"])}</a>'
+            for row in rows
+        )
+        groups.append(
+            '<div class="media-group">'
+            f'<h3>{html.escape(platform)}</h3><div class="media-links">{links}</div>'
+            "</div>"
+        )
+    return (
+        '<section class="content-section media-section"><h2>相关媒体</h2>'
+        + "".join(groups)
+        + "</section>"
+    )
 
 
 def _rich_section_html(
@@ -149,15 +342,11 @@ def _rich_section_html(
         for row in rows:
             cells: list[str] = []
             for raw_cell in row if isinstance(row, list) else []:
-                text, image = _cell_value(raw_cell)
-                media = (
-                    f'<img class="table-icon" src="{html.escape(image, quote=True)}" alt="" />'
-                    if image
-                    else ""
-                )
-                cells.append(
-                    f"<td>{media}<span>{_linkify(text) if text else '—'}</span></td>"
-                )
+                text, icons, links, separator = _cell_value(raw_cell)
+                icon_html = _cell_icons_html(icons, separator)
+                text_html = _cell_text_html(text, links)
+                fallback = "" if icons else "—"
+                cells.append(f"<td>{icon_html}{text_html or fallback}</td>")
             table_rows.append("<tr>" + "".join(cells) + "</tr>")
         body = (
             '<div class="table-wrap"><table><thead><tr>'
@@ -320,6 +509,7 @@ def build_wiki_document(
     rich_sections: Iterable[dict[str, Any]] = (),
     image_bytes: bytes | None = None,
     media_urls: Iterable[str] = (),
+    media_links: Iterable[dict[str, Any]] = (),
     template_name: str = "卡比粉彩",
     preserve_source_order: bool = False,
 ) -> Path:
@@ -327,18 +517,15 @@ def build_wiki_document(
     theme = _THEMES.get(template_name, _THEMES["卡比粉彩"])
     image_uri = _image_data_uri(image_bytes)
     source_url = str(source_url or "").strip()
-    media = list(dict.fromkeys(str(value or "").strip() for value in media_urls if value))
-    media_html = ""
-    if media:
-        media_html = (
-            '<section class="content-section media-section"><h2>相关媒体</h2><ul>'
-            + "".join(
-                f'<li><a href="{html.escape(url, quote=True)}" target="_blank" '
-                f'rel="noreferrer">{html.escape(url)}</a></li>'
-                for url in media
-            )
-            + "</ul></section>"
-        )
+    rich_section_rows = [
+        dict(section) for section in rich_sections if isinstance(section, dict)
+    ]
+    media = _media_entries(
+        media_links,
+        media_urls,
+        excluded_urls=_rich_section_link_urls(rich_section_rows),
+    )
+    media_html = _media_section_html(media)
     hero_image = (
         f'<figure class="hero-image"><img src="{image_uri}" alt="{html.escape(title)}" /></figure>'
         if image_uri
@@ -355,7 +542,7 @@ def build_wiki_document(
     )
     content_html = _ordered_content_html(
         detail_text,
-        rich_sections,
+        rich_section_rows,
         preserve_source_order=preserve_source_order,
     )
     generated_at = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M %Z")
@@ -433,7 +620,17 @@ def build_wiki_document(
     th, td {{ min-width: 96px; padding: 10px 11px; border: 1px solid var(--line); text-align: left; vertical-align: top; white-space: pre-wrap; }}
     th {{ position: sticky; top: 0; z-index: 1; background: var(--secondary-soft); color: #294550; }}
     tbody tr:nth-child(even) {{ background: #fafbfc; }}
-    .table-icon {{ display: inline-block; width: 42px; height: 42px; margin: 0 8px 4px 0; object-fit: contain; vertical-align: middle; }}
+    .table-icon-set {{ display: inline-flex; align-items: center; justify-content: center; gap: 5px; margin: 0 8px 4px 0; vertical-align: middle; white-space: nowrap; }}
+    .table-icon-link {{ display: inline-flex; align-items: center; justify-content: center; }}
+    .table-icon {{ display: block; width: 42px; height: 42px; object-fit: contain; }}
+    .table-icon-separator {{ color: var(--muted); font-weight: 900; }}
+    .table-cell-link {{ display: inline; font-weight: 750; }}
+    .table-cell-links {{ display: flex; flex-wrap: wrap; gap: 5px 8px; margin-top: 5px; font-size: 12px; }}
+    .table-cell-links a {{ padding: 1px 7px; background: var(--secondary-soft); border-radius: 4px; text-decoration: none; }}
+    .media-group + .media-group {{ margin-top: 16px; }}
+    .media-group h3 {{ margin-top: 0; }}
+    .media-links {{ display: flex; flex-wrap: wrap; gap: 8px 12px; }}
+    .media-links a {{ display: inline-block; padding: 5px 9px; background: var(--secondary-soft); border: 1px solid var(--line); border-radius: 4px; text-decoration: none; }}
     .tech-intro {{ margin-bottom: 14px; padding: 14px 16px; background: var(--warm); border-radius: 6px; }}
     footer {{ margin-top: 18px; padding: 18px 4px; color: var(--muted); font-size: 13px; }}
     @media (max-width: 680px) {{

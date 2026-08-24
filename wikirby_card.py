@@ -788,12 +788,30 @@ WIKIRBY_CARD_TEMPLATE = r"""
     .wiki-table--wide th:first-child,
     .wiki-table--wide td:first-child { width: 12%; }
 
+    .wiki-table-icons {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 4px;
+      white-space: nowrap;
+    }
+
     .wiki-table-icon {
       display: block;
       width: 46px;
       height: 46px;
       margin: 0 auto;
       object-fit: contain;
+    }
+
+    .wiki-table-icons--multi .wiki-table-icon {
+      width: 38px;
+      height: 38px;
+    }
+
+    .wiki-table-icon-separator {
+      color: {{ theme.muted }};
+      font-weight: 900;
     }
 
     .wiki-table-cell--icon { padding: 7px !important; }
@@ -1267,9 +1285,9 @@ WIKIRBY_CARD_TEMPLATE = r"""
           {% for row in section.rows %}
           <tr>
             {% for cell in row %}
-            <td class="{% if cell.icon_data_uri %}wiki-table-cell--icon {% endif %}{% if cell.tone %}wiki-table-cell--rating wiki-table-cell--rating-{{ cell.tone }}{% endif %}">
-              {% if cell.icon_data_uri %}<img class="wiki-table-icon" src="{{ cell.icon_data_uri }}" alt="" />{% endif %}
-              {% if cell.text %}<span>{{ cell.text | e }}</span>{% elif not cell.icon_data_uri %}<span>—</span>{% endif %}
+            <td class="{% if cell.icons %}wiki-table-cell--icon {% endif %}{% if cell.tone %}wiki-table-cell--rating wiki-table-cell--rating-{{ cell.tone }}{% endif %}">
+              {% if cell.icons %}<span class="wiki-table-icons{% if cell.icons | length > 1 %} wiki-table-icons--multi{% endif %}">{% for icon in cell.icons %}{% if not loop.first %}<span class="wiki-table-icon-separator">{{ cell.icon_separator | e }}</span>{% endif %}<img class="wiki-table-icon" src="{{ icon.data_uri }}" alt="" />{% endfor %}</span>{% endif %}
+              {% if cell.text %}<span>{{ cell.text | e }}</span>{% elif not cell.icons %}<span>—</span>{% endif %}
             </td>
             {% endfor %}
           </tr>
@@ -1435,9 +1453,9 @@ WIKIRBY_CARD_TEMPLATE = r"""
                   {% for row in section.rows %}
                   <tr>
                     {% for cell in row %}
-                    <td class="{% if cell.icon_data_uri %}wiki-table-cell--icon {% endif %}{% if cell.tone %}wiki-table-cell--rating wiki-table-cell--rating-{{ cell.tone }}{% endif %}">
-                      {% if cell.icon_data_uri %}<img class="wiki-table-icon" src="{{ cell.icon_data_uri }}" alt="" />{% endif %}
-                      {% if cell.text %}<span>{{ cell.text | e }}</span>{% elif not cell.icon_data_uri %}<span>—</span>{% endif %}
+                    <td class="{% if cell.icons %}wiki-table-cell--icon {% endif %}{% if cell.tone %}wiki-table-cell--rating wiki-table-cell--rating-{{ cell.tone }}{% endif %}">
+                      {% if cell.icons %}<span class="wiki-table-icons{% if cell.icons | length > 1 %} wiki-table-icons--multi{% endif %}">{% for icon in cell.icons %}{% if not loop.first %}<span class="wiki-table-icon-separator">{{ cell.icon_separator | e }}</span>{% endif %}<img class="wiki-table-icon" src="{{ icon.data_uri }}" alt="" />{% endfor %}</span>{% endif %}
+                      {% if cell.text %}<span>{{ cell.text | e }}</span>{% elif not cell.icons %}<span>—</span>{% endif %}
                     </td>
                     {% endfor %}
                   </tr>
@@ -2040,11 +2058,11 @@ def _prepare_rich_sections(
             if not headers:
                 continue
             column_count = len(headers)
-            rows: list[list[dict[str, str]]] = []
+            rows: list[list[dict[str, Any]]] = []
             for raw_row in section.get("rows", []) or []:
                 if not isinstance(raw_row, list):
                     continue
-                row: list[dict[str, str]] = []
+                row: list[dict[str, Any]] = []
                 for index in range(column_count):
                     raw_cell = raw_row[index] if index < len(raw_row) else ""
                     if isinstance(raw_cell, dict):
@@ -2052,9 +2070,32 @@ def _prepare_rich_sections(
                         icon_data_uri = str(
                             raw_cell.get("icon_data_uri", "") or ""
                         ).strip()
+                        icons = [
+                            {
+                                "data_uri": str(
+                                    icon.get("data_uri")
+                                    or icon.get("icon_data_uri")
+                                    or ""
+                                ).strip()
+                            }
+                            for icon in raw_cell.get("icons", []) or []
+                            if isinstance(icon, dict)
+                            and str(
+                                icon.get("data_uri")
+                                or icon.get("icon_data_uri")
+                                or ""
+                            ).strip()
+                        ]
+                        if not icons and icon_data_uri:
+                            icons = [{"data_uri": icon_data_uri}]
+                        icon_separator = str(
+                            raw_cell.get("icon_separator") or "×"
+                        ).strip() or "×"
                     else:
                         text = str(raw_cell or "").strip()
                         icon_data_uri = ""
+                        icons = []
+                        icon_separator = "×"
                     rating = text.upper()
                     tone = {
                         "SS": "legendary",
@@ -2067,6 +2108,8 @@ def _prepare_rich_sections(
                         {
                             "text": text,
                             "icon_data_uri": icon_data_uri,
+                            "icons": icons,
+                            "icon_separator": icon_separator,
                             "tone": tone,
                         }
                     )

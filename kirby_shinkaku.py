@@ -6,6 +6,7 @@ import json
 import re
 import time
 import unicodedata
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -261,46 +262,157 @@ def _meaningful_image_urls(root: Tag, base_url: str) -> list[str]:
     return urls
 
 
-def _meaningful_media_urls(root: Tag, base_url: str) -> list[str]:
-    urls: list[str] = []
+def _safe_http_url(value: str, base_url: str) -> str:
+    raw = str(value or "").strip()
+    if not raw or raw.casefold().startswith("javascript:"):
+        return ""
+    resolved = urljoin(base_url, raw)
+    return resolved if urlparse(resolved).scheme.casefold() in {"http", "https"} else ""
+
+
+def _is_media_url(value: str) -> bool:
+    host = (urlparse(str(value or "")).hostname or "").casefold()
+    return any(
+        host == suffix or host.endswith(f".{suffix}")
+        for suffix in _MEDIA_HOST_SUFFIXES
+    )
+
+
+def _media_platform(value: str) -> str:
+    host = (urlparse(str(value or "")).hostname or "").casefold()
+    if host == "youtu.be" or host.endswith(".youtube.com") or host == "youtube.com":
+        return "YouTube"
+    if host == "nico.ms" or host.endswith(".nicovideo.jp") or host == "nicovideo.jp":
+        return "Niconico"
+    return "媒体"
+
+
+def _meaningful_media_links(root: Tag, base_url: str) -> list[dict[str, str]]:
+    links: list[dict[str, str]] = []
+    seen: set[str] = set()
     for element in root.select("iframe[src], video[src], source[src], a[href]"):
-        raw = str(element.get("src") or element.get("href") or "").strip()
-        if not raw or raw.casefold().startswith("javascript:"):
+        source = _safe_http_url(
+            str(element.get("src") or element.get("href") or ""), base_url
+        )
+        if not source or not _is_media_url(source) or source in seen:
             continue
-        source = urljoin(base_url, raw)
-        host = (urlparse(source).hostname or "").casefold()
-        if not any(host == suffix or host.endswith(f".{suffix}") for suffix in _MEDIA_HOST_SUFFIXES):
-            continue
-        if source not in urls:
-            urls.append(source)
-    return urls
+        seen.add(source)
+        label = _clean_text(element) if str(element.name or "") == "a" else ""
+        if not label:
+            label = str(element.get("title") or "").strip()
+        links.append(
+            {
+                "url": source,
+                "label": label,
+                "platform": _media_platform(source),
+            }
+        )
+    return links
 
 
-def _table_cell(cell: Tag, base_url: str) -> dict[str, str]:
-    """Extract table text plus the original Seesaa icon when there is one."""
+def _meaningful_media_urls(root: Tag, base_url: str) -> list[str]:
+    return [row["url"] for row in _meaningful_media_links(root, base_url)]
 
-    icon_url = ""
+
+def _is_table_edit_cell(cell: Tag) -> bool:
+    classes = {str(value) for value in cell.get("class", [])}
+    if "table_edit_link" in classes:
+        return True
+    link = cell.select_one("a[href*='/e/edit']")
+    return link is not None and _clean_text(cell) == ""
+
+
+def _table_icon_data(cell: Tag, base_url: str) -> list[dict[str, str]]:
+    icons: list[dict[str, str]] = []
     for image in cell.select("img[src]"):
-        source = urljoin(base_url, str(image.get("src") or "").strip())
+        source = _safe_http_url(str(image.get("src") or ""), base_url)
         parsed = urlparse(source)
         if not _IMAGE_HOST_RE.fullmatch((parsed.hostname or "").casefold()):
             continue
         if not parsed.path.startswith("/k/u/kirby_shinkaku/"):
             continue
-        icon_url = source
-        break
-    return {"text": _clean_text(cell), "icon_url": icon_url}
+        link_url = ""
+        parent_link = image.find_parent("a", href=True)
+        if isinstance(parent_link, Tag) and parent_link.find_parent(["td", "th"]) is cell:
+            link_url = _safe_http_url(str(parent_link.get("href") or ""), base_url)
+        icons.append(
+            {
+                "url": source,
+                "link_url": link_url,
+                "alt": str(image.get("alt") or "").strip(),
+            }
+        )
+    return icons
+
+
+def _table_links(cell: Tag, base_url: str) -> list[dict[str, Any]]:
+    links: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for anchor in cell.select("a[href]"):
+        url = _safe_http_url(str(anchor.get("href") or ""), base_url)
+        label = _clean_text(anchor)
+        if not url or not label or "/e/edit" in urlparse(url).path or url in seen:
+            continue
+        seen.add(url)
+        links.append(
+            {
+                "url": url,
+                "label": label,
+                "is_media": _is_media_url(url),
+                "platform": _media_platform(url) if _is_media_url(url) else "",
+            }
+        )
+    return links
+
+
+def _table_media_urls(tables: list[dict[str, Any]]) -> set[str]:
+    urls: set[str] = set()
+    for table in tables:
+        for row in table.get("rows", []) or []:
+            for cell in row if isinstance(row, list) else []:
+                if not isinstance(cell, dict):
+                    continue
+                for link in cell.get("links", []) or []:
+                    if isinstance(link, dict) and link.get("is_media"):
+                        url = str(link.get("url") or "").strip()
+                        if url:
+                            urls.add(url)
+    return urls
+
+
+def _table_cell(cell: Tag, base_url: str) -> dict[str, Any]:
+    """Extract table text, every Seesaa icon, and cell-owned links."""
+
+    icons = _table_icon_data(cell, base_url)
+    text = _clean_text(cell)
+    icon_separator = ""
+    if icons and re.fullmatch(r"[\s\u00a0×✕xX*+＋&＆/／・]+", text or ""):
+        icon_separator = "×" if any(value in text for value in "×✕xX") else text.strip()
+        text = ""
+    elif len(icons) > 1:
+        icon_separator = "×"
+    return {
+        "text": text,
+        "icon_url": str(icons[0]["url"] if icons else ""),
+        "icons": icons,
+        "icon_separator": icon_separator,
+        "links": _table_links(cell, base_url),
+    }
 
 
 def _table_data(table: Tag, base_url: str) -> dict[str, Any] | None:
     """Keep tables rectangular, including Seesaa rowspan/colspan cells."""
 
-    grid: list[list[dict[str, str] | None]] = []
+    grid: list[list[dict[str, Any] | None]] = []
     for row_index, row in enumerate(table.find_all("tr")):
         while len(grid) <= row_index:
             grid.append([])
         column = 0
-        cells = row.find_all(["th", "td"], recursive=False)
+        cells = [
+            cell
+            for cell in row.find_all(["th", "td"], recursive=False)
+            if not _is_table_edit_cell(cell)
+        ]
         for cell in cells:
             while column < len(grid[row_index]) and grid[row_index][column] is not None:
                 column += 1
@@ -320,19 +432,25 @@ def _table_data(table: Tag, base_url: str) -> dict[str, Any] | None:
                     grid[target_row].append(None)
                 for target_column in range(column, column + column_span):
                     if grid[target_row][target_column] is None:
-                        grid[target_row][target_column] = dict(value)
+                        grid[target_row][target_column] = deepcopy(value)
             column += column_span
 
     if not grid:
         return None
 
     column_count = max(len(row) for row in grid)
-    padding = {"text": "", "icon_url": ""}
-    matrix: list[list[dict[str, str]]] = []
+    padding = {
+        "text": "",
+        "icon_url": "",
+        "icons": [],
+        "icon_separator": "",
+        "links": [],
+    }
+    matrix: list[list[dict[str, Any]]] = []
     for row in grid:
         row.extend([None] * (column_count - len(row)))
         matrix.append(
-            [dict(cell) if isinstance(cell, dict) else dict(padding) for cell in row]
+            [deepcopy(cell) if isinstance(cell, dict) else deepcopy(padding) for cell in row]
         )
     headers = [
         str(cell.get("text") or f"第 {index + 1} 列").strip()
@@ -360,7 +478,16 @@ def _table_lines(table_data: dict[str, Any]) -> list[str]:
                 values.append(str(cell or "—"))
                 continue
             text = str(cell.get("text") or "").strip()
-            values.append(text or ("[图标]" if cell.get("icon_url") else "—"))
+            has_icons = bool(cell.get("icons") or cell.get("icon_url"))
+            value = text or ("[图标]" if has_icons else "—")
+            media_links = [
+                str(link.get("url") or "").strip()
+                for link in cell.get("links", []) or []
+                if isinstance(link, dict) and link.get("is_media")
+            ]
+            if media_links:
+                value += "（视频：" + "、".join(media_links) + "）"
+            values.append(value)
         output.append("- " + " | ".join(values))
     return output
 
@@ -482,6 +609,7 @@ def _section_content(body: Tag, base_url: str) -> dict[str, Any]:
                 "tables": toggle_tables,
                 "content_blocks": parsed["content_blocks"],
                 "images": parsed["images"],
+                "media_links": parsed["media_links"],
                 "media_urls": parsed["media_urls"],
             }
             toggles.append(toggle)
@@ -517,6 +645,11 @@ def _section_content(body: Tag, base_url: str) -> dict[str, Any]:
         content_blocks.extend(nested["content_blocks"])
 
     flush_inline()
+    media_links = _meaningful_media_links(body, base_url)
+    table_media_urls = _table_media_urls(tables)
+    media_links = [
+        row for row in media_links if str(row.get("url") or "") not in table_media_urls
+    ]
     return {
         "text": "\n".join(parts).strip(),
         "text_without_tables": "\n".join(narrative_parts).strip(),
@@ -524,7 +657,8 @@ def _section_content(body: Tag, base_url: str) -> dict[str, Any]:
         "toggles": toggles,
         "content_blocks": content_blocks,
         "images": _meaningful_image_urls(body, base_url),
-        "media_urls": _meaningful_media_urls(body, base_url),
+        "media_links": media_links,
+        "media_urls": [row["url"] for row in media_links],
     }
 
 
@@ -565,6 +699,7 @@ def _page_sections(root: Tag, base_url: str) -> list[dict[str, Any]]:
                 content["tables"],
                 content["toggles"],
                 content["images"],
+                content["media_links"],
                 content["media_urls"],
             )
         )
@@ -577,6 +712,7 @@ def _page_sections(root: Tag, base_url: str) -> list[dict[str, Any]]:
                 "toggles": content["toggles"],
                 "content_blocks": content["content_blocks"],
                 "images": content["images"],
+                "media_links": content["media_links"],
                 "media_urls": content["media_urls"],
                 "level": str(level),
                 "context": context,
@@ -620,6 +756,7 @@ def _page_lead(root: Tag, base_url: str) -> dict[str, Any]:
         (
             content["text"],
             content["images"],
+            content["media_links"],
             content["media_urls"],
         )
     ):
@@ -997,7 +1134,15 @@ class KirbyShinkakuClient:
                 )
             )
         images = _meaningful_image_urls(root, source_url)
-        media_urls = _meaningful_media_urls(root, source_url)
+        all_tables = list(lead.get("tables", []) or [])
+        for section in sections:
+            all_tables.extend(section.get("tables", []) or [])
+        associated_media_urls = _table_media_urls(all_tables)
+        media_links = [
+            row
+            for row in _meaningful_media_links(root, source_url)
+            if str(row.get("url") or "") not in associated_media_urls
+        ]
         result = {
             "title": title,
             "summary": summary,
@@ -1005,7 +1150,8 @@ class KirbyShinkakuClient:
             "url": source_url,
             "image_url": images[0] if images else "",
             "images": images,
-            "media_urls": media_urls,
+            "media_links": media_links,
+            "media_urls": [row["url"] for row in media_links],
             "sections": sections,
             "section_index": [
                 {

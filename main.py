@@ -192,7 +192,7 @@ class WikiTranslationIncompleteError(RuntimeError):
     PLUGIN_ID,
     "Whereis-Alice",
     "星之卡比盟友抽取、收藏图鉴与三百科查询插件",
-    "3.12.3",
+    "3.12.4",
     "https://github.com/Whereis-Alice/astrbot_plugin_kirby_catalog",
 )
 class KirbyCatalogPlugin(Star):
@@ -1822,6 +1822,7 @@ class KirbyCatalogPlugin(Star):
             "icon_url",
             "image_data_uri",
             "image_url",
+            "link_url",
             "media_url",
             "source_url",
             "url",
@@ -2675,6 +2676,7 @@ class KirbyCatalogPlugin(Star):
             detail_text=detail_text,
             rich_sections=rich_sections or [],
             image_bytes=(image_bytes if self._wiki_document_include_image() else None),
+            media_links=list(page.get("media_links", []) or []),
             media_urls=list(page.get("media_urls", []) or []),
             template_name=template_name,
             preserve_source_order=preserve_source_order,
@@ -4662,9 +4664,16 @@ class KirbyCatalogPlugin(Star):
                 for cell in row if isinstance(row, list) else []:
                     if isinstance(cell, dict):
                         text = str(cell.get("text", "") or "").strip()
-                        values.append(
-                            text or ("[图标]" if cell.get("icon_url") else "—")
-                        )
+                        has_icons = bool(cell.get("icons") or cell.get("icon_url"))
+                        value = text or ("[图标]" if has_icons else "—")
+                        links = [
+                            str(link.get("url") or "").strip()
+                            for link in cell.get("links", []) or []
+                            if isinstance(link, dict) and link.get("is_media")
+                        ]
+                        if links:
+                            value += "（视频：" + "、".join(links) + "）"
+                        values.append(value)
                     else:
                         values.append(str(cell or "—"))
                 if values:
@@ -4691,6 +4700,12 @@ class KirbyCatalogPlugin(Star):
                     icon_url = str(cell.get("icon_url", "") or "").strip()
                     if icon_url and icon_url not in urls:
                         urls.append(icon_url)
+                    for icon in cell.get("icons", []) or []:
+                        if not isinstance(icon, dict):
+                            continue
+                        icon_url = str(icon.get("url", "") or "").strip()
+                        if icon_url and icon_url not in urls:
+                            urls.append(icon_url)
         if not urls:
             return result
 
@@ -4744,6 +4759,17 @@ class KirbyCatalogPlugin(Star):
                     icon_url = str(cell.get("icon_url", "") or "").strip()
                     if icon_url and cache.get(icon_url):
                         cell["icon_data_uri"] = cache[icon_url]
+                    embedded_icons: List[Dict[str, Any]] = []
+                    for raw_icon in cell.get("icons", []) or []:
+                        if not isinstance(raw_icon, dict):
+                            continue
+                        icon = dict(raw_icon)
+                        source = str(icon.get("url", "") or "").strip()
+                        if source and cache.get(source):
+                            icon["data_uri"] = cache[source]
+                        embedded_icons.append(icon)
+                    if embedded_icons:
+                        cell["icons"] = embedded_icons
         return result
 
     async def _fandom_translate_rich_sections(
@@ -6350,7 +6376,6 @@ class KirbyCatalogPlugin(Star):
     @staticmethod
     def _shinkaku_narrative_text(details: Dict[str, Any]) -> str:
         lines: List[str] = []
-        seen_media: set[str] = set()
         for row in details.get("sections", []) or []:
             if not isinstance(row, dict):
                 continue
@@ -6366,14 +6391,52 @@ class KirbyCatalogPlugin(Star):
             ).strip()
             if narrative:
                 lines.append(narrative)
-            for url in row.get("media_urls", []) or []:
-                url = str(url or "").strip()
-                if url and url not in seen_media:
-                    seen_media.add(url)
-                    lines.append(f"相关视频：{url}")
             if title or narrative:
                 lines.append("")
         return "\n".join(lines).strip()
+
+    @staticmethod
+    def _shinkaku_media_text(source: Dict[str, Any]) -> str:
+        containers = [source]
+        if not (source.get("media_links") or source.get("media_urls")) and isinstance(
+            source.get("sections"), list
+        ):
+            containers = [
+                row for row in source.get("sections", []) if isinstance(row, dict)
+            ]
+
+        rows: List[Dict[str, str]] = []
+        seen: set[str] = set()
+        for container in containers:
+            media_links = container.get("media_links", []) or []
+            if not media_links:
+                media_links = [
+                    {"url": value, "label": "", "platform": ""}
+                    for value in container.get("media_urls", []) or []
+                ]
+            for raw_link in media_links:
+                if not isinstance(raw_link, dict):
+                    continue
+                url = str(raw_link.get("url") or "").strip()
+                if not url or url in seen:
+                    continue
+                seen.add(url)
+                rows.append(
+                    {
+                        "url": url,
+                        "label": str(raw_link.get("label") or "").strip(),
+                        "platform": str(raw_link.get("platform") or "媒体").strip()
+                        or "媒体",
+                    }
+                )
+        counters: Dict[str, int] = {}
+        lines: List[str] = []
+        for row in rows:
+            platform = row["platform"]
+            counters[platform] = counters.get(platform, 0) + 1
+            label = row["label"] or f"{platform} {counters[platform]}"
+            lines.append(f"- {label}：{row['url']}")
+        return "\n".join(lines)
 
     async def _shinkaku_page_content(
         self,
@@ -6520,6 +6583,9 @@ class KirbyCatalogPlugin(Star):
         )
         if response_detail_text:
             lines.extend([response_detail_text, ""])
+        media_text = self._shinkaku_media_text(details if section else page)
+        if media_text:
+            lines.extend(["【相关媒体】", media_text, ""])
         lines.append(f"来源：{page.get('url') or DEFAULT_SHINKAKU_SITE_URL}")
         return "\n".join(lines).strip(), summary, detail_text, rich_sections
 

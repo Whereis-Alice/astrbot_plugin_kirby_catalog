@@ -4,6 +4,8 @@ import time
 import unittest
 from pathlib import Path
 
+from bs4 import BeautifulSoup
+
 from astrbot_plugin_kirby_catalog.wiki_document import (
     build_wiki_document,
     cleanup_wiki_documents,
@@ -11,6 +13,69 @@ from astrbot_plugin_kirby_catalog.wiki_document import (
 
 
 class WikiDocumentTests(unittest.TestCase):
+    def test_document_keeps_multi_icons_and_cell_links_without_duplicate_media(self):
+        video_url = "https://www.youtube.com/watch?v=team"
+        unmatched_url = "https://www.nicovideo.jp/watch/unmatched"
+        rich_sections = [
+            {
+                "kind": "table",
+                "title": "Solo with Friends",
+                "headers": ["Icon", "Ability"],
+                "rows": [
+                    [
+                        {
+                            "text": "",
+                            "icons": [
+                                {"data_uri": "data:image/png;base64,AAA="},
+                                {"data_uri": "data:image/png;base64,BBB="},
+                            ],
+                            "icon_separator": "×",
+                        },
+                        {
+                            "text": "Susie x Mage-Sisters",
+                            "links": [
+                                {
+                                    "url": video_url,
+                                    "label": "Susie x Mage-Sisters",
+                                    "is_media": True,
+                                    "platform": "YouTube",
+                                }
+                            ],
+                        },
+                    ]
+                ],
+            }
+        ]
+
+        with tempfile.TemporaryDirectory() as temporary:
+            path = build_wiki_document(
+                Path(temporary),
+                wiki_name="Kirby Wiki",
+                title="Video Gallery",
+                source_url="https://example.test/wiki/Video_Gallery",
+                summary="Video records.",
+                detail_text="",
+                rich_sections=rich_sections,
+                media_links=[
+                    {"url": video_url, "label": "duplicate", "platform": "YouTube"},
+                    {"url": unmatched_url, "label": "", "platform": "Niconico"},
+                ],
+            )
+            document = path.read_text(encoding="utf-8")
+
+        soup = BeautifulSoup(document, "html.parser")
+        first_cell = soup.select_one("tbody td")
+        self.assertEqual(len(first_cell.select("img.table-icon")), 2)
+        self.assertEqual(first_cell.get_text(" ", strip=True), "×")
+        self.assertNotIn("—", first_cell.get_text())
+        self.assertEqual(
+            soup.select_one(f'td a[href="{video_url}"]').get_text(" ", strip=True),
+            "Susie x Mage-Sisters",
+        )
+        self.assertEqual(document.count(video_url), 1)
+        unmatched_link = soup.select_one(f'.media-section a[href="{unmatched_url}"]')
+        self.assertEqual(unmatched_link.get_text(" ", strip=True), "Niconico 1")
+
     def test_document_keeps_complete_text_table_icon_media_and_source(self):
         tail = "FINAL-CONTENT-MARKER"
         detail = "【Overview】\n" + ("Complete paragraph. " * 800) + tail
@@ -54,6 +119,9 @@ class WikiDocumentTests(unittest.TestCase):
         self.assertIn("https://www.youtube.com/embed/example", document)
         self.assertIn("https://example.test/wiki/Fighter", document)
         self.assertNotIn("omitted", document.casefold())
+        icon_cell = BeautifulSoup(document, "html.parser").select_one("tbody td")
+        self.assertEqual(icon_cell.get_text(strip=True), "")
+        self.assertNotIn("—", icon_cell.get_text())
 
     def test_cleanup_removes_only_expired_html_documents(self):
         with tempfile.TemporaryDirectory() as temporary:

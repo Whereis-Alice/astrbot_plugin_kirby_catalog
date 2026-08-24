@@ -661,6 +661,51 @@ class ShinkakuClientTests(unittest.IsolatedAsyncioTestCase):
             cell["icon_url"],
             "https://image01.seesaawiki.jp/k/u/kirby_shinkaku/ice.png",
         )
+        self.assertEqual(len(cell["icons"]), 1)
+
+    async def test_video_table_keeps_all_icons_links_and_drops_edit_column(self):
+        client = KirbyShinkakuClient(cache_ttl_seconds=0)
+        source = b"""
+        <div id="main">
+          <div id="page-header"><h2>Video Gallery</h2></div>
+          <h3>Solo</h3>
+          <div class="wiki-section-body-1"><table>
+            <tr><th>Icon</th><th>Ability</th><th class="table_edit_link"><a href="/kirby_shinkaku/e/edit">Edit</a></th></tr>
+            <tr>
+              <td><a href="/kirby_shinkaku/d/Ice"><img src="https://image01.seesaawiki.jp/k/u/kirby_shinkaku/ice.png"></a></td>
+              <td><a href="https://www.youtube.com/watch?v=ice">Ice</a></td>
+              <td class="table_edit_link"><a href="/kirby_shinkaku/e/edit">Edit</a></td>
+            </tr>
+            <tr>
+              <td><img src="https://image01.seesaawiki.jp/k/u/kirby_shinkaku/susie.png">x<img src="https://image02.seesaawiki.jp/k/u/kirby_shinkaku/mages.png"></td>
+              <td><a href="https://youtu.be/team">Susie x Mage-Sisters</a></td>
+              <td class="table_edit_link"><a href="/kirby_shinkaku/e/edit">Edit</a></td>
+            </tr>
+          </table><iframe src="https://www.nicovideo.jp/watch/unmatched"></iframe></div>
+        </div>
+        """
+        page = client._parse_page(
+            source,
+            "Video Gallery",
+            "https://seesaawiki.jp/kirby_shinkaku/d/Video_Gallery",
+        )
+
+        table = page["sections"][0]["tables"][0]
+        self.assertEqual(table["headers"], ["Icon", "Ability"])
+        self.assertEqual(table["column_count"], 2)
+        self.assertEqual(table["rows"][0][0]["text"], "")
+        self.assertEqual(len(table["rows"][0][0]["icons"]), 1)
+        self.assertTrue(table["rows"][0][0]["icons"][0]["link_url"].endswith("/Ice"))
+        self.assertEqual(len(table["rows"][1][0]["icons"]), 2)
+        self.assertEqual(table["rows"][1][0]["icon_separator"], "×")
+        self.assertEqual(
+            table["rows"][1][1]["links"][0]["url"],
+            "https://youtu.be/team",
+        )
+        self.assertEqual(
+            page["media_urls"],
+            ["https://www.nicovideo.jp/watch/unmatched"],
+        )
 
     async def test_parser_keeps_bare_text_toggles_rowspans_hierarchy_and_video(self):
         client = KirbyShinkakuClient(cache_ttl_seconds=0)
@@ -930,6 +975,29 @@ class ShinkakuCommandTests(unittest.IsolatedAsyncioTestCase):
         plugin.store = None
         return plugin
 
+    async def test_unmatched_media_is_separate_from_document_narrative(self):
+        details = {
+            "sections": [
+                {
+                    "title": "Video",
+                    "text_without_tables": "Record notes.",
+                    "media_links": [
+                        {
+                            "url": "https://youtu.be/example",
+                            "label": "Example run",
+                            "platform": "YouTube",
+                        }
+                    ],
+                }
+            ]
+        }
+
+        narrative = KirbyCatalogPlugin._shinkaku_narrative_text(details)
+        media = KirbyCatalogPlugin._shinkaku_media_text(details)
+
+        self.assertNotIn("youtu.be", narrative)
+        self.assertIn("Example run：https://youtu.be/example", media)
+
     async def test_page_command_uses_normal_message_and_page_content(self):
         plugin = self.make_plugin()
 
@@ -1187,8 +1255,25 @@ class ShinkakuCommandTests(unittest.IsolatedAsyncioTestCase):
                 "headers": ["Icon", "Ability", "Rating", "Record"],
                 "rows": [
                     [
-                        {"text": "", "icon_url": "https://example.test/ice.png"},
-                        {"text": "Ice", "icon_url": ""},
+                        {
+                            "text": "",
+                            "icon_url": "https://example.test/ice.png",
+                            "icons": [
+                                {"url": "https://example.test/ice.png"},
+                                {"url": "https://example.test/friend.png"},
+                            ],
+                        },
+                        {
+                            "text": "Ice",
+                            "icon_url": "",
+                            "links": [
+                                {
+                                    "url": "https://youtu.be/ice",
+                                    "label": "Ice",
+                                    "is_media": True,
+                                }
+                            ],
+                        },
                         {"text": "SS", "icon_url": ""},
                         {"text": "34.17", "icon_url": ""},
                     ]
@@ -1212,9 +1297,47 @@ class ShinkakuCommandTests(unittest.IsolatedAsyncioTestCase):
             result[0]["rows"][0][0]["icon_url"],
             "https://example.test/ice.png",
         )
+        self.assertEqual(len(result[0]["rows"][0][0]["icons"]), 2)
+        self.assertEqual(
+            result[0]["rows"][0][1]["links"][0]["url"],
+            "https://youtu.be/ice",
+        )
         self.assertEqual(result[0]["rows"][0][1]["text"], "冰")
         self.assertEqual(result[0]["rows"][0][2]["text"], "SS")
         self.assertEqual(result[0]["rows"][0][3]["text"], "34.17")
+
+    async def test_table_icon_embedding_keeps_every_icon(self):
+        class IconClient:
+            async def get_image_bytes(self, image_url):
+                return b"\x89PNG\r\n\x1a\n" + image_url.encode("ascii")
+
+        plugin = self.make_plugin()
+        plugin._shinkaku_table_icon_cache = {}
+        source = [
+            {
+                "kind": "table",
+                "headers": ["Icon"],
+                "rows": [
+                    [
+                        {
+                            "text": "",
+                            "icon_url": "https://example.test/one.png",
+                            "icons": [
+                                {"url": "https://example.test/one.png"},
+                                {"url": "https://example.test/two.png"},
+                            ],
+                        }
+                    ]
+                ],
+            }
+        ]
+
+        result = await plugin._shinkaku_embed_table_icons(IconClient(), source)
+
+        cell = result[0]["rows"][0][0]
+        self.assertTrue(cell["icon_data_uri"].startswith("data:image/png;base64,"))
+        self.assertEqual(len(cell["icons"]), 2)
+        self.assertTrue(all(icon.get("data_uri") for icon in cell["icons"]))
 
     async def test_long_table_translation_is_batched_without_losing_rows(self):
         plugin = self.make_plugin()
