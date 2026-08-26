@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import re
 import tempfile
 import unittest
 from io import BytesIO
@@ -15,10 +16,14 @@ from PIL import Image
 from astrbot_plugin_kirby_catalog.catalog_core import CatalogStore
 from astrbot_plugin_kirby_catalog.webui import (
     MAX_UPLOAD_BYTES,
+    MODERN_WEB_API,
     PLUGIN_ID,
+    THUMBNAIL_CACHE_LIMIT,
     CatalogAdminService,
     KirbyCatalogWebUI,
+    _bounded_int,
     _decode_terminology_id,
+    _normalize_theme,
 )
 from astrbot_plugin_kirby_catalog.wiki_index import WikiIndexStore
 from astrbot_plugin_kirby_catalog.terminology import (
@@ -315,9 +320,10 @@ class CatalogAdminServiceTests(unittest.TestCase):
             root = Path(temp)
             store, service = self.make_service(root)
             self.assertEqual(
-                service.save_preferences({"theme": "dark"}, "alice"), {"theme": "dark"}
+                service.save_preferences({"theme": "dark"}, "alice"),
+                {"theme": "starlight"},
             )
-            self.assertEqual(service.preferences("alice"), {"theme": "dark"})
+            self.assertEqual(service.preferences("alice"), {"theme": "starlight"})
 
             with patch.object(store, "_save_audit_entries"):
                 for index in range(1005):
@@ -330,7 +336,9 @@ class CatalogAdminServiceTests(unittest.TestCase):
             reloaded = CatalogStore(root / "data", image_base_url="")
             self.assertEqual(len(reloaded._audit_entries), 1000)
             reloaded_service = CatalogAdminService(reloaded)
-            self.assertEqual(reloaded_service.preferences("alice"), {"theme": "dark"})
+            self.assertEqual(
+                reloaded_service.preferences("alice"), {"theme": "starlight"}
+            )
 
     def test_manages_terminology_overrides_and_does_not_create_group_data(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -403,6 +411,194 @@ class CatalogAdminServiceTests(unittest.TestCase):
             deleted = service.restore_terminology(custom["term_id"], "admin")
             self.assertTrue(deleted["deleted"])
             self.assertIsNone(terminology.entry(custom["term_id"]))
+
+    def make_terminology(self, root: Path):
+        store = CatalogStore(root / "data", image_base_url="")
+        bundled_path = root / "bundled-terminology.json"
+        bundled_path.write_text(
+            json.dumps(
+                terminology_document(
+                    [
+                        TerminologyEntry.from_mapping(
+                            {
+                                "term_id": "character:kirby",
+                                "category": "character",
+                                "zh_cn": "卡比",
+                                "en": "Kirby",
+                                "ja": "カービィ",
+                                "zh_status": "official",
+                            }
+                        )
+                    ]
+                ),
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        terminology = KirbyTerminologyStore(
+            bundled_path,
+            store.config_dir / "terminology_overrides.json",
+        )
+        return store, terminology, CatalogAdminService(store, terminology)
+
+    def test_theme_whitelist_migrates_legacy_values_and_rejects_unknown(self):
+        self.assertEqual(_normalize_theme("  Dreamland "), "dreamland")
+        self.assertEqual(_normalize_theme("KIRBY"), "dreamland")
+        self.assertEqual(_normalize_theme("light"), "dreamland")
+        self.assertEqual(_normalize_theme("dark"), "starlight")
+        self.assertEqual(_normalize_theme("meta"), "metaknight")
+        self.assertEqual(_normalize_theme("rainbow"), "")
+        self.assertEqual(_normalize_theme(None), "")
+        self.assertEqual(_normalize_theme(["dreamland"]), "")
+
+        with tempfile.TemporaryDirectory() as temp:
+            _store, service = self.make_service(Path(temp))
+            for theme in ("auto", "dreamland", "starlight", "metaknight"):
+                self.assertEqual(
+                    service.save_preferences({"theme": theme}, "alice"),
+                    {"theme": theme},
+                )
+                self.assertEqual(service.preferences("alice"), {"theme": theme})
+
+            self.assertEqual(
+                service.save_preferences({"theme": "kirby"}, "bob"),
+                {"theme": "dreamland"},
+            )
+            self.assertEqual(service.preferences("bob"), {"theme": "dreamland"})
+            self.assertEqual(
+                service.save_preferences({"theme": " DARK "}, "bob"),
+                {"theme": "starlight"},
+            )
+            self.assertEqual(service.preferences("bob"), {"theme": "starlight"})
+            self.assertEqual(
+                service.save_preferences({"theme": "meta"}, "bob"),
+                {"theme": "metaknight"},
+            )
+            self.assertEqual(service.preferences("bob"), {"theme": "metaknight"})
+
+            with self.assertRaisesRegex(ValueError, "主题选项无效"):
+                service.save_preferences({"theme": "rainbow"}, "bob")
+            self.assertEqual(service.preferences("bob"), {"theme": "metaknight"})
+
+            service.preferences_path.write_text(
+                json.dumps(
+                    {
+                        "version": 1,
+                        "users": {
+                            "carol": {"theme": "kirby"},
+                            "dave": {"theme": "neon"},
+                            "erin": {"theme": ["broken"]},
+                            "frank": "not-a-mapping",
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            self.assertEqual(service.preferences("carol"), {"theme": "dreamland"})
+            self.assertEqual(service.preferences("dave"), {"theme": "auto"})
+            self.assertEqual(service.preferences("erin"), {"theme": "auto"})
+            self.assertEqual(service.preferences("frank"), {"theme": "auto"})
+            self.assertEqual(service.preferences("nobody"), {"theme": "auto"})
+
+    def test_bounded_int_clamps_into_range(self):
+        self.assertEqual(_bounded_int(250, 100, 1, 500), 250)
+        self.assertEqual(_bounded_int(1, 100, 1, 500), 1)
+        self.assertEqual(_bounded_int(500, 100, 1, 500), 500)
+        self.assertEqual(_bounded_int(0, 100, 1, 500), 1)
+        self.assertEqual(_bounded_int(-9, 100, 1, 500), 1)
+        self.assertEqual(_bounded_int(10**9, 100, 1, 500), 500)
+        self.assertEqual(_bounded_int("42", 100, 1, 500), 42)
+        self.assertEqual(_bounded_int(None, 100, 1, 500), 100)
+        self.assertEqual(_bounded_int("abc", 100, 1, 500), 100)
+        self.assertEqual(_bounded_int(THUMBNAIL_CACHE_LIMIT, 100, 1, 500), 500)
+
+    @staticmethod
+    def stable_export(raw: bytes, format_name: str):
+        """Drop the export timestamp so two exports can be compared."""
+        if format_name.casefold() != "json":
+            return raw
+        document = json.loads(raw.decode("utf-8"))
+        document.pop("generated_at", None)
+        return document
+
+    def test_export_terminology_bytes_matches_base64_export(self):
+        with tempfile.TemporaryDirectory() as temp:
+            _store, _terminology, service = self.make_terminology(Path(temp))
+
+            cases = (
+                ("json", "merged", "application/json; charset=utf-8"),
+                ("JSON", "override", "application/json; charset=utf-8"),
+                ("csv", "overrides", "text/csv; charset=utf-8"),
+                ("csv", "merged", "text/csv; charset=utf-8"),
+            )
+            for format_name, scope, mime in cases:
+                with self.subTest(format=format_name, scope=scope):
+                    data, filename, mime_type, revision = (
+                        service.export_terminology_bytes(format_name, scope)
+                    )
+                    legacy = service.export_terminology(format_name, scope)
+                    label = (
+                        "overrides"
+                        if scope in {"override", "overrides"}
+                        else "merged"
+                    )
+                    expected_name = (
+                        f"kirby_terminology_{label}.{format_name.casefold()}"
+                    )
+                    self.assertIsInstance(data, bytes)
+                    self.assertEqual(
+                        self.stable_export(data, format_name),
+                        self.stable_export(
+                            base64.b64decode(legacy["content_base64"]), format_name
+                        ),
+                    )
+                    self.assertEqual(filename, expected_name)
+                    self.assertEqual(filename, legacy["filename"])
+                    self.assertEqual(mime_type, mime)
+                    self.assertEqual(mime_type, legacy["mime_type"])
+                    self.assertEqual(revision, legacy["revision"])
+
+            merged = service.export_terminology_bytes("json")[0].decode("utf-8")
+            self.assertIn("卡比", merged)
+            with self.assertRaisesRegex(ValueError, "JSON 或 CSV"):
+                service.export_terminology_bytes("xml")
+
+    def test_list_users_sorts_by_unlocks_then_nickname(self):
+        with tempfile.TemporaryDirectory() as temp:
+            store, service = self.make_service(Path(temp))
+            entry = store.add_asset("卡比", self.make_image(), "星之卡比")
+            unlocked = [
+                {"ally_filename": entry["filename"], "unlock_date": "2026-08-01"}
+            ]
+            store.save_group(
+                "100",
+                {
+                    "1": {
+                        "current": {"ally_filename": "", "date": ""},
+                        "unlocked": list(unlocked),
+                        "nickname": "Z",
+                    },
+                    "2": {
+                        "current": {"ally_filename": "", "date": ""},
+                        "unlocked": list(unlocked),
+                        "nickname": "A",
+                    },
+                    "3": {
+                        "current": {"ally_filename": "", "date": ""},
+                        "unlocked": [],
+                        "nickname": "B",
+                    },
+                },
+            )
+
+            result = service.list_users(
+                {"group_id": "100", "page": 1, "page_size": 30}
+            )
+
+            self.assertEqual(
+                [row["nickname"] for row in result["items"]], ["A", "Z", "B"]
+            )
+            self.assertEqual([row["unlocked"] for row in result["items"]], [1, 1, 0])
 
     def test_manages_all_wiki_indexes_without_creating_group_data(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -499,7 +695,7 @@ class KirbyCatalogWebUiRegistrationTests(unittest.TestCase):
 
             webui.register()
 
-            self.assertEqual(len(routes), 31)
+            self.assertEqual(len(routes), 32)
             self.assertTrue(
                 all(route[0].startswith(f"/{PLUGIN_ID}/admin/") for route in routes)
             )
@@ -510,6 +706,12 @@ class KirbyCatalogWebUiRegistrationTests(unittest.TestCase):
             self.assertIn(f"/{PLUGIN_ID}/admin/terminology-entry", paths)
             self.assertIn(f"/{PLUGIN_ID}/admin/terminology/entry", paths)
             self.assertIn(f"/{PLUGIN_ID}/admin/terminology/<term_id>", paths)
+            self.assertIn(f"/{PLUGIN_ID}/admin/terminology/download", paths)
+            ordered = [route[0] for route in routes]
+            self.assertLess(
+                ordered.index(f"/{PLUGIN_ID}/admin/terminology/download"),
+                ordered.index(f"/{PLUGIN_ID}/admin/terminology/<term_id>"),
+            )
             self.assertIn(f"/{PLUGIN_ID}/admin/terminology/save", paths)
             self.assertIn(f"/{PLUGIN_ID}/admin/wiki-index", paths)
             self.assertIn(f"/{PLUGIN_ID}/admin/wiki-index-entry", paths)
@@ -547,35 +749,269 @@ class KirbyCatalogWebUiRegistrationTests(unittest.TestCase):
                 webui.terminology_entry_path.__func__,
             )
 
-    def test_page_bundle_uses_bridge_local_icons_and_responsive_themes(self):
+    @unittest.skipIf(
+        MODERN_WEB_API, "quart fallback path is exercised on AstrBot < 4.26"
+    )
+    def test_download_terminology_streams_raw_bytes_with_attachment_headers(self):
+        import quart
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = CatalogStore(root / "data", image_base_url="")
+            bundled_path = root / "bundled-terminology.json"
+            bundled_path.write_text(
+                json.dumps(
+                    terminology_document(
+                        [
+                            TerminologyEntry.from_mapping(
+                                {
+                                    "term_id": "character:kirby",
+                                    "category": "character",
+                                    "zh_cn": "卡比",
+                                    "en": "Kirby",
+                                    "ja": "カービィ",
+                                    "zh_status": "official",
+                                }
+                            )
+                        ]
+                    ),
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            terminology = KirbyTerminologyStore(
+                bundled_path,
+                store.config_dir / "terminology_overrides.json",
+            )
+            webui = KirbyCatalogWebUI(
+                SimpleNamespace(register_web_api=lambda *args: None),
+                store,
+                asyncio.Lock(),
+                terminology,
+            )
+            app = quart.Quart(__name__)
+            expected = json.loads(
+                webui.service.export_terminology_bytes("json", "merged")[0]
+            )
+            expected.pop("generated_at", None)
+
+            async def download(query):
+                async with app.test_request_context(
+                    "/download", method="GET", query_string=query
+                ):
+                    response = await webui.download_terminology()
+                    return (
+                        response.status_code,
+                        dict(response.headers),
+                        await response.get_data(),
+                    )
+
+            status, headers, body = asyncio.run(
+                download({"format": "json", "scope": "merged"})
+            )
+
+            self.assertEqual(status, 200)
+            document = json.loads(body)
+            document.pop("generated_at", None)
+            self.assertEqual(document, expected)
+            self.assertIn("卡比", body.decode("utf-8"))
+            self.assertEqual(
+                headers["Content-Disposition"],
+                'attachment; filename="kirby_terminology_merged.json"; '
+                "filename*=UTF-8''kirby_terminology_merged.json",
+            )
+            self.assertEqual(headers["Content-Length"], str(len(body)))
+            self.assertEqual(headers["Cache-Control"], "no-store")
+            self.assertIn("application/json", headers["Content-Type"])
+
+            status, headers, body = asyncio.run(
+                download({"format": "csv", "scope": "override"})
+            )
+            self.assertEqual(status, 200)
+            self.assertEqual(
+                headers["Content-Disposition"],
+                'attachment; filename="kirby_terminology_overrides.csv"; '
+                "filename*=UTF-8''kirby_terminology_overrides.csv",
+            )
+            self.assertIn("text/csv", headers["Content-Type"])
+
+            status, _headers, body = asyncio.run(download({"format": "xml"}))
+            self.assertEqual(status, 400)
+            self.assertIn("JSON", json.loads(body)["message"])
+
+    def test_page_bundle_is_modular_bridge_only_and_self_contained(self):
         plugin_root = Path(__file__).parents[1]
         page_root = plugin_root / "pages" / "catalog-admin"
         index = (page_root / "index.html").read_text(encoding="utf-8")
-        script = (page_root / "app.js").read_text(encoding="utf-8")
-        styles = (page_root / "style.css").read_text(encoding="utf-8")
+        boot = (page_root / "app.js").read_text(encoding="utf-8")
+        script_files = sorted(page_root.glob("js/**/*.js"))
+        style_files = sorted(page_root.glob("styles/*.css"))
+        script = boot + "\n".join(
+            path.read_text(encoding="utf-8") for path in script_files
+        )
+        styles = "\n".join(
+            path.read_text(encoding="utf-8") for path in style_files
+        )
+        # Calls are formatted across lines by prettier, so match on a collapsed copy.
+        calls = re.sub(r"\s+", "", script)
 
-        self.assertIn("./vendor/lucide.min.js", index)
-        self.assertNotIn("cdn.", index.lower())
-        self.assertIn("window.AstrBotPluginPage", script)
-        self.assertIn("state.bridge.onContextChange || state.bridge.onContext", script)
-        self.assertIn('apiPost("admin/entries/save"', script)
-        self.assertIn('apiPost("admin/groups/user/save"', script)
-        self.assertIn('apiPost("admin/entries/add"', script)
-        self.assertIn('apiPost("admin/entries/delete"', script)
-        self.assertIn('apiPost("admin/trash/restore"', script)
-        self.assertIn('apiGet("admin/terminology-entry"', script)
-        self.assertIn('apiPost("admin/terminology/save"', script)
-        self.assertIn('apiUpload("admin/terminology/import"', script)
-        self.assertIn('apiGet("admin/wiki-index"', script)
-        self.assertIn('apiPost("admin/wiki-index/save"', script)
-        self.assertIn('apiPost("admin/wiki-index/restore"', script)
-        self.assertIn('data-view="wiki-index"', index)
-        self.assertIn(".wiki-index-table", styles)
-        self.assertIn("confirmAction({", script)
-        self.assertIn(':root[data-theme="kirby"]', styles)
-        self.assertIn(':root[data-effective-theme="dark"]', styles)
-        self.assertIn("@media (max-width: 720px)", styles)
-        self.assertTrue((page_root / "vendor" / "lucide.min.js").is_file())
+        # The legacy monolith and the vendored icon bundle are gone for good.
+        self.assertFalse((page_root / "style.css").exists())
+        self.assertFalse((page_root / "vendor").exists())
+        self.assertGreaterEqual(len(script_files), 20)
+        self.assertEqual(
+            [path.name for path in style_files],
+            ["base.css", "components.css", "tokens.css", "views.css"],
+        )
+
+        # No external network dependency of any kind.
+        for blob in (index, script, styles):
+            lowered = blob.lower()
+            self.assertNotIn("cdn.", lowered)
+            self.assertNotIn("https://unpkg", lowered)
+            self.assertNotIn("@import", lowered)
+
+        # Styles are linked in cascade order; the entry point is an ES module.
+        for name in ("tokens", "base", "components", "views"):
+            self.assertIn(f'href="./styles/{name}.css"', index)
+        self.assertIn('<script type="module" src="./app.js"', index)
+        self.assertLess(
+            index.index('href="./styles/tokens.css"'),
+            index.index('href="./styles/views.css"'),
+        )
+
+        # Every relative asset reference resolves to a file that ships with the
+        # plugin, because the host rewrites static literals only.
+        references = set(
+            re.findall(r'(?:href|src)="(\./[^"]+)"', index)
+        )
+        self.assertTrue(references)
+        for reference in references:
+            self.assertTrue(
+                (page_root / reference[2:]).is_file(),
+                f"index.html references missing asset {reference}",
+            )
+        for path in [page_root / "app.js", *script_files]:
+            body = path.read_text(encoding="utf-8")
+            for specifier in re.findall(
+                r'^\s*(?:import|export)[^\n]*?from\s+"(\.[^"]+)"',
+                body,
+                re.MULTILINE,
+            ):
+                target = (path.parent / specifier).resolve()
+                self.assertTrue(
+                    target.is_file(),
+                    f"{path.name} imports missing module {specifier}",
+                )
+            self.assertNotIn("await import(", body)
+
+        # Icons are inlined SVG, not a runtime icon library lookup.
+        glyphs = (page_root / "js" / "core" / "icon-glyphs.js").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('"<path d=', glyphs)
+        self.assertGreaterEqual(glyphs.count('": "'), 80)
+        renderer = (page_root / "js" / "core" / "icons.js").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("stroke-linecap", renderer)
+        self.assertIn("ICON_GLYPHS", renderer)
+        self.assertNotIn("lucide", index.lower())
+        self.assertTrue(
+            "window.lucide" not in script,
+            "icons must not depend on a runtime icon library",
+        )
+
+        # The page talks to the host through the injected bridge only.
+        bridge = (page_root / "js" / "core" / "bridge.js").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("window.AstrBotPluginPage", bridge)
+        self.assertIn("bridge.onContext ===", boot)
+        self.assertIn("bridge.onContextChange ===", boot)
+        self.assertTrue("fetch(" not in script, "page must not bypass the bridge")
+        self.assertTrue(
+            "XMLHttpRequest" not in script, "page must not bypass the bridge"
+        )
+
+        # Each backend endpoint stays wired to the rebuilt front end.
+        for endpoint in (
+            'apiGet("admin/summary"',
+            'apiPost("admin/preferences"',
+            'apiGet("admin/entries"',
+            'apiPost("admin/entries/save"',
+            'apiPost("admin/entries/add"',
+            'apiPost("admin/entries/delete"',
+            'apiUpload("admin/uploads/image"',
+            'apiGet("admin/trash"',
+            'apiPost("admin/trash/restore"',
+            'apiGet("admin/groups"',
+            'apiGet("admin/groups/users"',
+            'apiGet("admin/groups/user"',
+            'apiPost("admin/groups/user/save"',
+            'apiPost("admin/groups/user/unlock"',
+            'apiPost("admin/groups/user/delete"',
+            'apiPost("admin/groups/reset-draws"',
+            'apiGet("admin/audit"',
+            'apiGet("admin/terminology"',
+            'apiGet("admin/terminology-entry"',
+            'apiPost("admin/terminology/save"',
+            'apiPost("admin/terminology/restore"',
+            'apiDownload("admin/terminology/download"',
+            'apiUpload("admin/terminology/import"',
+            'apiGet("admin/wiki-index"',
+            'apiGet("admin/wiki-index-entry"',
+            'apiPost("admin/wiki-index/save"',
+            'apiPost("admin/wiki-index/restore"',
+        ):
+            self.assertTrue(
+                re.sub(r"\s+", "", endpoint) in calls,
+                f"front end no longer calls {endpoint}",
+            )
+        self.assertTrue("confirmAction({" in script, "destructive actions need confirm")
+
+        # Seven views exist as nav entries and panels.
+        for view in (
+            "overview",
+            "catalog",
+            "terminology",
+            "wiki-index",
+            "groups",
+            "trash",
+            "audit",
+        ):
+            self.assertIn(f'data-view="{view}"', index)
+            self.assertIn(f'data-view-panel="{view}"', index)
+
+        # Skins live on data-kirby-skin because the host rewrites data-theme.
+        self.assertIn('data-kirby-theme="auto"', index)
+        self.assertIn('data-kirby-skin="dreamland"', index)
+        for skin in ("dreamland", "starlight", "metaknight"):
+            self.assertTrue(
+                f'[data-kirby-skin="{skin}"]' in styles,
+                f"skin {skin} has no tokens",
+            )
+            self.assertIn(f'data-theme-option="{skin}"', index)
+        self.assertIn('data-theme-option="auto"', index)
+        self.assertTrue(
+            "data-effective-theme" not in styles,
+            "the legacy data-effective-theme hook must be gone",
+        )
+        for needle in (
+            "prefers-reduced-motion",
+            "@media print",
+            ".wiki-index-table",
+        ):
+            self.assertTrue(needle in styles, f"stylesheet lost {needle}")
+        # Two breakpoints per layer: tablet collapse and phone single column.
+        breakpoints = sorted(
+            {int(value) for value in re.findall(r"max-width:\s*(\d+)px", styles)}
+        )
+        self.assertTrue(
+            any(value >= 1000 for value in breakpoints)
+            and any(value <= 700 for value in breakpoints),
+            f"responsive breakpoints missing: {breakpoints}",
+        )
         self.assertTrue(
             (plugin_root / ".astrbot-plugin" / "i18n" / "zh-CN.json").is_file()
         )
@@ -598,7 +1034,7 @@ class KirbyCatalogWebUiRegistrationTests(unittest.TestCase):
                 plugin = plugin_main.KirbyCatalogPlugin(context, {})
 
             self.assertIsNotNone(plugin.webui)
-            self.assertEqual(len(routes), 31)
+            self.assertEqual(len(routes), 32)
             self.assertIs(plugin.webui.write_lock, plugin._draw_lock)
             self.assertEqual(plugin.store.legacy_dirs, [])
             self.assertFalse(plugin.store._profiles_loaded)

@@ -48,11 +48,12 @@ editorial translations rather than claims of official Nintendo localization.
 
 ## Lucide icons
 
-The catalog management Page bundles Lucide `v1.28.0` in
-`pages/catalog-admin/vendor/lucide.min.js`. Lucide is distributed under the
-ISC License. Icons derived from the Feather project remain available under the
-MIT License. The complete notices are included at
-[`LICENSES/LUCIDE-ISC.txt`](LICENSES/LUCIDE-ISC.txt).
+The catalog management Page no longer ships the Lucide runtime. Since v4.0.0 it
+inlines the individual glyph path data for the icons it actually renders in
+`pages/catalog-admin/js/core/icon-glyphs.js`, extracted from Lucide `v1.28.0`.
+Lucide is distributed under the ISC License. Icons derived from the Feather
+project remain available under the MIT License. The complete notices are
+included at [`LICENSES/LUCIDE-ISC.txt`](LICENSES/LUCIDE-ISC.txt).
 
 ## Plugin code
 

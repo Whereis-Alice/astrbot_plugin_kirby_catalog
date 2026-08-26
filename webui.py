@@ -10,7 +10,7 @@ from collections import Counter, OrderedDict
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional
-from urllib.parse import unquote
+from urllib.parse import quote, unquote
 
 from PIL import Image, ImageOps
 
@@ -30,6 +30,14 @@ PLUGIN_ID = "astrbot_plugin_kirby_catalog"
 MAX_UPLOAD_BYTES = 16 * 1024 * 1024
 MAX_DESCRIPTION_CHARS = 30000
 THUMBNAIL_SIZE = 192
+THUMBNAIL_CACHE_LIMIT = 512
+_THEME_CHOICES = ("auto", "dreamland", "starlight", "metaknight")
+_LEGACY_THEME_ALIASES = {
+    "kirby": "dreamland",
+    "light": "dreamland",
+    "dark": "starlight",
+    "meta": "metaknight",
+}
 
 try:
     from astrbot.api.web import (
@@ -37,6 +45,7 @@ try:
         error_response,
         json_response,
         request,
+        stream_response,
     )
 
     MODERN_WEB_API = True
@@ -70,6 +79,25 @@ except ImportError:  # pragma: no cover - compatibility for AstrBot < 4.26
             status_code=status_code,
             headers=headers,
         )
+
+    def stream_response(
+        content: Any,
+        *,
+        content_type: str = "text/event-stream",
+        status_code: int = 200,
+        headers: Optional[Dict[str, str]] = None,
+    ):
+        from quart import Response
+
+        if isinstance(content, (bytes, bytearray, memoryview)):
+            payload = bytes(content)
+        else:
+            payload = b"".join(bytes(chunk) for chunk in content)
+        response = Response(payload, mimetype=content_type)
+        response.status_code = status_code
+        if headers:
+            response.headers.update(headers)
+        return response
 
 
 def _query_value(key: str, default: Any = None, converter: Any = None) -> Any:
@@ -125,6 +153,28 @@ def _bounded_text(value: Any, label: str, maximum: int, *, required: bool) -> st
     if len(text) > maximum:
         raise ValueError(f"{label}不能超过 {maximum} 个字符")
     return text
+
+
+def _bounded_int(value: Any, default: int, minimum: int, maximum: int) -> int:
+    """Clamp a query parameter into ``[minimum, maximum]``, falling back to ``default``."""
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        number = default
+    return max(minimum, min(maximum, number))
+
+
+def _normalize_theme(value: Any) -> str:
+    """Map a stored or submitted theme onto the current whitelist.
+
+    Legacy names are migrated silently. An empty string is returned when the
+    value cannot be resolved so callers decide between a fallback and an error.
+    """
+    theme = str(value or "").strip().casefold()
+    if not theme:
+        return ""
+    theme = _LEGACY_THEME_ALIASES.get(theme, theme)
+    return theme if theme in _THEME_CHOICES else ""
 
 
 def _page_values(payload: Mapping[str, Any] | None = None) -> tuple[int, int]:
@@ -254,7 +304,7 @@ class CatalogAdminService:
             return ""
         with self._thumbnail_lock:
             self._thumbnail_cache[cache_key] = uri
-            while len(self._thumbnail_cache) > 256:
+            while len(self._thumbnail_cache) > THUMBNAIL_CACHE_LIMIT:
                 self._thumbnail_cache.popitem(last=False)
         return uri
 
@@ -335,24 +385,25 @@ class CatalogAdminService:
 
     def summary(self, username: str) -> Dict[str, Any]:
         entries = self.store.entries()
-        missing_assets = sum(self.store.asset_path(entry) is None for entry in entries)
-        missing_descriptions = sum(
-            not self.store.description_for(entry) for entry in entries
-        )
-        manual_entries = sum(
-            str(entry.get("catalog_kind") or "") == "manual" for entry in entries
-        )
+        missing_assets = 0
+        missing_descriptions = 0
+        manual_entries = 0
+        source_counts: Counter[str] = Counter()
+        kind_counts: Counter[str] = Counter()
+        for entry in entries:
+            if self.store.asset_path(entry) is None:
+                missing_assets += 1
+            if not self.store.description_for(entry):
+                missing_descriptions += 1
+            if str(entry.get("catalog_kind") or "") == "manual":
+                manual_entries += 1
+            source_counts[str(entry.get("source") or "未标注")] += 1
+            kind_counts[str(entry.get("catalog_kind") or "legacy")] += 1
         reference_index = self._catalog_reference_index(entries)
         groups = [
             self._group_summary(group_id, reference_index, len(entries))
             for group_id in self.store.group_ids()
         ]
-        source_counts = Counter(
-            str(entry.get("source") or "未标注") for entry in entries
-        )
-        kind_counts = Counter(
-            str(entry.get("catalog_kind") or "legacy") for entry in entries
-        )
         return {
             "catalog": {
                 "entries": len(entries),
@@ -659,7 +710,10 @@ class CatalogAdminService:
         )
         return row
 
-    def export_terminology(self, format_name: str = "json", scope: str = "merged") -> Dict[str, Any]:
+    def export_terminology_bytes(
+        self, format_name: str = "json", scope: str = "merged"
+    ) -> tuple[bytes, str, str, str]:
+        """返回 (data, filename, mime_type, revision)。"""
         store = self._terminology_store()
         normalized_format = str(format_name or "json").strip().casefold()
         if normalized_format not in {"json", "csv"}:
@@ -673,15 +727,30 @@ class CatalogAdminService:
             if normalized_format == "json"
             else store.export_csv(overrides_only=overrides_only)
         )
+        scope_label = "overrides" if overrides_only else "merged"
+        mime_type = (
+            "application/json; charset=utf-8"
+            if normalized_format == "json"
+            else "text/csv; charset=utf-8"
+        )
+        return (
+            data,
+            f"kirby_terminology_{scope_label}.{normalized_format}",
+            mime_type,
+            store.revision,
+        )
+
+    def export_terminology(
+        self, format_name: str = "json", scope: str = "merged"
+    ) -> Dict[str, Any]:
+        data, filename, mime_type, revision = self.export_terminology_bytes(
+            format_name, scope
+        )
         return {
-            "filename": f"kirby_terminology_{'overrides' if overrides_only else 'merged'}.{normalized_format}",
-            "mime_type": (
-                "application/json; charset=utf-8"
-                if normalized_format == "json"
-                else "text/csv; charset=utf-8"
-            ),
+            "filename": filename,
+            "mime_type": mime_type,
             "content_base64": base64.b64encode(data).decode("ascii"),
-            "revision": store.revision,
+            "revision": revision,
         }
 
     def import_terminology(
@@ -1108,7 +1177,12 @@ class CatalogAdminService:
             or query in user_id.casefold()
             or query in str(user.get("nickname") or "").casefold()
         ]
-        rows.sort(key=lambda item: (item["unlocked"], item["nickname"]), reverse=True)
+        rows.sort(
+            key=lambda item: (
+                -int(item["unlocked"] or 0),
+                str(item["nickname"] or ""),
+            )
+        )
         total = len(rows)
         start = (page - 1) * page_size
         return {
@@ -1226,16 +1300,14 @@ class CatalogAdminService:
         raw = _read_json(self.preferences_path, {})
         users = raw.get("users", {}) if isinstance(raw, dict) else {}
         value = users.get(username, {}) if isinstance(users, dict) else {}
-        theme = str(value.get("theme") or "auto") if isinstance(value, dict) else "auto"
-        if theme not in {"auto", "kirby", "dark"}:
-            theme = "auto"
-        return {"theme": theme}
+        theme = _normalize_theme(value.get("theme")) if isinstance(value, dict) else ""
+        return {"theme": theme or "auto"}
 
     def save_preferences(
         self, payload: Mapping[str, Any], username: str
     ) -> Dict[str, Any]:
-        theme = str(payload.get("theme") or "auto")
-        if theme not in {"auto", "kirby", "dark"}:
+        theme = _normalize_theme(payload.get("theme") or "auto")
+        if not theme:
             raise ValueError("主题选项无效")
         raw = _read_json(self.preferences_path, {})
         if not isinstance(raw, dict):
@@ -1325,6 +1397,12 @@ class KirbyCatalogWebUI:
                 self.terminology_entry,
                 ["GET"],
                 "Get terminology entry (v3.10.1 compatibility)",
+            ),
+            (
+                "admin/terminology/download",
+                self.download_terminology,
+                ["GET"],
+                "Download terminology export",
             ),
             (
                 "admin/terminology/<term_id>",
@@ -1534,7 +1612,7 @@ class KirbyCatalogWebUI:
         )
 
     async def audit(self):
-        limit = _query_value("limit", 100, int)
+        limit = _bounded_int(_query_value("limit", 100, int), 100, 1, 500)
         return await self._read(
             lambda: {"items": self.service.store.audit_entries(limit)}
         )
@@ -1591,6 +1669,28 @@ class KirbyCatalogWebUI:
             _query_value("format", "json"),
             _query_value("scope", "merged"),
         )
+
+    async def download_terminology(self):
+        try:
+            data, filename, mime_type, _revision = await asyncio.to_thread(
+                self.service.export_terminology_bytes,
+                _query_value("format", "json"),
+                _query_value("scope", "merged"),
+            )
+        except ValueError as exc:
+            return error_response(str(exc), status_code=400)
+        except Exception as exc:
+            logger.exception("[%s] WebUI 名称库导出失败: %s", PLUGIN_ID, exc)
+            return error_response("导出名称库失败", status_code=500)
+        headers = {
+            "Content-Disposition": (
+                f'attachment; filename="{filename}"; '
+                f"filename*=UTF-8''{quote(filename)}"
+            ),
+            "Content-Length": str(len(data)),
+            "Cache-Control": "no-store",
+        }
+        return stream_response([data], content_type=mime_type, headers=headers)
 
     async def import_terminology(self):
         upload = await _request_upload()

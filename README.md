@@ -30,7 +30,7 @@
 | 盟友抽取 | 每日限次抽取、Bot 独立抽取、简体中文简介、可配置长度与回复形式、冷却时间、连续未出新保底、纯文本 `今日盟友` 触发 |
 | 收藏图鉴 | 按首次登场作品排序的固定编号、独立能力与形态、个人与群图鉴、按需分页、生成缓存、有效进度和群内排行榜 |
 | 素材管理 | 管理员可引用 Bot 消息改名、换图或编辑简介，也可手动添加素材；历史记录同步更新 |
-| WebUI 管理台 | 在 AstrBot Dashboard 集中管理素材资料、名称库、全部群成员图鉴、今日次数、回收站和操作记录 |
+| WebUI 管理台 | 在 AstrBot Dashboard 集中管理素材资料、名称库、全部群成员图鉴、今日次数、回收站和操作记录；模块化前端、四款皮肤、内联图标、零外部请求 |
 | 互动玩法 | 中英文猜盟友、引用图片直接作答、超时或猜错公布答案、随机盟友 |
 | WiKirby | 页面简介、资料栏目、多语言名称、首图、LLM 翻译，以及文本、卡片和 HTML 文档三种查询形式 |
 | Kirby Fandom | 简介、信息框、分类、正文栏目、社区页面名称、相关语录、网页式招式表、首图和完整 HTML 文档 |
@@ -82,7 +82,7 @@ python -m pip install -r requirements.txt
 
 ## WebUI 图鉴管理台
 
-从 `v3.4.0` 起，插件提供 AstrBot Dashboard 原生管理 Page。更新并重载插件后，在 Dashboard 的插件详情中打开“星之卡比图鉴管理台”即可使用，不需要另开端口或部署独立前端。
+从 `v3.4.0` 起，插件提供 AstrBot Dashboard 原生管理 Page。更新并重载插件后，在 Dashboard 的插件详情中打开“星之卡比图鉴管理台”即可使用，不需要另开端口或部署独立前端。`v4.0.0` 对这套前端做了完全重置：改为模块化 ES module 与分层样式、四款新皮肤和内联 SVG 图标；管理功能、管理 API 和数据格式保持不变，升级后无需迁移数据或调整配置。
 
 > [!IMPORTANT]
 > 完整管理台依赖 AstrBot `v4.26.8+` 的插件 Page 和 Web API。插件声明兼容 `>=4.22.2,<5`；这个最低版本同时确保 Bot 抽取工具可以把素材图作为原生视觉工具结果交给 LLM。低于 `v4.26.8` 时，群聊命令仍可用，但不显示这套管理页面。
@@ -101,15 +101,30 @@ python -m pip install -r requirements.txt
 
 名称或首次登场作品发生变化时，管理台会同步重命名素材文件，并更新所有群的当前盟友与历史解锁引用。换图只替换图片内容，不改变固定编号和用户解锁。新增条目使用新的固定编号；回收站中的旧编号不会被后续新增素材占用。
 
-### 主题与响应式布局
+### 皮肤与响应式布局
 
-右上角可以选择：
+从 `v4.0.0` 起，右上角提供四款皮肤：
 
-- 跟随 AstrBot：根据 Dashboard 当前明暗外观自动切换；
-- 卡比配色：浅粉、青绿、金色和紫色共同构成的浅色管理主题；
-- 暗色模式：适合长时间整理大量素材的高对比暗色主题。
+- 跟随（`auto`）：随 AstrBot Dashboard 当前明暗外观自动在梦之泉与星光夜之间切换；
+- 梦之泉（`dreamland`）：粉色日间皮肤，卡比配色的默认浅色方案；
+- 星光夜（`starlight`）：深空夜间皮肤，适合长时间整理大量素材；
+- 元骑士（`metaknight`）：冷蓝紫皮肤，偏低饱和的暗色方案。
 
-桌面端使用高密度表格与右侧编辑抽屉，便于连续处理数百或上千项素材；手机端会改为纵向列表和全屏编辑面板。图标已随插件本地打包，不依赖 CDN。
+旧主题名会自动迁移：`kirby` 和 `light` 映射为梦之泉，`dark` 映射为星光夜，`meta` 映射为元骑士。已保存的偏好不会丢失，不需要任何手动处理。皮肤写在 `<html data-kirby-skin>` 而不是 `data-theme`，因为 AstrBot 宿主会重写后者。
+
+桌面端使用高密度表格与右侧编辑抽屉，便于连续处理数百或上千项素材；长列表采用有界渲染，手机端会改为纵向列表和全屏编辑面板。抽屉带焦点陷阱，表格行支持键盘 Enter / Space 打开编辑。
+
+### 前端结构
+
+管理台前端在 `v4.0.0` 完成重写，由 25 个原生 ES module 组成，没有构建步骤和打包产物：
+
+- `app.js`：只负责引导；
+- `js/core/`：dom、format、labels、state、bridge、summary、theme、router、icons、icon-glyphs；
+- `js/ui/`：toast、confirm、drawer、widgets、pagination、combo、upload；
+- `js/views/`：概览、素材库、名称库、百科序号、群数据、回收站、操作记录七个视图；
+- `styles/`：`tokens.css`、`base.css`、`components.css`、`views.css`。
+
+图标改为 102 个内联 SVG，不再随插件打包第三方图标脚本，首屏没有任何外部图标请求，也不依赖 CDN。
 
 ### 权限与数据安全
 
@@ -155,7 +170,7 @@ data/plugin_data/astrbot_plugin_kirby_catalog/config/description_overrides.json
 data/plugin_data/astrbot_plugin_kirby_catalog/webui/
 ├── audit.json                 # Dashboard 操作记录
 ├── catalog_tombstones.json    # 回收站索引和保留编号
-├── preferences.json           # Dashboard 用户主题偏好
+├── preferences.json           # Dashboard 用户皮肤偏好（旧主题名自动迁移）
 ├── trash/                     # 已删除素材、资料和用户引用快照
 └── uploads/                   # 尚未提交的临时上传，24 小时后自动清理
 ```
@@ -1084,7 +1099,7 @@ python tools/audit_shinkaku_page_names.py
 3. [WiKirby](https://wikirby.com/wiki/Kirby_Wiki)：`卡比百科` 及内置图鉴简介的资料来源和 MediaWiki API 服务。
 4. [Kirby Wiki | Fandom](https://kirby.fandom.com/wiki/Kirby_Wiki)：`卡比F` 的资料来源和 MediaWiki API 服务。
 5. [星のカービィ 真 ボスバトル攻略Wiki](https://seesaawiki.jp/kirby_shinkaku/)：`卡比真格` 的日文攻略资料与日英术语对照来源。
-6. [Lucide](https://lucide.dev/)：图鉴管理台使用的本地图标库。
+6. [Lucide](https://lucide.dev/)：图鉴管理台内联图标集的来源。
 
 感谢上游作者、百科编辑者及所有贡献者的工作。
 
@@ -1092,7 +1107,7 @@ python tools/audit_shinkaku_page_names.py
 - 内置简介是 WiKirby 页面引语和导语的简体中文翻译及术语规范化派生内容，按 GNU Free Documentation License 1.3 或更高版本提供。每条记录保留来源页面与修订号，完整说明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 - Kirby Wiki | Fandom 的站点 API 标注内容许可为 CC BY-SA。
 - 真格攻略 Wiki 仅在用户查询时读取公开页面，不打包其正文、表格或图片；返回内容仍受原站点的使用条款与版权规则约束。
-- 管理台内置 Lucide `v1.28.0`，按 ISC License 提供；其中源自 Feather 的图标保留 MIT License，完整声明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+- 管理台不再打包 Lucide 发行脚本，改为内联 102 个取自 Lucide `v1.28.0` 的 SVG 图标，按 ISC License 提供；其中源自 Feather 的图标保留 MIT License，完整声明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 - 百科页面图片、盟友素材和星之卡比相关角色版权归各自权利人所有。
 
 在线百科查询会返回摘要、资料、名称和原页面链接；内置简介库仅打包图鉴所需的页面开头短介绍，不包含完整百科正文。
