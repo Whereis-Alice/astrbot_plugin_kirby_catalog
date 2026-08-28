@@ -11,6 +11,12 @@
           "max": 100,
           "hint": "普通群友和 Bot 按各自独立身份计数，默认均为每天 3 次。"
         },
+        "allow_duplicate_draw": {
+          "description": "允许抽到重复盟友",
+          "type": "bool",
+          "default": true,
+          "hint": "开启时保持现有机制：可能抽到已解锁的盟友，连续 2 次未出新后保底出新。关闭后只要还有未解锁的盟友就必定抽到新盟友，全部解锁后才会重复，此时文案显示“（已全部解锁）”。"
+        },
         "draw_message_template": {
           "description": "今日盟友抽取文案模板",
           "type": "text",
@@ -102,7 +108,7 @@
           "description": "Bot 抽取稳定身份 ID（可选）",
           "type": "string",
           "default": "",
-          "hint": "默认会从当前 QQ/NapCat 连接自动识别 Bot QQ 号，手动命令与未来任务共用同一身份和每日次数。仅在多账号或特殊连接方式下无法自动识别时填写 Bot QQ 号；不要填写 bot_ 前缀。"
+          "hint": "默认会从当前 QQ/OneBot 协议端（NapCat / LLBot / SnowLuma 等）连接自动识别 Bot QQ 号，手动命令与未来任务共用同一身份和每日次数。仅在多账号或特殊连接方式下无法自动识别时填写 Bot QQ 号；不要填写 bot_ 前缀。"
         },
         "bot_draw_llm_vision_enabled": {
           "description": "让 LLM 查看 Bot 的素材图和盟友图鉴",
@@ -114,7 +120,7 @@
           "description": "Bot 今日盟友文案模板",
           "type": "text",
           "default": "{nickname}今天的盟友是 {name}{flags}，图鉴编号 #{id}{source_text}。\n今日剩余次数：{remaining}",
-          "hint": "支持 {nickname}、{name}、{id}、{source}、{source_text}、{flags}、{remaining}。flags 会显示“重复”或“保底”，remaining 为 Bot 当天剩余次数。"
+          "hint": "支持 {nickname}、{name}、{id}、{source}、{source_text}、{flags}、{remaining}。flags 会显示“重复”“保底”或“已全部解锁”，remaining 为 Bot 当天剩余次数。"
         },
         "bot_show_in_leaderboard": {
           "description": "在群图鉴排行榜显示 Bot",
@@ -127,7 +133,7 @@
           "default": 3000,
           "min": 500,
           "max": 10000,
-          "hint": "百科使用合并转发时会按段落拆分文字，避免单个节点过大导致 NapCat 上传失败。建议保持默认值；数值过小会制造过多节点。"
+          "hint": "百科使用合并转发时会按段落拆分文字，避免单个节点过大导致 OneBot 协议端上传失败。建议保持默认值；数值过小会制造过多节点。"
         },
         "forward_max_nodes_per_message": {
           "description": "每条合并转发最多节点数",
@@ -135,7 +141,7 @@
           "default": 20,
           "min": 2,
           "max": 30,
-          "hint": "超过后会自动拆成多条合并转发并保留全文。NapCat 在节点过多时可能无法取得 resId，建议保持默认值。"
+          "hint": "超过后会自动拆成多条合并转发并保留全文。OneBot 协议端在节点过多时可能无法取得 resId，建议保持默认值。"
         },
         "forward_max_images_per_message": {
           "description": "每条合并转发最多图片数",
@@ -143,13 +149,13 @@
           "default": 2,
           "min": 1,
           "max": 10,
-          "hint": "超长百科会把文字和卡片图片分开发送，图片按此数量分批。NapCat 出现 UploadForwardMsgV2 或 resId 错误时建议保持 1 至 2。"
+          "hint": "超长百科会把文字和卡片图片分开发送，图片按此数量分批。OneBot 协议端出现 UploadForwardMsgV2 或 resId 错误时建议保持 1 至 2。"
         },
         "forward_direct_send_enabled": {
           "description": "由插件直接发送 OneBot 合并转发",
           "type": "bool",
           "default": true,
-          "hint": "仅对 aiocqhttp/NapCat 生效。开启后插件能捕获发送异常、缩小失败批次并回退普通消息；关闭后交给 AstrBot 响应阶段发送，插件无法处理延迟出现的发送错误。"
+          "hint": "仅对 aiocqhttp（NapCat / LLBot / SnowLuma 等 OneBot 协议端）生效。开启后插件能捕获发送异常、缩小失败批次并回退普通消息；关闭后交给 AstrBot 响应阶段发送，插件无法处理延迟出现的发送错误。"
         },
         "forward_retry_count": {
           "description": "单节点合并转发失败重试次数",
@@ -172,7 +178,7 @@
           "default": 0.2,
           "min": 0,
           "max": 10,
-          "hint": "适当间隔可降低连续上传触发 NapCat 或 QQ 风控的概率；设为 0 最快，但超长页面连续发送时可能不够稳定。"
+          "hint": "适当间隔可降低连续上传触发 OneBot 协议端或 QQ 风控的概率；设为 0 最快，但超长页面连续发送时可能不够稳定。"
         },
         "draw_cooldown_seconds": {
         "description": "连续抽取冷却时间（秒）",
@@ -210,19 +216,19 @@
           "NapCat本地文件直发"
         ],
         "default": "自动（推荐）",
-        "hint": "自动模式会在 aiocqhttp/NapCat 上优先发送 file:// 本地文件，失败后重试并回退 AstrBot 标准发送；其他平台始终自动回退。"
+        "hint": "自动模式会在 aiocqhttp（NapCat / LLBot / SnowLuma 等 OneBot 协议端）上优先发送 file:// 本地文件，失败后重试并回退 AstrBot 标准发送；其他平台始终自动回退。“NapCat本地文件直发”选项名仅为历史保留，对所有 OneBot 协议端同样生效。"
       },
       "media_shared_directory": {
-        "description": "AstrBot 与 NapCat 共享素材目录",
+        "description": "AstrBot 与 OneBot 协议端共享素材目录",
         "type": "string",
         "default": "",
-        "hint": "同机且 NapCat 能直接读取 AstrBot 路径时可留空。容器部署请填写 AstrBot 可写、NapCat 可读的共享挂载目录；插件会在其中建立独立子目录。"
+        "hint": "同机且 OneBot 协议端能直接读取 AstrBot 路径时可留空。容器部署请填写 AstrBot 可写、OneBot 协议端可读的共享挂载目录；插件会在其中建立独立子目录。"
       },
       "media_napcat_directory": {
-        "description": "NapCat 侧共享目录路径",
+        "description": "OneBot 协议端侧共享目录路径",
         "type": "string",
         "default": "",
-        "hint": "仅当同一共享卷在 NapCat 容器内的挂载路径不同于 AstrBot 时填写；相同时留空。"
+        "hint": "仅当同一共享卷在 OneBot 协议端（NapCat / LLBot / SnowLuma 等）容器内的挂载路径不同于 AstrBot 时填写；相同时留空。"
       },
       "media_direct_retry_count": {
         "description": "本地文件直发失败重试次数",
@@ -401,7 +407,7 @@
         "default": 8,
         "min": 0,
         "max": 100,
-        "hint": "这些阈值是针对 NapCat/QQNT 的保守兜底，不是 QQ 官方公布的硬限制；设为 0 可关闭对应检查。"
+        "hint": "这些阈值是针对 OneBot 协议端/QQNT 的保守兜底，不是 QQ 官方公布的硬限制；设为 0 可关闭对应检查。"
       },
       "wiki_card_resolution": {
         "description": "百科卡片渲染清晰度",

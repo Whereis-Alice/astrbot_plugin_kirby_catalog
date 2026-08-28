@@ -157,6 +157,24 @@ button {
 }
 
 /* ==========================================================================
+   Utilities
+   ========================================================================== */
+
+/* Accessible label that stays in the a11y tree but never paints. Icon-only
+   controls keep their text node here instead of dropping it. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  border: 0;
+  clip-path: inset(50%);
+}
+
+/* ==========================================================================
    Top bar
    ========================================================================== */
 
@@ -186,36 +204,69 @@ button {
   position: relative;
   display: grid;
   place-items: center;
-  width: 40px;
-  height: 40px;
-  border-radius: 13px;
-  background: var(--accent-grad);
-  color: var(--accent-on);
-  box-shadow: var(--shadow-accent);
+  width: 44px;
+  height: 44px;
+  border-radius: 15px;
+  background:
+    radial-gradient(
+      124% 124% at 24% 14%,
+      color-mix(in srgb, var(--accent-soft) 92%, transparent) 0%,
+      transparent 66%
+    ),
+    var(--surface-raised);
+  border: 1px solid var(--surface-border-strong);
+  box-shadow:
+    var(--shadow-sm),
+    inset 0 1px 0 var(--surface-sheen);
 }
 
-.brand-mark .icon {
-  width: 21px;
-  height: 21px;
-}
-
-/* A single satellite star, slowly circling the brand mark. */
-.brand-mark::after {
+/* Soft accent bloom behind the mascot so the mark reads on both skins. */
+.brand-mark::before {
   content: "";
   position: absolute;
-  inset: -5px;
-  border-radius: inherit;
-  background: radial-gradient(circle at 50% 0%, var(--accent-hot) 0 2px, transparent 2px);
-  animation: brand-orbit 9s linear infinite;
-  opacity: 0.85;
+  inset: -6px;
+  border-radius: 20px;
+  background: radial-gradient(
+    circle at 50% 42%,
+    color-mix(in srgb, var(--accent) 26%, transparent) 0%,
+    transparent 70%
+  );
+  opacity: 0;
+  transition: opacity var(--dur-3) var(--ease-out);
+  pointer-events: none;
 }
 
-@keyframes brand-orbit {
-  to {
-    transform: rotate(360deg);
+.brand:hover .brand-mark::before {
+  opacity: 1;
+}
+
+/* Inline mascot logo: a Kirby-style silhouette carrying a warp star. */
+.brand-logo {
+  position: relative;
+  z-index: 1;
+  display: block;
+  width: 35px;
+  height: 35px;
+  overflow: visible;
+  filter: drop-shadow(0 2px 4px rgb(24 12 32 / 22%));
+}
+
+.brand-logo-star {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: brand-star-twinkle 5s var(--ease-in-out) infinite;
+}
+
+@keyframes brand-star-twinkle {
+  0%,
+  100% {
+    transform: scale(1) rotate(0deg);
+  }
+
+  50% {
+    transform: scale(1.16) rotate(16deg);
   }
 }
-
 .brand-copy {
   display: flex;
   flex-direction: column;
@@ -343,6 +394,7 @@ button {
 /* --- Theme switcher ------------------------------------------------------ */
 
 .theme-switch {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 2px;
@@ -350,12 +402,16 @@ button {
   border-radius: var(--r-pill);
   background: var(--surface-sunken);
   border: 1px solid var(--surface-border);
+  box-shadow: inset 0 1px 2px rgb(24 12 32 / 5%);
 }
 
+/* Icon-only radio group. The visible label is collapsed into .sr-only so
+   the chip keeps its accessible name without breaking the 32px grid. */
 .theme-chip {
+  position: relative;
   display: grid;
   place-items: center;
-  width: 30px;
+  width: 32px;
   height: 30px;
   border: 0;
   border-radius: var(--r-pill);
@@ -364,6 +420,7 @@ button {
   transition:
     background var(--dur-2) var(--ease-out),
     color var(--dur-2) var(--ease-out),
+    box-shadow var(--dur-2) var(--ease-out),
     transform var(--dur-2) var(--ease-spring);
 }
 
@@ -372,17 +429,24 @@ button {
   height: 16px;
 }
 
-.theme-chip:hover {
+.theme-chip:hover:not(.is-active) {
+  background: var(--row-hover);
   color: var(--ink-strong);
   transform: translateY(-1px);
 }
 
 .theme-chip.is-active {
-  background: var(--surface-raised);
-  color: var(--accent);
-  box-shadow: var(--shadow-xs);
+  background: var(--accent-grad);
+  color: var(--accent-on);
+  box-shadow: var(--shadow-accent);
 }
 
+.icon-button[aria-pressed="true"] {
+  background: var(--accent-grad);
+  border-color: transparent;
+  color: var(--accent-on);
+  box-shadow: var(--shadow-accent);
+}
 /* ==========================================================================
    Workspace + view headers
    ========================================================================== */
@@ -393,6 +457,12 @@ button {
   max-width: var(--shell-max);
   margin: 0 auto;
   padding: var(--sp-6) clamp(var(--sp-4), 3vw, var(--sp-7)) var(--sp-9);
+}
+
+/* Wide-canvas toggle. Releasing --shell-max lets a single view fill the whole
+   viewport, which is what makes the one-screen dashboard readable on 27" */
+body.is-wide-shell .workspace {
+  max-width: none;
 }
 
 .view {
@@ -569,6 +639,33 @@ button {
    Responsive
    ========================================================================== */
 
+/* Between 1181px and 1439px the seven nav pills, the brand block and the
+   action cluster all still share one row, so everything is tightened just
+   enough to avoid the nav scrolling and clipping its last item. */
+@media (min-width: 1181px) and (max-width: 1439px) {
+  .topbar {
+    gap: var(--sp-4);
+  }
+
+  .brand-copy small {
+    display: none;
+  }
+
+  .nav-item {
+    gap: 6px;
+    padding: 7px 10px;
+    font-size: var(--text-xs);
+  }
+
+  .nav-item .icon {
+    width: 15px;
+    height: 15px;
+  }
+
+  .theme-chip {
+    width: 28px;
+  }
+}
 @media (max-width: 1180px) {
   .primary-nav {
     order: 3;

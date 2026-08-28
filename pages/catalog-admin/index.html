@@ -13,7 +13,49 @@
     <div class="app-shell" id="appShell" aria-busy="true">
       <header class="topbar">
         <div class="brand">
-          <span class="brand-mark" aria-hidden="true"><i data-icon="sparkles"></i></span>
+          <span class="brand-mark" aria-hidden="true">
+            <!-- Plugin logo: a Kirby-style mascot carrying a warp star. Inlined so it
+                 never depends on the host asset token, which expires after 60s. -->
+            <svg class="brand-logo" viewBox="0 0 44 44" focusable="false">
+              <defs>
+                <linearGradient id="kirbyLogoBody" x1="11" y1="8" x2="33" y2="35" gradientUnits="userSpaceOnUse">
+                  <stop offset="0" stop-color="#ffe6f3" />
+                  <stop offset="0.48" stop-color="#ffa8d2" />
+                  <stop offset="1" stop-color="#f778b3" />
+                </linearGradient>
+                <linearGradient id="kirbyLogoFoot" x1="8" y1="30" x2="36" y2="39" gradientUnits="userSpaceOnUse">
+                  <stop offset="0" stop-color="#ff7d9e" />
+                  <stop offset="1" stop-color="#df3350" />
+                </linearGradient>
+                <linearGradient id="kirbyLogoStar" x1="30" y1="2" x2="42" y2="14" gradientUnits="userSpaceOnUse">
+                  <stop offset="0" stop-color="#fff4bd" />
+                  <stop offset="1" stop-color="#ffab1a" />
+                </linearGradient>
+              </defs>
+              <ellipse cx="14.6" cy="33.6" rx="7.1" ry="4.4" transform="rotate(-17 14.6 33.6)" fill="url(#kirbyLogoFoot)" />
+              <ellipse cx="29.4" cy="33.6" rx="7.1" ry="4.4" transform="rotate(17 29.4 33.6)" fill="url(#kirbyLogoFoot)" />
+              <ellipse cx="8.2" cy="22.4" rx="4.3" ry="5.5" transform="rotate(-28 8.2 22.4)" fill="url(#kirbyLogoBody)" />
+              <ellipse cx="35.8" cy="22.4" rx="4.3" ry="5.5" transform="rotate(28 35.8 22.4)" fill="url(#kirbyLogoBody)" />
+              <circle cx="22" cy="21" r="12.6" fill="url(#kirbyLogoBody)" />
+              <ellipse cx="13.4" cy="23.6" rx="2.9" ry="1.7" transform="rotate(-12 13.4 23.6)" fill="#ff6fa8" opacity="0.62" />
+              <ellipse cx="30.6" cy="23.6" rx="2.9" ry="1.7" transform="rotate(12 30.6 23.6)" fill="#ff6fa8" opacity="0.62" />
+              <ellipse cx="17.7" cy="17.2" rx="2.1" ry="4" fill="#1d2b4d" />
+              <ellipse cx="26.3" cy="17.2" rx="2.1" ry="4" fill="#1d2b4d" />
+              <ellipse cx="17.7" cy="19.1" rx="1.5" ry="1.9" fill="#4fb9f2" />
+              <ellipse cx="26.3" cy="19.1" rx="1.5" ry="1.9" fill="#4fb9f2" />
+              <ellipse cx="17.9" cy="14.8" rx="1" ry="1.5" fill="#ffffff" />
+              <ellipse cx="26.5" cy="14.8" rx="1" ry="1.5" fill="#ffffff" />
+              <ellipse cx="22" cy="24.4" rx="2" ry="1.5" fill="#c8305f" />
+              <path
+                class="brand-logo-star"
+                d="M36 1.6L37.47 5.98L42.09 6.02L38.38 8.77L39.76 13.18L36 10.5L32.24 13.18L33.62 8.77L29.91 6.02L34.53 5.98Z"
+                fill="url(#kirbyLogoStar)"
+                stroke="#ff8f1f"
+                stroke-width="0.7"
+                stroke-linejoin="round"
+              />
+            </svg>
+          </span>
           <span class="brand-copy">
             <strong>星之卡比图鉴</strong>
             <small>Catalog Control</small>
@@ -48,20 +90,23 @@
         </nav>
 
         <div class="topbar-actions">
-          <div class="theme-switch" id="themeSwitch" role="group" aria-label="界面主题">
-            <button type="button" class="theme-chip" data-theme-option="auto" title="跟随 AstrBot">
-              <i data-icon="monitor-cog"></i><span>跟随</span>
+          <div class="theme-switch" id="themeSwitch" role="group" aria-label="界面皮肤">
+            <button type="button" class="theme-chip" data-theme-option="auto" title="跟随 AstrBot 外观" aria-label="跟随 AstrBot 外观" aria-pressed="false">
+              <i data-icon="monitor-cog"></i><span class="sr-only">跟随 AstrBot 外观</span>
             </button>
-            <button type="button" class="theme-chip" data-theme-option="dreamland" title="梦之泉">
-              <i data-icon="sparkle"></i><span>梦之泉</span>
+            <button type="button" class="theme-chip" data-theme-option="dreamland" title="梦之泉皮肤" aria-label="梦之泉皮肤" aria-pressed="false">
+              <i data-icon="sparkle"></i><span class="sr-only">梦之泉皮肤</span>
             </button>
-            <button type="button" class="theme-chip" data-theme-option="starlight" title="星光夜">
-              <i data-icon="moon-star"></i><span>星光夜</span>
+            <button type="button" class="theme-chip" data-theme-option="starlight" title="星光夜皮肤" aria-label="星光夜皮肤" aria-pressed="false">
+              <i data-icon="moon-star"></i><span class="sr-only">星光夜皮肤</span>
             </button>
-            <button type="button" class="theme-chip" data-theme-option="metaknight" title="元骑士">
-              <i data-icon="shield-half"></i><span>元骑士</span>
+            <button type="button" class="theme-chip" data-theme-option="metaknight" title="元骑士皮肤" aria-label="元骑士皮肤" aria-pressed="false">
+              <i data-icon="shield-half"></i><span class="sr-only">元骑士皮肤</span>
             </button>
           </div>
+          <button type="button" class="icon-button" id="wideModeButton" aria-pressed="false" aria-label="切换宽屏画布" title="宽屏画布">
+            <i data-icon="scan-search"></i>
+          </button>
           <button type="button" class="button primary" id="quickAddButton">
             <i data-icon="plus"></i><span>新增素材</span>
           </button>
@@ -70,13 +115,13 @@
 
       <main class="workspace" id="workspace">
         <!-- ================================================== overview -->
-        <section class="view" data-view-panel="overview" hidden>
-          <div class="page-heading">
-            <div class="page-heading-copy">
+        <section class="view dashboard-view" data-view-panel="overview" hidden>
+          <div class="dash-topline">
+            <div class="dash-topline-copy">
               <span class="eyebrow">CATALOG CONTROL</span>
               <h1>运行概览</h1>
-              <p>图鉴素材、群组进度与今日抽取情况的实时快照。</p>
             </div>
+            <div class="dash-topline-meta" id="overviewStamp"></div>
             <div class="heading-actions">
               <button type="button" class="button ghost" id="refreshSummaryButton">
                 <i data-icon="refresh-cw"></i><span>刷新数据</span>
@@ -84,10 +129,10 @@
             </div>
           </div>
 
-          <div class="metric-grid" id="overviewMetrics"></div>
-
-          <div class="overview-grid">
-            <section class="surface">
+          <div class="dash-grid">
+            <section class="surface dash-hero" id="overviewHero"></section>
+            <section class="surface dash-spotlight" id="overviewSpotlight"></section>
+            <section class="surface dash-panel dash-health">
               <div class="section-heading">
                 <span class="section-icon"><i data-icon="gauge"></i></span>
                 <div class="section-heading-copy">
@@ -96,20 +141,21 @@
                 </div>
               </div>
               <div class="health-list" id="overviewHealth"></div>
+              <div class="dash-mini-stats" id="overviewMetrics"></div>
             </section>
-
-            <section class="surface">
+            <section class="surface dash-panel dash-sources">
               <div class="section-heading">
                 <span class="section-icon"><i data-icon="chart-no-axes-column-increasing"></i></span>
                 <div class="section-heading-copy">
                   <h2>作品分布</h2>
-                  <small>收录最多的前 8 部作品</small>
+                  <small>收录条目最多的作品</small>
                 </div>
               </div>
-              <div class="bar-list" id="overviewSources"></div>
+              <div class="dash-scroll">
+                <div class="bar-list" id="overviewSources"></div>
+              </div>
             </section>
-
-            <section class="surface is-wide">
+            <section class="surface dash-panel dash-activity">
               <div class="section-heading">
                 <span class="section-icon"><i data-icon="history"></i></span>
                 <div class="section-heading-copy">
@@ -120,7 +166,7 @@
                   <span>查看全部</span><i data-icon="arrow-right"></i>
                 </button>
               </div>
-              <div id="recentAudit"></div>
+              <div class="dash-scroll" id="recentAudit"></div>
             </section>
           </div>
         </section>
@@ -180,6 +226,7 @@
                     <th scope="col">素材</th>
                     <th scope="col">角色</th>
                     <th scope="col">首次登场</th>
+                    <th scope="col">简介</th>
                     <th scope="col">类型</th>
                     <th scope="col">状态</th>
                   </tr>
@@ -446,7 +493,7 @@
                 <thead>
                   <tr>
                     <th scope="col">条目</th>
-                    <th scope="col">首次登场</th>
+                    <th scope="col">所属作品</th>
                     <th scope="col">删除时间</th>
                     <th scope="col">影响用户</th>
                     <th scope="col" class="actions-column">操作</th>

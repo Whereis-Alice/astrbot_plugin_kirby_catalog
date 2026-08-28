@@ -97,6 +97,49 @@ function initThemeSwitch() {
 }
 
 /* ==========================================================================
+   Wide canvas
+   ========================================================================== */
+
+const WIDE_STORAGE_KEY = "kirbyCatalogWideShell";
+
+function readWidePreference() {
+  try {
+    return window.localStorage.getItem(WIDE_STORAGE_KEY) === "1";
+  } catch (error) {
+    return false;
+  }
+}
+
+function storeWidePreference(wide) {
+  try {
+    window.localStorage.setItem(WIDE_STORAGE_KEY, wide ? "1" : "0");
+  } catch (error) {
+    // The page can be embedded in a sandboxed iframe where storage access
+    // throws. The toggle still works for the rest of the session.
+  }
+}
+
+/** Releases the shell max-width so the dashboard can use the whole viewport. */
+function initWideMode() {
+  const button = qs("#wideModeButton");
+  const paint = (on) => {
+    document.body.classList.toggle("is-wide-shell", on);
+    if (button) {
+      button.setAttribute("aria-pressed", on ? "true" : "false");
+      button.classList.toggle("accent", on);
+    }
+  };
+  paint(readWidePreference());
+  if (!button) {
+    return;
+  }
+  button.addEventListener("click", () => {
+    const next = !document.body.classList.contains("is-wide-shell");
+    paint(next);
+    storeWidePreference(next);
+  });
+}
+/* ==========================================================================
    Views
    ========================================================================== */
 
@@ -146,6 +189,7 @@ async function bootstrap() {
 
   initViews();
   initThemeSwitch();
+  initWideMode();
   onSummary(renderNavBadges);
 
   const quickAdd = qs("#quickAddButton");

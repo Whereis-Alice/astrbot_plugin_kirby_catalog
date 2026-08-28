@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="./logo.svg" alt="星之卡比图鉴" width="96">
+</p>
+
 # 星之卡比图鉴
 
 [![AstrBot](https://img.shields.io/badge/AstrBot-%3E%3D4.22.2%2C%3C5-4c8bf5)](https://github.com/AstrBotDevs/AstrBot) [![Platform](https://img.shields.io/badge/platform-aiocqhttp-f59e0b)](https://github.com/AstrBotDevs/AstrBot) [![License](https://img.shields.io/badge/license-MIT-2ea44f)](LICENSE)
@@ -12,6 +16,7 @@
 
 - [功能概览](#功能概览)
 - [快速开始](#快速开始)
+- [协议端兼容性](#协议端兼容性)
 - [WebUI 图鉴管理台](#webui-图鉴管理台)
 - [数据目录与迁移](#数据目录与迁移)
 - [普通用户命令](#普通用户命令)
@@ -35,7 +40,7 @@
 | WiKirby | 页面简介、资料栏目、多语言名称、首图、LLM 翻译，以及文本、卡片和 HTML 文档三种查询形式 |
 | Kirby Fandom | 简介、信息框、分类、正文栏目、社区页面名称、相关语录、网页式招式表、首图和完整 HTML 文档 |
 | 真格攻略 Wiki | 全部 301 页中英日名称索引、真 Boss Battle 的能力与首领攻略、隐藏折叠资料、完整数据表、实机记录；支持可选 LLM 翻译 |
-| 发送稳定性 | 超长百科语义分页、图片尺寸预检、JPEG 标准化，以及可回退的 NapCat 本地文件直发 |
+| 发送稳定性 | 超长百科语义分页、图片尺寸预检、JPEG 标准化，以及可回退的协议端本地文件直发 |
 | 数据兼容 | v3 规范素材迁移、迁移报告、原子替换、自动备份，以及上游 AW 数据增量导入 |
 
 > [!NOTE]
@@ -47,7 +52,7 @@
 
 - AstrBot `>=4.22.2,<5`
 - 完整 WebUI 管理台需要 AstrBot `v4.26.8+`
-- `aiocqhttp` 平台适配器
+- `aiocqhttp` 平台适配器，以及一个 OneBot v11 协议端（NapCat、LLBot 或 SnowLuma，见 [协议端兼容性](#协议端兼容性)）
 - Python 依赖：Pillow、Beautiful Soup 4
 
 ### 安装
@@ -79,6 +84,53 @@ python -m pip install -r requirements.txt
 
 > [!WARNING]
 > AstrBot `v4.27.2` 与 `v4.27.3` 的 WebUI 更新流程目前会连续重载同一插件两次。插件已尽量降低第二次重载的 I/O 和内存峰值，但低内存服务器若仍在更新时退出或被守护程序拉起，建议先停用插件再更新，完成后重新启用，并检查系统 OOM 日志。
+
+## 协议端兼容性
+
+插件通过 AstrBot 的 `aiocqhttp` 适配器工作，只要求协议端实现 OneBot v11。已验证可用的协议端为 NapCat、LLBot（LuckyLilliaBot）和 SnowLuma。插件代码不包含任何协议端专有 API 调用，也不手工拼接 CQ 码，因此更换协议端不需要修改插件配置中的任何键。
+
+| 协议端 | 部署位置 | 连接方式 | 备注 |
+| --- | --- | --- | --- |
+| NapCat | 本地或容器 | 反向 WS | 本文档的发送与排查示例多以它为例；与 AstrBot 同机时可直接使用本地文件直发 |
+| LLBot（LuckyLilliaBot） | 云端 | 反向 WS | 消息格式必须为 `array`；跨机部署时 `file://` 本地直发不可用 |
+| SnowLuma | 本地 | 反向 WS | TypeScript 实现，自带 WebUI；对消息段的校验更严格 |
+
+AstrBot 的 `aiocqhttp` 适配器只支持反向 WebSocket（适配器内部固定 `use_ws_reverse=True`），默认监听 `0.0.0.0:6199`。因此三个协议端都必须以反向 WS（`ws-reverse`）方式主动连接到 AstrBot，而不是等待 AstrBot 主动连接。
+
+### NapCat
+
+在 AstrBot 中新增 `aiocqhttp` 适配器，host 填 `0.0.0.0`、port 填 `6199`，再在 NapCat 中添加一个指向 `ws://127.0.0.1:6199/ws` 的反向 WS 客户端。NapCat 与 AstrBot 运行在同一系统、能够读取 AstrBot 写出的文件路径时，图片可以直接走本地文件直发，不需要填写共享目录；容器部署见 [图片发送与长图保护](#图片发送与长图保护)。
+
+### LLBot（LuckyLilliaBot）
+
+LLBot 是云端协议端，官网 [luckylillia.com](https://luckylillia.com)，官方提供 [AstrBot 对接文档](https://luckylillia.com/guide/install_astrbot)。
+
+AstrBot 侧同样新增 `aiocqhttp` 适配器，host 填 `0.0.0.0`、port 填 `6199`；LLBot 侧的连接配置形如：
+
+```json
+{"type":"ws-reverse","enable":true,"url":"ws://127.0.0.1:6199/ws","heartInterval":60000,"token":"","messageFormat":"array","reportSelfMessage":false}
+```
+
+需要注意：
+
+- `messageFormat` 必须为 `array`。`string` 形式的 CQ 码不会被 AstrBot 正确解析。
+- LLBot 的 `onlyLocalhost` 默认为 `true`。AstrBot 与 LLBot 不在同一台机器时，需要关闭它并设置 `token`，同时在 AstrBot 适配器的 `ws_reverse_token` 填入相同值。
+- 图片 `file` 字段支持 `file://`、`http://` 和 `base64://`。
+
+### SnowLuma
+
+[SnowLuma](https://github.com/SnowLuma/SnowLuma) 是 TypeScript 实现的本地 OneBot v11 运行时，自带 WebUI，默认地址 `http://localhost:5099`；Lite 版需要 Node.js `22.13` 及以上。在它的 WebUI 中添加一个指向 `ws://127.0.0.1:6199/ws` 的反向 WS 连接即可，AstrBot 侧配置与前两者相同。
+
+它接受的图片 `file` 形式包括 `base64://`、`data:`、`http(s)://`、`file://` 以及裸本地路径。它对消息段的校验比 NapCat 严格：拒绝空消息、消息段 `data` 必须是标量、未知段类型会直接报错。本插件发出的消息已经符合这些约束。
+
+> [!IMPORTANT]
+> SnowLuma 的许可为 NOASSERTION（非商业用途）。部署前请自行确认许可条款是否符合你的使用场景。
+
+### 跨机部署与兼容细节
+
+- `media_send_mode` 的本地文件直发依赖协议端能够读到 AstrBot 写出的真实文件路径。协议端与 AstrBot 不在同一文件系统时 `file://` 直发不可用：要么配置 `media_shared_directory`（两侧路径不同时再配置 `media_napcat_directory`），要么让插件自动回退到 AstrBot 标准发送（base64）。云端 LLBot 属于这种情况。
+- 合并转发节点从 `v4.1.0` 起在 OneBot node 的 `data` 中同时写入 `user_id`/`nickname` 与 `uin`/`name` 两套字段，兼容 NapCat、LLBot 和 go-cqhttp 风格协议端。
+- Bot 自身 QQ 号默认从当前 OneBot 连接自动识别。少数协议端或多账号场景无法识别时，手动填写 `bot_draw_identity`。
 
 ## WebUI 图鉴管理台
 
@@ -390,7 +442,7 @@ AstrBot 的“未来任务”可以每天自动让爱丽丝抽盟友。创建 Ac
 
 任务触发后，插件会使用“投递到”所选群的会话发送完整抽取结果和图片；爱丽丝的回复也会回到同一个群。手动 `Bot今日盟友` 与未来任务会自动识别为同一个 Bot QQ 身份，共用该群当天的三次机会和同一份图鉴数据。
 
-没有选择群聊“投递到”的未来任务会被明确拒绝，不会在私聊、系统会话或未知目标里抽取。默认从 NapCat 当前连接自动读取 Bot QQ 号；只有多账号或特殊连接方式下无法自动识别时，才需要填写 `bot_draw_identity`，值直接填 Bot QQ 号即可。
+没有选择群聊“投递到”的未来任务会被明确拒绝，不会在私聊、系统会话或未知目标里抽取。默认从当前 OneBot 连接自动读取 Bot QQ 号；只有多账号或特殊连接方式下无法自动识别时，才需要填写 `bot_draw_identity`，值直接填 Bot QQ 号即可。
 
 ### 猜盟友规则
 
@@ -533,9 +585,9 @@ WiKirby、Kirby Fandom 与真格攻略 Wiki 都支持以下回复形式：
 
 百科卡片由 AstrBot T2I 服务渲染。默认使用 `1600px` 逻辑视口、`高清` 设备像素截图和质量 `92` 的 JPEG，在文字清晰度、文件大小和 QQ 上传稳定性之间取平衡；也可切换为 PNG、标准或超清。
 
-普通页面仍只生成一张卡片。卡片不再显示“资料速览”，也不会为了统一三列而压缩字号：长模块使用整行宽度，较短的子模块才会使用双列；四组深色栏目标题帮助区分相邻模块。只有内容预计过长，或渲染后的宽高、总像素、文件大小超过安全阈值时，插件才会自动分页。分页按简介续篇、完整资料模块、语录条目、完整招式和表格行拆分；每页重复页码与来源，招式表和真格攻略表的续页会保留表头，同一招式不会跨页拆开。默认安全阈值为宽 `2160px`、高 `8000px`、`18MP` 和 `8MiB`，这些是针对 NapCat/QQNT 的保守兜底，不是 QQ 官方公布的硬限制。
+普通页面仍只生成一张卡片。卡片不再显示“资料速览”，也不会为了统一三列而压缩字号：长模块使用整行宽度，较短的子模块才会使用双列；四组深色栏目标题帮助区分相邻模块。只有内容预计过长，或渲染后的宽高、总像素、文件大小超过安全阈值时，插件才会自动分页。分页按简介续篇、完整资料模块、语录条目、完整招式和表格行拆分；每页重复页码与来源，招式表和真格攻略表的续页会保留表头，同一招式不会跨页拆开。默认安全阈值为宽 `2160px`、高 `8000px`、`18MP` 和 `8MiB`，这些是针对协议端与 QQNT 的保守兜底，不是 QQ 官方公布的硬限制。
 
-使用合并转发时，插件会按段落把长文字拆成多个节点，图片或百科卡片放在独立节点。单个文字节点默认最多 3000 个字符，单条合并转发默认最多 20 个节点；超出后会继续发送下一条合并转发，正文不会被截断。这两个限制用于规避 NapCat/QQ 对超大转发载荷的不稳定处理，不是百科内容长度限制。
+使用合并转发时，插件会按段落把长文字拆成多个节点，图片或百科卡片放在独立节点。单个文字节点默认最多 3000 个字符，单条合并转发默认最多 20 个节点；超出后会继续发送下一条合并转发，正文不会被截断。这两个限制用于规避协议端与 QQ 对超大转发载荷的不稳定处理，不是百科内容长度限制。
 
 Kirby Fandom 的特殊栏目会保留网页结构和原始位置：`Related Quotes` 中每条语录独立显示正文、出处和作品；`Techniques` 按作品及 Type A / Type B 分组，以“招式、操作、说明、伤害”四列表格显示，并留在原页面对应正文之间。网页里的手柄按钮图片会转换为可读操作文字，例如 `Pro 手柄：冲刺 + B`、`Joy-Con：下方向键`。所有子标题、语录、招式分组、操作说明和表格行都会完整保留。
 
@@ -759,12 +811,25 @@ Kirby： Squeak Squad.怪侠洛切团（Squeaks）.jpg
 | 配置组 | 常用选项 |
 | --- | --- |
 | 抽取与图鉴 | 每日抽取次数、今日/随机/查询文案、Bot 独立抽取、简介长度与回复形式、百科提示开关、详情编排、冷却时间、猜盟友超时、图鉴列数 |
-| 图片发送与长卡片 | NapCat 本地文件直发、共享目录、失败重试、JPEG 标准化、群图鉴高度、百科分页与图片安全阈值 |
+| 图片发送与长卡片 | 协议端本地文件直发、共享目录、失败重试、JPEG 标准化、群图鉴高度、百科分页与图片安全阈值 |
 | 百科文本与文档 | 显式文本命令是否合并转发、HTML 文档翻译、首图内嵌、保留时间和翻译分块大小 |
 | WiKirby | 启用状态、首图、详细资料、回复形式、卡片模板、LLM 翻译、缓存和 Worker 中转 |
 | Kirby Fandom | 启用状态、首图、详细栏目、回复形式、卡片模板、LLM 翻译、缓存和 Worker 失败中转 |
 | 真格攻略 Wiki | 启用状态、首图、完整攻略栏目、回复形式、卡片模板、日文 LLM 翻译、缓存和 Worker 失败中转 |
 | 数据兼容 | 旧素材图床地址、上游 AW 或自定义兼容目录 `legacy_data_dir` |
+
+### 抽取规则
+
+| 配置项 | 默认值 | 说明 |
+| --- | ---: | --- |
+| `daily_draw_limit` | `3` | 每个身份每日抽取次数；普通群友与 Bot 各自独立计数 |
+| `allow_duplicate_draw` | `true` | 抽取盟友时是否允许抽到已解锁过的盟友 |
+
+`allow_duplicate_draw` 为 `true` 时沿用原有机制：抽取在全部盟友中进行，可能抽到重复盟友，重复时按原有保底逻辑处理，消息会带“（重复）”“（保底）”标记。
+
+设为 `false` 时，每次都只从“该身份尚未解锁的盟友”中抽取，因此在全部解锁之前不会再抽到重复条目，此时也不再出现保底标记。某个身份已经解锁全部盟友后，会退回从全部盟友中随机抽取一个，并在消息中标注“（已全部解锁）”。
+
+这个开关对成员抽取和 `Bot今日盟友` 同样生效，也不影响 `daily_draw_limit` 控制的每日抽取次数。
 
 ### 盟友消息编排
 
@@ -793,11 +858,11 @@ Kirby： Squeak Squad.怪侠洛切团（Squeaks）.jpg
 
 ### 图片发送与长图保护
 
-AstrBot v4.26.8 的 aiocqhttp 适配器会把 `Image` 组件统一转换为 base64 后再交给 NapCat。base64 会增加约三分之一的传输体积和额外的编码内存；NapCat WebSocket 本身还有 `50 MiB` 的 `maxPayload`。即使文件体积很小，极端宽高或总像素过大的图片仍可能被 QQNT 拒绝并返回 `rich media transfer failed`。NapCat 对超大图片问题的处理建议也是由调用方自行兜底：[NapCatQQ #1443](https://github.com/NapNeko/NapCatQQ/issues/1443)。
+AstrBot v4.26.8 的 aiocqhttp 适配器会把 `Image` 组件统一转换为 base64 后再交给协议端。base64 会增加约三分之一的传输体积和额外的编码内存；NapCat WebSocket 本身还有 `50 MiB` 的 `maxPayload`。即使文件体积很小，极端宽高或总像素过大的图片仍可能被 QQNT 拒绝并返回 `rich media transfer failed`。NapCat 对超大图片问题的处理建议也是由调用方自行兜底：[NapCatQQ #1443](https://github.com/NapNeko/NapCatQQ/issues/1443)。
 
 插件默认使用“自动（推荐）”发送方式：
 
-1. 在 aiocqhttp/NapCat 上优先把本地图片路径直接作为 OneBot `file://` 发送，避免 base64；
+1. 在 aiocqhttp 平台（NapCat / LLBot / SnowLuma 等 OneBot 协议端）上优先把本地图片路径直接作为 OneBot `file://` 发送，避免 base64；
 2. 失败后按配置重试；
 3. 仍失败则回退 AstrBot 标准发送，不会因为直发不可用而吞掉消息；
 4. 非 aiocqhttp 平台直接使用标准发送。
@@ -810,9 +875,9 @@ AstrBot v4.26.8 的 aiocqhttp 适配器会把 `Image` 组件统一转换为 base
 
 | 配置项 | 默认值 | 说明 |
 | --- | ---: | --- |
-| `media_send_mode` | `自动（推荐）` | 自动、AstrBot 标准发送或强制 NapCat 本地文件直发 |
-| `media_shared_directory` | 留空 | AstrBot 可写、NapCat 可读的共享挂载目录 |
-| `media_napcat_directory` | 留空 | 同一共享卷在 NapCat 容器内使用不同路径时填写 |
+| `media_send_mode` | `自动（推荐）` | 三选一：`自动（推荐）`、`AstrBot标准发送`、`NapCat本地文件直发` |
+| `media_shared_directory` | 留空 | AstrBot 可写、协议端可读的共享挂载目录 |
+| `media_napcat_directory` | 留空 | 同一共享卷在协议端容器内使用不同路径时填写 |
 | `media_direct_retry_count` | `1` | 本地文件直发失败后的重试次数 |
 | `media_normalize_jpeg` | 开启 | 将 JPEG 统一为 RGB/JFIF，排除非标准编码问题 |
 | `media_cleanup_interval_minutes` | `5` | 发送缓存的扫描清理间隔；`0` 表示每条消息都清理，不建议用于日常抽取 |
@@ -827,11 +892,13 @@ AstrBot v4.26.8 的 aiocqhttp 适配器会把 `Image` 组件统一转换为 base
 | `wiki_card_resolution` | `高清（推荐）` | 标准、高清或超清 |
 | `wiki_card_image_format` | `JPEG` | JPEG 体积更小；PNG 保留无损文字边缘 |
 
-AstrBot 与 NapCat 运行在同一系统、NapCat 能读取 AstrBot 文件路径时，共享目录可以留空。容器部署时应给两边挂载同一个目录：若容器内路径相同，只填写 `media_shared_directory`；若路径不同，再填写 NapCat 侧的 `media_napcat_directory`。插件只会在共享目录下使用自己的 `astrbot_plugin_kirby_catalog` 子目录，并定期清理过期暂存图片；同一源文件未变化时会复用暂存副本，重复查询不再反复复制或转码。
+`media_send_mode` 的 `NapCat本地文件直发` 选项名与 `media_napcat_directory` 键名沿用早期只支持 NapCat 时的命名，对 LLBot、SnowLuma 等其它 OneBot 协议端同样生效。
+
+AstrBot 与协议端运行在同一系统、协议端能读取 AstrBot 文件路径时，共享目录可以留空。容器部署时应给两边挂载同一个目录：若容器内路径相同，只填写 `media_shared_directory`；若路径不同，再填写协议端侧的 `media_napcat_directory`。插件只会在共享目录下使用自己的 `astrbot_plugin_kirby_catalog` 子目录，并定期清理过期暂存图片；同一源文件未变化时会复用暂存副本，重复查询不再反复复制或转码。
 
 群总图鉴会根据 `gallery_max_height_px` 自动分成少量图片；状态、素材和版式未变化时会直接复用上次生成结果。个人图鉴较短时仍只发送一张。百科分页和图鉴分页都不删除内容，只改变图片分组。若今日盟友等原始素材自身超过 `ally_media_*` 阈值，插件只创建等比缩放的发送缓存副本，原素材文件、图鉴编号和用户数据都不会被修改。百科卡片宽度超过自己的安全值时会自动降低一级渲染清晰度后重试。
 
-`wiki_card_page_line_budget` 从 v3.5.2 起不再限制为最高 `300`，现在最高可设为 `3000`。它是分页目标，不是绕过图片安全检查的开关：如果单页渲染后仍超过 `wiki_card_max_height_px`、`wiki_card_max_megapixels` 或 `wiki_card_max_bytes_mb`，插件会自动降低预算重新分页。大幅提高这些图片阈值可能重新触发 NapCat/QQNT 上传失败。
+`wiki_card_page_line_budget` 从 v3.5.2 起不再限制为最高 `300`，现在最高可设为 `3000`。它是分页目标，不是绕过图片安全检查的开关：如果单页渲染后仍超过 `wiki_card_max_height_px`、`wiki_card_max_megapixels` 或 `wiki_card_max_bytes_mb`，插件会自动降低预算重新分页。大幅提高这些图片阈值可能重新触发协议端与 QQNT 的上传失败。
 
 旧版的 `media_max_width_px`、`media_max_height_px`、`media_max_megapixels` 和 `media_max_bytes_mb` 是历史通用字段。v3.5.3 起它们不再影响发送行为，避免曾为百科调高的阈值拖慢今日盟友；请使用上表中的 `ally_media_*` 与 `wiki_card_*` 字段分别配置。
 
@@ -917,12 +984,12 @@ python tools/build_kirby_terminology.py \
 | `forward_node_max_chars` | `3000` | 单个合并转发文字节点的最大字符数，按段落优先拆分 |
 | `forward_max_nodes_per_message` | `20` | 单条合并转发的最大节点数，超过后自动分成下一条合并转发 |
 | `forward_max_images_per_message` | `2` | 单条合并转发最多包含的图片数；超长百科的文字与图片会分开打包 |
-| `forward_direct_send_enabled` | `true` | aiocqhttp/NapCat 上由插件直接发送，以便捕获异常并执行兜底 |
+| `forward_direct_send_enabled` | `true` | aiocqhttp 平台上由插件直接发送，以便捕获异常并执行兜底 |
 | `forward_retry_count` | `1` | 已无法继续拆分的单节点转发失败后重试次数 |
 | `forward_retry_delay_seconds` | `0.5` | 单节点转发重试间隔 |
 | `forward_batch_delay_seconds` | `0.2` | 多条转发之间的发送间隔；设为 `0` 更快，但连续上传稳定性可能降低 |
 
-这些设置由 WiKirby、Kirby Fandom、真格攻略 Wiki 和 `查看简介` 的合并转发共用。普通短正文和一张图片仍会保持为一条转发；只有长正文、多卡片或节点超限时才拆分。通常应保持默认值：把字符数调得过大会重新形成超大节点，调得过小则会制造过多节点，同样可能触发 QQ 或 NapCat 的限制。
+这些设置由 WiKirby、Kirby Fandom、真格攻略 Wiki 和 `查看简介` 的合并转发共用。普通短正文和一张图片仍会保持为一条转发；只有长正文、多卡片或节点超限时才拆分。通常应保持默认值：把字符数调得过大会重新形成超大节点，调得过小则会制造过多节点，同样可能触发 QQ 或协议端的限制。
 
 ### 百科 Cloudflare Worker
 
@@ -1000,33 +1067,33 @@ docker inspect 容器名 \
 
 ### 为什么合并转发发送失败？
 
-如果日志同时出现 `send_group_forward_msg`、`UploadForwardMsgV2`、`retcode=1200` 和 `Cannot read properties of undefined (reading 'resId')`，失败发生在 NapCat/QQ 上传合并转发的阶段，不是 WiKirby 抓取或 LLM 翻译阶段。NapCat 项目中已有相同错误的报告：[NapCatQQ #885](https://github.com/NapNeko/NapCatQQ/issues/885)；另一个转发超时案例在更新 QQNT 后恢复：[NapCatQQ #1147](https://github.com/NapNeko/NapCatQQ/issues/1147)。
+如果日志同时出现 `send_group_forward_msg`、`UploadForwardMsgV2`、`retcode=1200` 和 `Cannot read properties of undefined (reading 'resId')`，失败发生在协议端与 QQ 上传合并转发的阶段，不是 WiKirby 抓取或 LLM 翻译阶段。NapCat 项目中已有相同错误的报告：[NapCatQQ #885](https://github.com/NapNeko/NapCatQQ/issues/885)；另一个转发超时案例在更新 QQNT 后恢复：[NapCatQQ #1147](https://github.com/NapNeko/NapCatQQ/issues/1147)。
 
-插件从 v3.5.1 起会直接捕获 aiocqhttp/NapCat 的转发异常：长文字与卡片图片分开发送，图片按独立上限分批；失败批次会继续缩小，单节点仍失败时自动改发普通消息或普通图片。这样即使 NapCat 无法生成合并转发 `resId`，也不会再由 AstrBot 响应阶段原样抛出整条失败消息。
+插件从 v3.5.1 起会直接捕获 aiocqhttp 平台的转发异常：长文字与卡片图片分开发送，图片按独立上限分批；失败批次会继续缩小，单节点仍失败时自动改发普通消息或普通图片。这样即使协议端无法生成合并转发 `resId`，也不会再由 AstrBot 响应阶段原样抛出整条失败消息。
 
 如果仍然失败，请依次检查：
 
-1. 将 NapCat 和 QQNT 更新到彼此兼容的当前版本；
+1. 将协议端和 QQNT 更新到彼此兼容的当前版本；
 2. 保持 `forward_direct_send_enabled=true`、`forward_node_max_chars=3000`、`forward_max_nodes_per_message=20` 和 `forward_max_images_per_message=2` 先测试；
 3. 若图片转发仍不稳定，将 `forward_max_images_per_message` 调为 `1`；
 4. 将百科回复形式改为“仅百科卡片”，绕开合并转发；
-5. 若普通短合并转发和普通图片也失败，检查 NapCat 网络、QQ 风控和账号发送状态。
+5. 若普通短合并转发和普通图片也失败，检查协议端网络、QQ 风控和账号发送状态。
 
 百科全文不会因为这些兼容处理而被截断；极长页面可能拆成多条合并转发。
 
 ### 为什么普通卡片或图鉴图片提示 rich media transfer failed？
 
-这个错误发生在 NapCat 调用 QQNT 上传图片的阶段。它不等于百科抓取失败，也不能只看文件大小判断：分辨率、长宽、总像素、JPEG 编码、网络和账号风控都可能影响结果。
+这个错误发生在协议端调用 QQNT 上传图片的阶段。它不等于百科抓取失败，也不能只看文件大小判断：分辨率、长宽、总像素、JPEG 编码、网络和账号风控都可能影响结果。
 
 建议按下面顺序排查：
 
 1. 保持 `wiki_card_auto_paginate=true`、`wiki_card_resolution=高清（推荐）`、`wiki_card_image_format=JPEG`；
 2. 保持默认安全阈值和 `gallery_max_height_px=7600`，先确认超长卡片与群总图鉴能够分页；
 3. 使用 `media_send_mode=自动（推荐）`；同机部署可直接测试，容器部署需正确配置共享目录；
-4. 日志出现“NapCat 本地文件直发成功”表示已绕过 base64；出现“回退 AstrBot 标准发送”则检查共享路径在 NapCat 侧是否真实可读；
-5. 如果尺寸正常的短图在两种发送方式下都失败，继续检查 NapCat、QQNT 版本、网络和账号风控。
+4. 日志出现“NapCat 本地文件直发成功”表示已绕过 base64；出现“回退 AstrBot 标准发送”则检查共享路径在协议端侧是否真实可读；
+5. 如果尺寸正常的短图在两种发送方式下都失败，继续检查协议端、QQNT 版本、网络和账号风控。
 
-本地文件直发只减少 AstrBot 到 NapCat 的编码和传输成本，不能绕过 QQNT 最终的图片限制。因此插件仍会先做长卡片与图鉴分页，再选择发送方式。
+本地文件直发只减少 AstrBot 到协议端的编码和传输成本，不能绕过 QQNT 最终的图片限制。因此插件仍会先做长卡片与图鉴分页，再选择发送方式。
 
 ### 为什么百科查询有时比较慢？
 
@@ -1036,7 +1103,7 @@ docker inspect 容器名 \
 [astrbot_plugin_kirby_catalog] WiKirby 查询内容已生成: query='Kirby', mode=forward, chars=34864, forward_nodes=13, elapsed=12.34s
 ```
 
-如果这条“查询内容已生成”日志本身很晚才出现，耗时在抓取、翻译或卡片渲染；同一页面的重复翻译会使用进程内缓存。如果该日志很快出现，但随后长时间没有消息，或 `respond.stage` 才报告错误，耗时在 AstrBot 到 NapCat/QQ 的发送阶段。只追求稳定和较少消息时优先使用“仅百科卡片”；只追求首次响应速度时，关闭 LLM 翻译和卡片渲染会更快。
+如果这条“查询内容已生成”日志本身很晚才出现，耗时在抓取、翻译或卡片渲染；同一页面的重复翻译会使用进程内缓存。如果该日志很快出现，但随后长时间没有消息，或 `respond.stage` 才报告错误，耗时在 AstrBot 到协议端与 QQ 的发送阶段。只追求稳定和较少消息时优先使用“仅百科卡片”；只追求首次响应速度时，关闭 LLM 翻译和卡片渲染会更快。
 
 ### 如何排查百科文档翻译不完整？
 

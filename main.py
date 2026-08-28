@@ -161,6 +161,7 @@ class AllyDrawOutcome:
     repeated: bool
     pity: bool
     existing_today: bool = False
+    all_unlocked: bool = False
 
 
 class WikiTranslationIncompleteError(RuntimeError):
@@ -1114,15 +1115,23 @@ class KirbyCatalogPlugin(Star):
                 )
                 for component in list(getattr(node, "content", []) or [])
             ]
+            node_uin = str(getattr(node, "uin", "0") or "0")
+            node_name = str(getattr(node, "name", "星之卡比图鉴") or "星之卡比图鉴")
+            try:
+                node_uin_number = int(node_uin)
+            except (TypeError, ValueError):
+                node_uin_number = 0
             messages.append(
                 {
                     "type": "node",
                     "data": {
-                        "user_id": str(getattr(node, "uin", "0") or "0"),
-                        "nickname": str(
-                            getattr(node, "name", "星之卡比图鉴")
-                            or "星之卡比图鉴"
-                        ),
+                        # Both naming styles on purpose: NapCat / SnowLuma read
+                        # user_id + nickname, while LLBot / go-cqhttp document
+                        # uin (integer) + name. Extra keys are ignored.
+                        "user_id": node_uin,
+                        "nickname": node_name,
+                        "uin": node_uin_number,
+                        "name": node_name,
                         "content": content,
                     },
                 }
@@ -2595,7 +2604,8 @@ class KirbyCatalogPlugin(Star):
         all_nodes = [*text_nodes, *other_trailing_nodes, *image_nodes]
 
         # Keep ordinary short replies compact. Long text and image-heavy card sets are
-        # separated so NapCat does not upload large text and rich media in one packet.
+        # separated so the OneBot protocol side does not upload large text and rich
+        # media in one packet.
         if (
             len(text_nodes) <= 1
             and len(all_nodes) <= max_nodes
@@ -7006,6 +7016,17 @@ class KirbyCatalogPlugin(Star):
         self._cancel_guess_timeout(group_id)
         return f"答对啦！答案是 #{entry['id']} {self._display_name(entry)}。"
 
+    @staticmethod
+    def _draw_flags(outcome: AllyDrawOutcome) -> str:
+        """Build the {flags} suffix shown after the ally name."""
+        if outcome.all_unlocked:
+            # Duplicates are disabled and every ally is already unlocked, so
+            # "repeated" would read like a failure instead of a full catalog.
+            return "（已全部解锁）"
+        return ("（重复）" if outcome.repeated else "") + (
+            "（保底）" if outcome.pity else ""
+        )
+
     def _draw_message(
         self,
         entry: Dict[str, Any],
@@ -7120,8 +7141,19 @@ class KirbyCatalogPlugin(Star):
             unlocked = set(self.store.unlocked_filenames(user))
             new_pool = [entry for entry in pool if entry["filename"] not in unlocked]
             no_new_count = int(user.get("no_new_count", 0) or 0)
-            pity = bool(new_pool and no_new_count >= 2)
-            entry = random.choice(new_pool if pity else pool)
+            allow_duplicate = self._bool_value(
+                self._config_value("allow_duplicate_draw", True)
+            )
+            if allow_duplicate:
+                pity = bool(new_pool and no_new_count >= 2)
+                all_unlocked = False
+                entry = random.choice(new_pool if pity else pool)
+            else:
+                # Duplicates disabled: always hand out a new ally while one is
+                # left. That is the normal path here, so it is not a pity draw.
+                pity = False
+                all_unlocked = not new_pool
+                entry = random.choice(new_pool or pool)
             repeated = entry["filename"] in unlocked
             user["no_new_count"] = no_new_count + 1 if repeated else 0
             user["current"] = {"ally_filename": entry["filename"], "date": today}
@@ -7139,6 +7171,7 @@ class KirbyCatalogPlugin(Star):
                 remaining=limit - count - 1,
                 repeated=repeated,
                 pity=pity,
+                all_unlocked=all_unlocked,
             ),
             None,
         )
@@ -7171,9 +7204,7 @@ class KirbyCatalogPlugin(Star):
 
         selection_seconds = time.monotonic() - started_at
         entry = outcome.entry
-        flags = ("（重复）" if outcome.repeated else "") + (
-            "（保底）" if outcome.pity else ""
-        )
+        flags = self._draw_flags(outcome)
         text = self._ally_detail_message(
             entry, self._draw_message(entry, nickname, outcome.remaining, flags)
         )
@@ -7334,8 +7365,7 @@ class KirbyCatalogPlugin(Star):
         values.update(
             {
                 "nickname": nickname,
-                "flags": ("（重复）" if outcome.repeated else "")
-                + ("（保底）" if outcome.pity else ""),
+                "flags": self._draw_flags(outcome),
                 "remaining": outcome.remaining,
             }
         )
@@ -7357,7 +7387,8 @@ class KirbyCatalogPlugin(Star):
         if not bot_identity:
             return (
                 None,
-                "无法确定当前平台的 Bot 身份。请确认 NapCat 已连接；"
+                "无法确定当前平台的 Bot 身份。请确认 OneBot 协议端"
+                "（NapCat / LLBot / SnowLuma 等）已连接；"
                 "若使用多账号或特殊连接方式，请在插件配置中填写“Bot 抽取稳定身份 ID”（建议填写 Bot QQ 号）。",
             )
         nickname = str(
@@ -7429,7 +7460,8 @@ class KirbyCatalogPlugin(Star):
             return (
                 None,
                 None,
-                "无法确定当前平台的 Bot 身份。请确认 NapCat 已连接；"
+                "无法确定当前平台的 Bot 身份。请确认 OneBot 协议端"
+                "（NapCat / LLBot / SnowLuma 等）已连接；"
                 "若使用多账号或特殊连接方式，请在插件配置中填写“Bot 抽取稳定身份 ID”（建议填写 Bot QQ 号）。",
             )
 

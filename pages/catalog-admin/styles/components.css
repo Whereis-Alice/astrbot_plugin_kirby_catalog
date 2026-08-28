@@ -69,16 +69,20 @@
 .section-heading {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: var(--sp-4);
+  justify-content: flex-start;
+  gap: var(--sp-3);
   margin-bottom: var(--sp-4);
 }
 
+/* Title and subtitle stack; trailing actions are pushed to the far edge. */
 .section-heading-copy {
   display: flex;
-  align-items: center;
-  gap: var(--sp-3);
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 1px;
   min-width: 0;
+  margin-inline-end: auto;
 }
 
 .section-icon {
@@ -610,6 +614,7 @@
 }
 
 .progress-fill {
+  display: block;
   height: 100%;
   border-radius: inherit;
   background: linear-gradient(
@@ -693,6 +698,7 @@
 }
 
 .bar-fill {
+  display: block;
   height: 100%;
   border-radius: inherit;
   background: var(--bar-color, var(--accent));
@@ -797,7 +803,7 @@
 }
 
 .row-action {
-  opacity: 0.55;
+  opacity: 0.68;
   transition: opacity var(--dur-2) var(--ease-out);
 }
 

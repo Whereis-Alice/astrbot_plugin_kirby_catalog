@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-label="星之卡比图鉴">
+  <title>星之卡比图鉴</title>
+  <defs>
+    <linearGradient id="kcBadge" x1="14" y1="10" x2="112" y2="120" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#fdf4ff" />
+      <stop offset="0.5" stop-color="#f6cbe8" />
+      <stop offset="1" stop-color="#cf7fc8" />
+    </linearGradient>
+    <radialGradient id="kcGlow" cx="0.36" cy="0.26" r="0.78">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.92" />
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0" />
+    </radialGradient>
+    <linearGradient id="kcBody" x1="11" y1="8" x2="33" y2="35" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ffe6f3" />
+      <stop offset="0.48" stop-color="#ffa8d2" />
+      <stop offset="1" stop-color="#f778b3" />
+    </linearGradient>
+    <linearGradient id="kcFoot" x1="8" y1="30" x2="36" y2="39" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ff7d9e" />
+      <stop offset="1" stop-color="#df3350" />
+    </linearGradient>
+    <linearGradient id="kcStar" x1="30" y1="2" x2="42" y2="14" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#fff4bd" />
+      <stop offset="1" stop-color="#ffab1a" />
+    </linearGradient>
+  </defs>
+
+  <rect x="4" y="4" width="120" height="120" rx="34" fill="url(#kcBadge)" />
+  <rect x="4" y="4" width="120" height="120" rx="34" fill="url(#kcGlow)" />
+  <rect x="5.25" y="5.25" width="117.5" height="117.5" rx="32.75" fill="none" stroke="#ffffff" stroke-opacity="0.75" stroke-width="2.5" />
+  <rect x="4" y="4" width="120" height="120" rx="34" fill="none" stroke="#e974ab" stroke-opacity="0.35" stroke-width="1.5" />
+
+  <g fill="#ffffff" opacity="0.72">
+    <circle cx="24" cy="30" r="2" />
+    <circle cx="105" cy="44" r="1.6" />
+    <circle cx="18" cy="72" r="1.4" />
+    <circle cx="99" cy="99" r="1.8" />
+    <circle cx="38" cy="16" r="1.2" />
+  </g>
+
+  <ellipse cx="64" cy="93" rx="30" ry="7" fill="#8a3d78" opacity="0.16" />
+  <g transform="translate(20 21) scale(2)">
+    <ellipse cx="14.6" cy="33.6" rx="7.1" ry="4.4" transform="rotate(-17 14.6 33.6)" fill="url(#kcFoot)" />
+    <ellipse cx="29.4" cy="33.6" rx="7.1" ry="4.4" transform="rotate(17 29.4 33.6)" fill="url(#kcFoot)" />
+    <ellipse cx="8.2" cy="22.4" rx="4.3" ry="5.5" transform="rotate(-28 8.2 22.4)" fill="url(#kcBody)" />
+    <ellipse cx="35.8" cy="22.4" rx="4.3" ry="5.5" transform="rotate(28 35.8 22.4)" fill="url(#kcBody)" />
+    <circle cx="22" cy="21" r="12.6" fill="url(#kcBody)" />
+    <ellipse cx="13.4" cy="23.6" rx="2.9" ry="1.7" transform="rotate(-12 13.4 23.6)" fill="#ff6fa8" opacity="0.62" />
+    <ellipse cx="30.6" cy="23.6" rx="2.9" ry="1.7" transform="rotate(12 30.6 23.6)" fill="#ff6fa8" opacity="0.62" />
+    <ellipse cx="17.7" cy="17.2" rx="2.1" ry="4" fill="#1d2b4d" />
+    <ellipse cx="26.3" cy="17.2" rx="2.1" ry="4" fill="#1d2b4d" />
+    <ellipse cx="17.7" cy="19.1" rx="1.5" ry="1.9" fill="#4fb9f2" />
+    <ellipse cx="26.3" cy="19.1" rx="1.5" ry="1.9" fill="#4fb9f2" />
+    <ellipse cx="17.9" cy="14.8" rx="1" ry="1.5" fill="#ffffff" />
+    <ellipse cx="26.5" cy="14.8" rx="1" ry="1.5" fill="#ffffff" />
+    <ellipse cx="22" cy="24.8" rx="1.7" ry="1.3" fill="#c8305f" />
+    <path d="M36 1.6L37.47 5.98L42.09 6.02L38.38 8.77L39.76 13.18L36 10.5L32.24 13.18L33.62 8.77L29.91 6.02L34.53 5.98Z" fill="url(#kcStar)" stroke="#ff8f1f" stroke-width="0.7" stroke-linejoin="round" />
+  </g>
+</svg>

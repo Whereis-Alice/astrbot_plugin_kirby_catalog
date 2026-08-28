@@ -158,6 +158,13 @@ function entryRow(entry) {
     h(
       "td",
       null,
+      entry.description_excerpt
+        ? h("p", { class: "cell-excerpt", text: entry.description_excerpt })
+        : h("span", { class: "cell-muted", text: "尚无简介" })
+    ),
+    h(
+      "td",
+      null,
       h("span", { text: kindLabel(entry.catalog_kind) }),
       entry.variant_key ? h("span", { class: "cell-muted", text: entry.variant_key }) : null
     ),
@@ -216,7 +223,7 @@ export async function loadCatalog() {
   const token = nextSequence("entries");
 
   setHidden(empty, true);
-  renderSkeletonRows(tbody, 6, 5);
+  renderSkeletonRows(tbody, 6, 6);
 
   let payload = null;
   try {

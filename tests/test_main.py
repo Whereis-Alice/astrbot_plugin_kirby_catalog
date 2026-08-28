@@ -1380,5 +1380,117 @@ class DrawHandlerRegistrationTests(unittest.TestCase):
         )
 
 
+class AllowDuplicateDrawTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.pool = [
+            {
+                "filename": f"Ally{index}.png",
+                "id": 1200 + index,
+                "name": f"盟友{index}",
+            }
+            for index in range(1, 4)
+        ]
+
+    def _make_plugin(self, config):
+        plugin = make_plugin(self.pool[0])
+        plugin.config = config
+        plugin.store.get_draw_pool = lambda: list(self.pool)
+        plugin.store.resolve_entry = lambda filename: next(
+            (entry for entry in self.pool if entry["filename"] == filename), None
+        )
+        return plugin
+
+    def _unlock_all(self, plugin, entries):
+        plugin.store.group = {
+            "user-1": {
+                "current": {"ally_filename": "", "date": ""},
+                "unlocked": [
+                    {"ally_filename": entry["filename"], "unlock_date": "2026-08-03"}
+                    for entry in entries
+                ],
+                "nickname": "测试用户",
+                "no_new_count": 0,
+            }
+        }
+        return plugin.store.group["user-1"]
+
+    async def _draw(self, plugin):
+        return await plugin._draw_for_identity(
+            group_id="group-1",
+            user_id="user-1",
+            nickname="测试用户",
+            base_limit=20,
+        )
+
+    async def test_disabled_duplicates_always_hand_out_a_new_ally(self):
+        plugin = self._make_plugin({"allow_duplicate_draw": False})
+
+        drawn = []
+        for _ in range(len(self.pool)):
+            outcome, error = await self._draw(plugin)
+            self.assertIsNone(error)
+            self.assertFalse(outcome.repeated)
+            self.assertFalse(outcome.pity)
+            self.assertFalse(outcome.all_unlocked)
+            self.assertEqual(plugin._draw_flags(outcome), "")
+            drawn.append(outcome.entry["filename"])
+
+        self.assertEqual(
+            sorted(drawn), sorted(entry["filename"] for entry in self.pool)
+        )
+
+    async def test_disabled_duplicates_fall_back_after_full_catalog(self):
+        plugin = self._make_plugin({"allow_duplicate_draw": False})
+        self._unlock_all(plugin, self.pool)
+
+        outcome, error = await self._draw(plugin)
+
+        self.assertIsNone(error)
+        self.assertTrue(outcome.repeated)
+        self.assertTrue(outcome.all_unlocked)
+        self.assertFalse(outcome.pity)
+        self.assertEqual(plugin._draw_flags(outcome), "（已全部解锁）")
+        self.assertIn(
+            outcome.entry["filename"],
+            {entry["filename"] for entry in self.pool},
+        )
+
+    async def test_disabled_duplicates_accept_string_config_value_in_section(self):
+        plugin = self._make_plugin({"draw_settings": {"allow_duplicate_draw": "false"}})
+        self._unlock_all(plugin, self.pool[:-1])
+
+        outcome, error = await self._draw(plugin)
+
+        self.assertIsNone(error)
+        self.assertEqual(outcome.entry["filename"], self.pool[-1]["filename"])
+        self.assertFalse(outcome.repeated)
+        self.assertFalse(outcome.pity)
+
+    async def test_default_still_allows_duplicates_with_repeat_wording(self):
+        plugin = self._make_plugin({})
+        self._unlock_all(plugin, self.pool)
+
+        outcome, error = await self._draw(plugin)
+
+        self.assertIsNone(error)
+        self.assertTrue(outcome.repeated)
+        self.assertFalse(outcome.all_unlocked)
+        self.assertEqual(plugin._draw_flags(outcome), "（重复）")
+
+    async def test_default_pity_after_two_repeats_still_forces_a_new_ally(self):
+        plugin = self._make_plugin({})
+        user = self._unlock_all(plugin, self.pool[:-1])
+        user["no_new_count"] = 2
+
+        outcome, error = await self._draw(plugin)
+
+        self.assertIsNone(error)
+        self.assertEqual(outcome.entry["filename"], self.pool[-1]["filename"])
+        self.assertTrue(outcome.pity)
+        self.assertFalse(outcome.repeated)
+        self.assertFalse(outcome.all_unlocked)
+        self.assertEqual(plugin._draw_flags(outcome), "（保底）")
+
+
 if __name__ == "__main__":
     unittest.main()

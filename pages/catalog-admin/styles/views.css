@@ -9,25 +9,398 @@
 /* ==========================================================================
    Overview
    ========================================================================== */
-.overview-grid {
-  display: grid;
-  gap: var(--sp-5);
-  grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
-  align-items: start;
+/* Full-screen dashboard. On roomy viewports the whole overview fits inside a
+   single non-scrolling canvas; individual panels scroll internally instead. */
+.dash-topline {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--sp-4);
+  flex-wrap: wrap;
 }
 
-.overview-grid > .surface {
+.dash-topline-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
   min-width: 0;
 }
 
-.overview-grid > .is-wide {
-  grid-column: 1 / -1;
+.dash-topline-copy h1 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: var(--text-2xl);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--ink-strong);
 }
 
-@media (max-width: 1080px) {
-  .overview-grid {
-    grid-template-columns: minmax(0, 1fr);
+.dash-topline-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-inline-end: auto;
+  padding: 5px 12px;
+  border-radius: var(--r-pill);
+  border: 1px solid var(--surface-border);
+  background: var(--surface);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  letter-spacing: 0.06em;
+  color: var(--ink-faint);
+  white-space: nowrap;
+}
+
+.dash-topline-meta:empty {
+  display: none;
+}
+
+.dash-grid {
+  display: grid;
+  gap: var(--sp-5);
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-areas:
+    "hero"
+    "spotlight"
+    "health"
+    "sources"
+    "activity";
+}
+
+.dash-grid > .surface {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+}
+
+.dash-hero {
+  grid-area: hero;
+}
+
+.dash-spotlight {
+  grid-area: spotlight;
+}
+
+.dash-health {
+  grid-area: health;
+}
+
+.dash-sources {
+  grid-area: sources;
+}
+
+.dash-activity {
+  grid-area: activity;
+}
+
+/* Panels keep their heading pinned and let only the payload scroll. */
+.dash-scroll {
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  margin-inline: calc(var(--sp-1) * -1);
+  padding-inline: var(--sp-1);
+}
+
+@media (min-width: 1200px) {
+  .dashboard-view {
+    height: calc(100dvh - var(--topbar-h) - var(--sp-6) - var(--sp-9));
+    min-height: 580px;
+    overflow: hidden;
   }
+
+  .dashboard-view .dash-grid {
+    flex: 1;
+    min-height: 0;
+    grid-template-columns: minmax(0, 1.24fr) minmax(0, 0.86fr) minmax(0, 1.18fr);
+    grid-template-rows: minmax(210px, auto) minmax(0, 1fr);
+    grid-template-areas:
+      "hero spotlight health"
+      "sources activity activity";
+  }
+
+  .dashboard-view .dash-grid > .surface {
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  /* The dashboard is height-locked, so a list that does not fit gets its
+     final row cut mid-way. Fading the bottom edge makes that truncation
+     read as intentional and hints that more rows exist. */
+  .dashboard-view .dash-scroll {
+    flex: 1;
+    -webkit-mask-image: linear-gradient(
+      to bottom,
+      #000 calc(100% - 26px),
+      transparent 100%
+    );
+    mask-image: linear-gradient(to bottom, #000 calc(100% - 26px), transparent 100%);
+  }
+
+  /* The activity card spans two columns, so pair the records up instead of
+     leaving half the card empty. */
+  .dash-activity .audit-list {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-content: start;
+    column-gap: var(--sp-5);
+  }
+}
+
+/* --- hero + spotlight figures ------------------------------------------- */
+.dash-eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--ink-muted);
+}
+
+.dash-eyebrow svg {
+  width: 14px;
+  height: 14px;
+  color: var(--accent);
+}
+
+.dash-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  flex-wrap: wrap;
+}
+
+.dash-hero-body {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-4);
+  flex-wrap: wrap;
+}
+
+.dash-figure {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.dash-figure-value {
+  font-family: var(--font-display);
+  font-size: clamp(2.4rem, 4.4vw, 3.4rem);
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: -0.035em;
+  color: var(--ink-strong);
+  font-variant-numeric: tabular-nums;
+}
+
+.dash-figure.is-accent .dash-figure-value {
+  background: var(--accent-grad);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.dash-figure-unit {
+  font-size: var(--text-xs);
+  color: var(--ink-faint);
+}
+
+/* Conic progress ring. The solid core sits on top so no mask is needed. */
+.dash-ring {
+  position: relative;
+  flex: none;
+  width: 106px;
+  height: 106px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: conic-gradient(
+    from -90deg,
+    var(--accent) 0deg,
+    var(--accent-hot) calc(var(--ring, 0) * 3.6deg),
+    color-mix(in srgb, var(--surface-border-strong) 70%, transparent) calc(var(--ring, 0) * 3.6deg),
+    color-mix(in srgb, var(--surface-border-strong) 70%, transparent) 360deg
+  );
+  box-shadow: var(--shadow-xs);
+}
+
+.dash-ring-core {
+  position: relative;
+  width: 78px;
+  height: 78px;
+  border-radius: 50%;
+  background: var(--surface-raised);
+  box-shadow: inset 0 0 0 1px var(--surface-border);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+}
+
+.dash-ring-core strong {
+  font-family: var(--font-display);
+  font-size: var(--text-lg);
+  font-weight: 700;
+  line-height: 1;
+  color: var(--ink-strong);
+  font-variant-numeric: tabular-nums;
+}
+
+.dash-ring-core small {
+  font-size: var(--text-2xs);
+  color: var(--ink-faint);
+}
+
+.dash-chip-row {
+  display: flex;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+  margin-top: auto;
+}
+
+.dash-chip {
+  flex: 1 1 84px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 8px 11px;
+  border-radius: var(--r-md, var(--r-sm));
+  border: 1px solid var(--surface-border);
+  background: var(--surface-sunken);
+}
+
+.dash-chip-label {
+  font-size: var(--text-2xs);
+  color: var(--ink-faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dash-chip strong {
+  font-size: var(--text-md);
+  font-weight: 700;
+  color: var(--ink-strong);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Spotlight leans on the accent gradient so today’s activity reads first. */
+.dash-spotlight {
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+}
+
+.dash-spotlight::after {
+  content: "";
+  position: absolute;
+  inset: -40% -30% auto auto;
+  width: 220px;
+  height: 220px;
+  border-radius: 50%;
+  background: radial-gradient(circle, color-mix(in srgb, var(--accent-soft) 90%, transparent) 0%, transparent 70%);
+  pointer-events: none;
+  z-index: -1;
+}
+
+.dash-live {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  letter-spacing: 0.1em;
+  color: var(--accent);
+}
+
+.dash-live-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 0 var(--accent-ring);
+  animation: dash-pulse 2.4s var(--ease-in-out) infinite;
+}
+
+@keyframes dash-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 var(--accent-ring);
+  }
+  50% {
+    box-shadow: 0 0 0 6px transparent;
+  }
+}
+
+.dash-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: auto;
+}
+
+.dash-line {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  padding: 7px 0;
+  border-top: 1px solid var(--divider);
+  font-size: var(--text-sm);
+  color: var(--ink-muted);
+}
+
+.dash-line:first-child {
+  border-top: 0;
+}
+
+.dash-line strong {
+  color: var(--ink-strong);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+/* --- compact stat strip under the completeness gauge -------------------- */
+.dash-mini-stats {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--sp-2);
+  margin-top: auto;
+  padding-top: var(--sp-3);
+  border-top: 1px solid var(--divider);
+}
+
+.dash-mini {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+
+.dash-mini-label {
+  font-size: var(--text-2xs);
+  color: var(--ink-faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dash-mini-value {
+  font-size: var(--text-sm);
+  font-weight: 700;
+  color: var(--ink-strong);
+  font-variant-numeric: tabular-nums;
 }
 
 /* ==========================================================================
@@ -151,24 +524,45 @@
 /* ==========================================================================
    Catalog table column sizing
    ========================================================================== */
+/* Six columns: media, character, debut, excerpt, kind, status. The excerpt
+   column is intentionally left flexible so it soaks up the slack on wide
+   screens instead of leaving a dead gap next to the character name. */
 .catalog-table {
-  min-width: 860px;
+  min-width: 1040px;
 }
 
 .catalog-table thead th:nth-child(1) {
   width: 92px;
 }
 
-.catalog-table thead th:nth-child(3) {
-  width: 20%;
+.catalog-table thead th:nth-child(2) {
+  width: 208px;
 }
 
-.catalog-table thead th:nth-child(4) {
-  width: 128px;
+.catalog-table thead th:nth-child(3) {
+  width: 188px;
 }
 
 .catalog-table thead th:nth-child(5) {
-  width: 190px;
+  width: 118px;
+}
+
+.catalog-table thead th:nth-child(6) {
+  width: 178px;
+}
+
+/* Two-line clamp keeps long descriptions from stretching the row height. */
+.cell-excerpt {
+  margin: 0;
+  max-width: 46ch;
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
+  line-height: 1.5;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 
 .terminology-table {
@@ -203,12 +597,15 @@
   width: 140px;
 }
 
+/* Trash columns: entry, work, deleted-at, affected users, actions. The work
+   column stays flexible so wide screens do not strand a dead gap between the
+   entry name and the rest of the row. */
 .trash-table {
   min-width: 780px;
 }
 
-.trash-table thead th:nth-child(2) {
-  width: 22%;
+.trash-table thead th:nth-child(1) {
+  width: 320px;
 }
 
 .trash-table thead th:nth-child(3) {
