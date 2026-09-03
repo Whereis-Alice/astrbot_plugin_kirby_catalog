@@ -35,6 +35,49 @@ _RETRYABLE_HTTP_CODES = {408, 425, 429, 500, 502, 503, 504}
 _PROXY_FALLBACK_HTTP_CODES = _RETRYABLE_HTTP_CODES | {403}
 _PROXY_PREFERENCE_SECONDS = 300.0
 _IMAGE_HOST_RE = re.compile(r"^image0[1-9]\.seesaawiki\.jp$", re.IGNORECASE)
+_SEESAA_UPLOAD_PREFIX = "/k/u/kirby_shinkaku/"
+# 真格攻略 Wiki 的实机记录截图几乎全部托管在站外图床（記録集 页面实测
+# 61 张 i.imgur.com 对 1 张 Seesaa 图床），只认 Seesaa 自带图床会让整张
+# 记录表退化成空单元格。
+_EXTERNAL_IMAGE_HOST_SUFFIXES = (
+    "imgur.com",
+    "gyazo.com",
+    "gyazo.jp",
+    "twimg.com",
+    "discordapp.com",
+    "discordapp.net",
+    "nicoseiga.jp",
+    "googleusercontent.com",
+    "githubusercontent.com",
+    "postimg.cc",
+    "ibb.co",
+    "imgbb.com",
+    "imgbox.com",
+    "prntscr.com",
+    "steamusercontent.com",
+    "cloudfront.net",
+    "b-cdn.net",
+)
+# Wiki 皮肤装饰、访问统计像素和广告位同样是 <img>，必须显式排除。
+_IMAGE_HOST_DENYLIST = (
+    "static.seesaawiki.jp",
+    "rainman.seesaawiki.jp",
+    "img.seesaawiki.jp",
+    "creativecarrer.com",
+)
+_UI_IMAGE_PATH_HINTS = (
+    "/profile_icon/",
+    "/img/icon/",
+    "/emoji/",
+    "/skin/",
+    "/spacer",
+    "/blank",
+)
+_ALBUM_PAGE_PATH_RE = re.compile(r"^/(?:a|gallery|t)/", re.IGNORECASE)
+_NON_IMAGE_SUFFIXES = (".html", ".htm", ".php", ".asp", ".aspx")
+# 表格里区分「行内小图标」与「需要放大展示的实机截图」的像素阈值。
+_ICON_MAX_DIMENSION = 120
+SHOT_MIN_DIMENSION = 200
 _SECTION_CLASS_RE = re.compile(r"^wiki-section-body-(\d+)$")
 _SOURCE_ACCENT_COLOR_RE = re.compile(
     r"(?:^|;)\s*color\s*:\s*(?:#(?:f00|ff0000)|red|"
@@ -248,17 +291,101 @@ def _list_lines(items: list[dict[str, Any]], depth: int = 0) -> list[str]:
     return output
 
 
-def _meaningful_image_urls(root: Tag, base_url: str) -> list[str]:
+def _host_matches(hostname: str, suffixes: tuple[str, ...]) -> bool:
+    host = str(hostname or "").casefold()
+    return any(
+        host == suffix or host.endswith(f".{suffix}") for suffix in suffixes
+    )
+
+
+def _is_seesaa_upload_image(hostname: str, pathname: str) -> bool:
+    return bool(
+        _IMAGE_HOST_RE.fullmatch(str(hostname or "").casefold())
+        and str(pathname or "").startswith(_SEESAA_UPLOAD_PREFIX)
+    )
+
+
+def _normalise_image_url(value: str) -> str:
+    """把图床的页面型域名换成直链域名，避免下载时拿到 HTML。"""
+
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    parsed = urlparse(raw)
+    hostname = (parsed.hostname or "").casefold()
+    if hostname == "imgur.com" and not _ALBUM_PAGE_PATH_RE.match(parsed.path or ""):
+        return parsed._replace(netloc="i.imgur.com").geturl()
+    return raw
+
+
+def _is_content_image_url(value: str) -> bool:
+    """判断一个 <img> 是否是正文内容图，而不是皮肤装饰 / 统计像素 / 广告位。"""
+
+    parsed = urlparse(str(value or ""))
+    if parsed.scheme.casefold() not in {"http", "https"}:
+        return False
+    hostname = (parsed.hostname or "").casefold()
+    pathname = parsed.path or "/"
+    if not hostname or _host_matches(hostname, _IMAGE_HOST_DENYLIST):
+        return False
+    lowered = pathname.casefold()
+    if any(hint in lowered for hint in _UI_IMAGE_PATH_HINTS):
+        return False
+    if _is_seesaa_upload_image(hostname, pathname):
+        return True
+    if not _host_matches(hostname, _EXTERNAL_IMAGE_HOST_SUFFIXES):
+        return False
+    # imgur 的 /a/、/gallery/ 是相册 HTML 页而不是原图直链。
+    if _ALBUM_PAGE_PATH_RE.match(pathname):
+        return False
+    return not lowered.endswith(_NON_IMAGE_SUFFIXES)
+
+
+def _leading_int(value: Any) -> int:
+    match = re.match(r"\s*(\d+)", str(value or ""))
+    return int(match.group(1)) if match else 0
+
+
+def _image_kind_hint(image: Tag, source: str, *, sibling_count: int) -> str:
+    """区分行内小图标（icon）与需要放大的实机截图（shot）。
+
+    解析阶段只能看 HTML 属性，下载图片字节后 classify_image_kind() 会用真实
+    像素尺寸复核并覆盖这里的猜测。
+    """
+
+    largest = max(
+        _leading_int(image.get("width")), _leading_int(image.get("height"))
+    )
+    if largest:
+        return "icon" if largest <= _ICON_MAX_DIMENSION else "shot"
+    style = str(image.get("style") or "").casefold().replace(" ", "")
+    if "max-width" in style or "width:100%" in style:
+        # seesaawiki 只给按原尺寸插入的大图加这个内联样式，行内小图标不会有，
+        # 所以它比「同格多图」更能说明这是一张截图。
+        return "shot"
+    if sibling_count > 1:
+        # 同一格里并排多张没有尺寸线索的图，基本都是能力 / 角色图标组合。
+        return "icon"
+    if _host_matches(
+        urlparse(source).hostname or "", _EXTERNAL_IMAGE_HOST_SUFFIXES
+    ):
+        return "shot"
+    return "icon"
+
+
+def _meaningful_image_urls(
+    root: Tag, base_url: str, *, skip_tables: bool = False
+) -> list[str]:
     urls: list[str] = []
     for image in root.select("img[src]"):
-        source = urljoin(base_url, str(image.get("src") or "").strip())
-        parsed = urlparse(source)
-        if not _IMAGE_HOST_RE.fullmatch((parsed.hostname or "").casefold()):
+        if skip_tables and image.find_parent("table") is not None:
             continue
-        if not parsed.path.startswith("/k/u/kirby_shinkaku/"):
+        source = _normalise_image_url(
+            _safe_http_url(str(image.get("src") or ""), base_url)
+        )
+        if not source or not _is_content_image_url(source) or source in urls:
             continue
-        if source not in urls:
-            urls.append(source)
+        urls.append(source)
     return urls
 
 
@@ -322,24 +449,43 @@ def _is_table_edit_cell(cell: Tag) -> bool:
     return link is not None and _clean_text(cell) == ""
 
 
+def classify_image_kind(width: int, height: int, fallback: str = "icon") -> str:
+    """按真实像素尺寸判定图片类型，下载完成后用来复核解析期的猜测。"""
+
+    largest = max(int(width or 0), int(height or 0))
+    if largest <= 0:
+        return fallback if fallback in {"icon", "shot"} else "icon"
+    if largest >= SHOT_MIN_DIMENSION:
+        return "shot"
+    return "icon"
+
+
 def _table_icon_data(cell: Tag, base_url: str) -> list[dict[str, str]]:
-    icons: list[dict[str, str]] = []
+    candidates: list[tuple[Tag, str]] = []
     for image in cell.select("img[src]"):
-        source = _safe_http_url(str(image.get("src") or ""), base_url)
-        parsed = urlparse(source)
-        if not _IMAGE_HOST_RE.fullmatch((parsed.hostname or "").casefold()):
-            continue
-        if not parsed.path.startswith("/k/u/kirby_shinkaku/"):
-            continue
+        source = _normalise_image_url(
+            _safe_http_url(str(image.get("src") or ""), base_url)
+        )
+        if source and _is_content_image_url(source):
+            candidates.append((image, source))
+
+    icons: list[dict[str, str]] = []
+    for image, source in candidates:
         link_url = ""
         parent_link = image.find_parent("a", href=True)
-        if isinstance(parent_link, Tag) and parent_link.find_parent(["td", "th"]) is cell:
+        if (
+            isinstance(parent_link, Tag)
+            and parent_link.find_parent(["td", "th"]) is cell
+        ):
             link_url = _safe_http_url(str(parent_link.get("href") or ""), base_url)
         icons.append(
             {
                 "url": source,
-                "link_url": link_url,
+                "link_url": link_url or source,
                 "alt": str(image.get("alt") or "").strip(),
+                "kind": _image_kind_hint(
+                    image, source, sibling_count=len(candidates)
+                ),
             }
         )
     return icons
@@ -463,6 +609,21 @@ def _table_data(table: Tag, base_url: str) -> dict[str, Any] | None:
     }
 
 
+def table_cell_shot_urls(cell: dict[str, Any]) -> list[str]:
+    """取出单元格里当作内容看的截图直链（能力小图标不算）。"""
+
+    urls: list[str] = []
+    for icon in cell.get("icons") or []:
+        if not isinstance(icon, dict):
+            continue
+        if str(icon.get("kind") or "icon") != "shot":
+            continue
+        url = str(icon.get("url") or "").strip()
+        if url and url not in urls:
+            urls.append(url)
+    return urls
+
+
 def _table_lines(table_data: dict[str, Any]) -> list[str]:
     """Keep a readable plain-text fallback without losing any table rows."""
 
@@ -479,7 +640,19 @@ def _table_lines(table_data: dict[str, Any]) -> list[str]:
                 continue
             text = str(cell.get("text") or "").strip()
             has_icons = bool(cell.get("icons") or cell.get("icon_url"))
-            value = text or ("[图标]" if has_icons else "—")
+            # 記録集 这类页面把成绩直接写在截图里，单元格没有任何文字。
+            # 丢掉图片链接等于丢掉全部数据，所以纯文本回退也要带上直链。
+            shot_urls = table_cell_shot_urls(cell)
+            if text:
+                value = text
+            elif shot_urls:
+                value = "图片：" + "、".join(shot_urls)
+            elif has_icons:
+                value = "[图标]"
+            else:
+                value = "—"
+            if text and shot_urls:
+                value += "（图片：" + "、".join(shot_urls) + "）"
             media_links = [
                 str(link.get("url") or "").strip()
                 for link in cell.get("links", []) or []
@@ -765,7 +938,8 @@ def _page_lead(root: Tag, base_url: str) -> dict[str, Any]:
 
 
 def _page_image_url(root: Tag, base_url: str) -> str:
-    images = _meaningful_image_urls(root, base_url)
+    # 表格里的图片是记录截图，随手拿第一张当页头图会很突兀。
+    images = _meaningful_image_urls(root, base_url, skip_tables=True)
     return images[0] if images else ""
 
 
@@ -971,10 +1145,7 @@ class KirbyShinkakuClient:
 
     @staticmethod
     def _is_image_path(hostname: str, pathname: str) -> bool:
-        return bool(
-            _IMAGE_HOST_RE.fullmatch(hostname)
-            and pathname.startswith("/k/u/kirby_shinkaku/")
-        )
+        return _is_content_image_url(f"https://{hostname}{pathname}")
 
     def _proxy_url_for(self, target_url: str, *, image: bool) -> str:
         if not self._proxy_configured():
@@ -1009,11 +1180,21 @@ class KirbyShinkakuClient:
             return error.code in _PROXY_FALLBACK_HTTP_CODES
         return isinstance(error, (URLError, TimeoutError))
 
-    def _request_headers(self, *, image: bool) -> dict[str, str]:
+    def _request_headers(
+        self, *, image: bool, target_url: str = ""
+    ) -> dict[str, str]:
+        referer = self.site_url + "/"
+        if image and target_url:
+            parsed = urlparse(target_url)
+            hostname = parsed.hostname or ""
+            if hostname and not hostname.casefold().endswith("seesaawiki.jp"):
+                # imgur 一类站外图床按 Referer 做防盗链，带 Wiki 的 Referer
+                # 会被换成占位图，用图床自身 origin 才能拿到原图。
+                referer = f"{parsed.scheme or 'https'}://{hostname}/"
         return {
             "Accept": "image/*" if image else "text/html,application/xhtml+xml",
             "Accept-Language": "ja,en-US;q=0.9,en;q=0.8",
-            "Referer": self.site_url + "/",
+            "Referer": referer,
             "User-Agent": _BROWSER_USER_AGENT,
         }
 
@@ -1036,7 +1217,7 @@ class KirbyShinkakuClient:
     def _read_target_with_proxy_fallback_sync(
         self, target_url: str, *, image: bool
     ) -> bytes:
-        headers = self._request_headers(image=image)
+        headers = self._request_headers(image=image, target_url=target_url)
         proxy_url = self._proxy_url_for(target_url, image=image)
         proxy_headers = dict(headers)
         if proxy_url:
@@ -1148,7 +1329,7 @@ class KirbyShinkakuClient:
             "summary": summary,
             "lead": lead,
             "url": source_url,
-            "image_url": images[0] if images else "",
+            "image_url": _page_image_url(root, source_url),
             "images": images,
             "media_links": media_links,
             "media_urls": [row["url"] for row in media_links],

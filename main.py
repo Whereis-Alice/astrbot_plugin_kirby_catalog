@@ -7,6 +7,7 @@ import json
 import os
 import random
 import re
+import struct
 import time
 from collections import Counter
 from collections.abc import Callable, Iterable
@@ -40,6 +41,8 @@ from .kirby_shinkaku import (
     SHINKAKU_SITE_LABEL,
     KirbyShinkakuClient,
     KirbyShinkakuError,
+    classify_image_kind,
+    table_cell_shot_urls,
 )
 from .media_delivery import (
     cleanup_staged_media_if_due,
@@ -125,8 +128,12 @@ DEFAULT_BOT_DRAW_LLM_IMAGE_MAX_HEIGHT_PX = 1280
 DEFAULT_BOT_DRAW_LLM_IMAGE_MAX_MEGAPIXELS = 1.5
 DEFAULT_BOT_DRAW_LLM_IMAGE_MAX_BYTES = 2 * 1024 * 1024
 DEFAULT_BOT_DRAW_LLM_IMAGE_JPEG_QUALITY = 88
+DEFAULT_WIKI_LLM_VISION_MAX_IMAGES = 4
+MAX_WIKI_LLM_VISION_IMAGES = 8
 MAX_WIKI_TRANSLATION_CACHE_ITEMS = 128
 MAX_SHINKAKU_TABLE_ICON_IMAGES = 160
+MAX_SHINKAKU_TABLE_ICON_CACHE_ITEMS = 480
+MAX_SHINKAKU_TABLE_ICON_CACHE_BYTES = 64 * 1024 * 1024
 DEFAULT_WIKI_TRANSLATION_CHUNK_CHARS = 6000
 DEFAULT_WIKI_TRANSLATION_RETRY_DEPTH = 2
 DEFAULT_WIKI_TRANSLATION_MIN_CHUNK_CHARS = 800
@@ -253,7 +260,7 @@ class KirbyCatalogPlugin(Star):
         self._guess_sessions: Dict[str, Dict[str, Any]] = {}
         self._guess_timeout_tasks: Dict[str, asyncio.Task[None]] = {}
         self._wiki_translation_cache: Dict[Tuple[str, ...], Tuple[float, str]] = {}
-        self._shinkaku_table_icon_cache: Dict[str, str] = {}
+        self._shinkaku_table_icon_cache: Dict[str, Dict[str, str]] = {}
         self.wikirby = WikirbyClient(
             api_url=str(self._config_value("wikirby_api_url", DEFAULT_API_URL)),
             timeout_seconds=float(self._config_value("wikirby_timeout_seconds", 12)),
@@ -1426,6 +1433,177 @@ class KirbyCatalogPlugin(Star):
             mimeType=self._tool_image_mime_type(data),
         )
 
+    async def _llm_image_from_bytes(
+        self, data: bytes | None, *, purpose: str
+    ) -> ImageContent | None:
+        """把已下载的百科图片压成可直接喂给模型的视觉输入。
+
+        百科客户端只给字节，而 prepare_image_for_delivery 需要文件，所以先落一份
+        以内容哈希命名的临时文件，压缩完再删掉，避免重复下载同一张图时反复落盘。
+        """
+
+        if not data:
+            return None
+        if self._image_pixel_size(data) == (0, 0):
+            # 图床偶尔回防盗链占位页或 HTML 错误页，按图片喂给模型只会浪费上下文。
+            logger.warning(
+                "[%s] %s 收到无法识别的图片字节，已跳过: bytes=%d",
+                PLUGIN_ID,
+                purpose,
+                len(data),
+            )
+            return None
+        cache_dir = self._media_cache_dir()
+        mime = self._tool_image_mime_type(data)
+        suffix = {
+            "image/png": ".png",
+            "image/jpeg": ".jpg",
+            "image/gif": ".gif",
+            "image/webp": ".webp",
+        }.get(mime, ".png")
+        staged = (
+            cache_dir / f"kirby-wiki-llm-{hashlib.sha256(data).hexdigest()[:20]}{suffix}"
+        )
+        try:
+            if not staged.is_file():
+                await asyncio.to_thread(staged.write_bytes, data)
+            prepared = await asyncio.to_thread(
+                prepare_image_for_delivery,
+                staged,
+                cache_dir,
+                max_width=DEFAULT_BOT_DRAW_LLM_IMAGE_MAX_WIDTH_PX,
+                max_height=DEFAULT_BOT_DRAW_LLM_IMAGE_MAX_HEIGHT_PX,
+                max_megapixels=DEFAULT_BOT_DRAW_LLM_IMAGE_MAX_MEGAPIXELS,
+                max_bytes=DEFAULT_BOT_DRAW_LLM_IMAGE_MAX_BYTES,
+                normalize_jpeg_enabled=True,
+                jpeg_quality=DEFAULT_BOT_DRAW_LLM_IMAGE_JPEG_QUALITY,
+            )
+            payload = await asyncio.to_thread(Path(prepared).read_bytes)
+        except Exception as exc:
+            logger.warning(
+                "[%s] 无法为 %s 准备 LLM 视觉素材: %s", PLUGIN_ID, purpose, exc
+            )
+            return None
+        finally:
+            try:
+                staged.unlink(missing_ok=True)
+            except OSError:
+                pass
+        if not payload:
+            return None
+        return ImageContent(
+            type="image",
+            data=base64.b64encode(payload).decode("ascii"),
+            mimeType=self._tool_image_mime_type(payload),
+        )
+
+    def _wiki_llm_vision_enabled(self) -> bool:
+        return self._bool_value(self._config_value("wiki_llm_vision_enabled", True))
+
+    def _wiki_llm_vision_limit(self) -> int:
+        return int(
+            self._bounded_float(
+                self._config_value(
+                    "wiki_llm_vision_max_images", DEFAULT_WIKI_LLM_VISION_MAX_IMAGES
+                ),
+                DEFAULT_WIKI_LLM_VISION_MAX_IMAGES,
+                0,
+                MAX_WIKI_LLM_VISION_IMAGES,
+            )
+        )
+
+    @staticmethod
+    def _wiki_tool_image_urls(
+        page: Dict[str, Any],
+        rich_sections: List[Dict[str, Any]] | None,
+        limit: int,
+    ) -> List[str]:
+        """挑出最能代表页面的图：页头图优先，然后是表格里的实机截图。
+
+        「記録集」这类页面把成绩直接写在截图里，只给模型纯文本等于什么都没给。
+        """
+
+        if limit <= 0:
+            return []
+
+        urls: List[str] = []
+
+        def add(value: Any) -> bool:
+            url = str(value or "").strip()
+            if not url or url in urls:
+                return len(urls) < limit
+            urls.append(url)
+            return len(urls) < limit
+
+        if not add(page.get("image_url") if isinstance(page, dict) else ""):
+            return urls
+        for section in rich_sections or []:
+            if not isinstance(section, dict) or section.get("kind") != "table":
+                continue
+            for row in section.get("rows", []) or []:
+                for cell in row if isinstance(row, list) else []:
+                    if not isinstance(cell, dict):
+                        continue
+                    for url in table_cell_shot_urls(cell):
+                        if not add(url):
+                            return urls
+        return urls
+
+    async def _wiki_tool_result(
+        self,
+        text: str,
+        *,
+        client: Any,
+        page: Dict[str, Any],
+        rich_sections: List[Dict[str, Any]] | None = None,
+        purpose: str,
+    ) -> str | CallToolResult:
+        """给百科查询工具补上真正的视觉输入，让模型自己也能读图。"""
+
+        if not text or not self._wiki_llm_vision_enabled():
+            return text
+        limit = self._wiki_llm_vision_limit()
+        if limit <= 0:
+            return text
+        urls = self._wiki_tool_image_urls(page, rich_sections, limit)
+        if not urls:
+            return text
+        get_image_bytes = getattr(client, "get_image_bytes", None)
+        if not callable(get_image_bytes):
+            return text
+        downloads = await asyncio.gather(
+            *(get_image_bytes(url) for url in urls), return_exceptions=True
+        )
+        images: List[ImageContent] = []
+        for payload in downloads:
+            if isinstance(payload, Exception) or not payload:
+                continue
+            image = await self._llm_image_from_bytes(payload, purpose=purpose)
+            if image is not None:
+                images.append(image)
+        logger.info(
+            "[%s] %s 为模型附带页面图片: candidates=%d, attached=%d",
+            PLUGIN_ID,
+            purpose,
+            len(urls),
+            len(images),
+        )
+        if not images:
+            return text
+        return CallToolResult(
+            content=[
+                TextContent(
+                    type="text",
+                    text=(
+                        f"{text}\n\n下面附上该页面里的 {len(images)} 张原图（含把成绩"
+                        "或数据直接写在图中的实机截图）。请先看图再回答；如果用户需要"
+                        "原图，可以把正文里的图片直链转给他。"
+                    ),
+                ),
+                *images,
+            ]
+        )
+
     async def _bot_draw_llm_image(
         self, chain: Iterable[Any]
     ) -> ImageContent | None:
@@ -2013,6 +2191,59 @@ class KirbyCatalogPlugin(Star):
         else:
             mime = "image/png"
         return f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}"
+
+    @staticmethod
+    def _image_pixel_size(data: bytes | None) -> tuple[int, int]:
+        """从图片字节头读出像素尺寸，用来复核解析期的图标 / 截图猜测。
+
+        只解析文件头，避免为了量一下尺寸就把整张图解码进内存。
+        """
+
+        if not data or len(data) < 24:
+            return (0, 0)
+        try:
+            if data.startswith(b"\x89PNG\r\n\x1a\n") and data[12:16] == b"IHDR":
+                width, height = struct.unpack(">II", data[16:24])
+                return (int(width), int(height))
+            if data.startswith((b"GIF87a", b"GIF89a")):
+                width, height = struct.unpack("<HH", data[6:10])
+                return (int(width), int(height))
+            if data.startswith(b"RIFF") and data[8:12] == b"WEBP":
+                chunk = data[12:16]
+                if chunk == b"VP8X" and len(data) >= 30:
+                    width = int.from_bytes(data[24:27], "little") + 1
+                    height = int.from_bytes(data[27:30], "little") + 1
+                    return (width, height)
+                if chunk == b"VP8 " and len(data) >= 30:
+                    width = int.from_bytes(data[26:28], "little") & 0x3FFF
+                    height = int.from_bytes(data[28:30], "little") & 0x3FFF
+                    return (width, height)
+                if chunk == b"VP8L" and len(data) >= 25:
+                    bits = int.from_bytes(data[21:25], "little")
+                    return ((bits & 0x3FFF) + 1, ((bits >> 14) & 0x3FFF) + 1)
+                return (0, 0)
+            if data.startswith(b"\xff\xd8\xff"):
+                offset = 2
+                total = len(data)
+                while offset + 9 < total:
+                    if data[offset] != 0xFF:
+                        offset += 1
+                        continue
+                    marker = data[offset + 1]
+                    if marker in {0xD8, 0x01} or 0xD0 <= marker <= 0xD7:
+                        offset += 2
+                        continue
+                    segment_length = struct.unpack(">H", data[offset + 2 : offset + 4])[0]
+                    if 0xC0 <= marker <= 0xCF and marker not in {0xC4, 0xC8, 0xCC}:
+                        height, width = struct.unpack(
+                            ">HH", data[offset + 5 : offset + 9]
+                        )
+                        return (int(width), int(height))
+                    offset += 2 + max(segment_length, 2)
+                return (0, 0)
+        except (struct.error, IndexError, ValueError):
+            return (0, 0)
+        return (0, 0)
 
     async def _wiki_card_component(
         self,
@@ -4675,7 +4906,19 @@ class KirbyCatalogPlugin(Star):
                     if isinstance(cell, dict):
                         text = str(cell.get("text", "") or "").strip()
                         has_icons = bool(cell.get("icons") or cell.get("icon_url"))
-                        value = text or ("[图标]" if has_icons else "—")
+                        # 記録集 这类页面把成绩写在截图里，纯文本回退必须带直链，
+                        # 否则整格数据在 LLM / 文本消息里会彻底消失。
+                        shots = table_cell_shot_urls(cell)
+                        if text:
+                            value = text
+                        elif shots:
+                            value = "图片：" + "、".join(shots)
+                        elif has_icons:
+                            value = "[图标]"
+                        else:
+                            value = "—"
+                        if text and shots:
+                            value += "（图片：" + "、".join(shots) + "）"
                         links = [
                             str(link.get("url") or "").strip()
                             for link in cell.get("links", []) or []
@@ -4691,6 +4934,32 @@ class KirbyCatalogPlugin(Star):
             lines.append("")
         return "\n".join(lines).strip()
 
+    @staticmethod
+    def _trim_table_icon_cache(
+        cache: Dict[str, Dict[str, str]], *, protected: Iterable[str] = ()
+    ) -> None:
+        """按 FIFO 压住表格图片缓存，避免长期浏览把实机截图堆在内存里。
+
+        放行站外图床后单页可能有几十张整屏截图，只按条数限制不够，还要看体积；
+        当前请求要用的 URL 不参与淘汰，否则刚下载完的截图会被自己挤掉。
+        """
+
+        keep = set(protected)
+        total = sum(
+            len(str(entry.get("data_uri") or ""))
+            for entry in cache.values()
+            if isinstance(entry, dict)
+        )
+        for url in [key for key in cache if key not in keep]:
+            if (
+                len(cache) <= MAX_SHINKAKU_TABLE_ICON_CACHE_ITEMS
+                and total <= MAX_SHINKAKU_TABLE_ICON_CACHE_BYTES
+            ):
+                break
+            dropped = cache.pop(url, None)
+            if isinstance(dropped, dict):
+                total -= len(str(dropped.get("data_uri") or ""))
+
     async def _shinkaku_embed_table_icons(
         self,
         client: KirbyShinkakuClient,
@@ -4700,6 +4969,22 @@ class KirbyCatalogPlugin(Star):
 
         result = deepcopy(rich_sections)
         urls: List[str] = []
+        hints: Dict[str, str] = {}
+
+        def remember(raw_url: Any, hint: Any) -> None:
+            url = str(raw_url or "").strip()
+            if not url:
+                return
+            kind = str(hint or "icon")
+            if kind not in {"icon", "shot"}:
+                kind = "icon"
+            if url not in hints:
+                hints[url] = kind
+                urls.append(url)
+            elif kind == "shot":
+                # 同一张图可能在别的单元格里被猜成小图标，放大优先。
+                hints[url] = "shot"
+
         for section in result:
             if section.get("kind") != "table":
                 continue
@@ -4707,15 +4992,10 @@ class KirbyCatalogPlugin(Star):
                 for cell in row if isinstance(row, list) else []:
                     if not isinstance(cell, dict):
                         continue
-                    icon_url = str(cell.get("icon_url", "") or "").strip()
-                    if icon_url and icon_url not in urls:
-                        urls.append(icon_url)
-                    for icon in cell.get("icons", []) or []:
-                        if not isinstance(icon, dict):
-                            continue
-                        icon_url = str(icon.get("url", "") or "").strip()
-                        if icon_url and icon_url not in urls:
-                            urls.append(icon_url)
+                    for raw_icon in cell.get("icons", []) or []:
+                        if isinstance(raw_icon, dict):
+                            remember(raw_icon.get("url"), raw_icon.get("kind"))
+                    remember(cell.get("icon_url"), "icon")
         if not urls:
             return result
 
@@ -4732,32 +5012,49 @@ class KirbyCatalogPlugin(Star):
         if not isinstance(cache, dict):
             cache = {}
             self._shinkaku_table_icon_cache = cache
-        missing_urls = [url for url in urls if not cache.get(url)]
+        missing_urls = [url for url in urls if not isinstance(cache.get(url), dict)]
         if missing_urls:
             results = await asyncio.gather(
                 *(client.get_image_bytes(url) for url in missing_urls),
                 return_exceptions=True,
             )
             failed = 0
+            shots = 0
             for url, image_bytes in zip(missing_urls, results):
                 if isinstance(image_bytes, Exception) or not image_bytes:
                     failed += 1
                     continue
-                cache[url] = self._wikirby_image_data_uri(image_bytes)
+                # 解析 HTML 时只能靠 width/height 属性猜，这里按真实像素复核。
+                width, height = self._image_pixel_size(image_bytes)
+                kind = classify_image_kind(width, height, hints.get(url, "icon"))
+                if kind == "shot":
+                    shots += 1
+                cache[url] = {
+                    "data_uri": self._wikirby_image_data_uri(image_bytes),
+                    "kind": kind,
+                }
             logger.info(
-                "[%s] 真格攻略表格图标加载: requested=%d, cached=%d, loaded=%d, failed=%d",
+                "[%s] 真格攻略表格图片加载: requested=%d, cached=%d, loaded=%d, "
+                "failed=%d, shots=%d",
                 PLUGIN_ID,
                 len(urls),
                 len(urls) - len(missing_urls),
                 len(missing_urls) - failed,
                 failed,
+                shots,
             )
         else:
             logger.info(
-                "[%s] 真格攻略表格图标命中缓存: icons=%d",
+                "[%s] 真格攻略表格图片命中缓存: images=%d",
                 PLUGIN_ID,
                 len(urls),
             )
+
+        self._trim_table_icon_cache(cache, protected=urls)
+
+        def cached_entry(raw_url: Any) -> Dict[str, str]:
+            entry = cache.get(str(raw_url or "").strip())
+            return entry if isinstance(entry, dict) else {}
 
         for section in result:
             if section.get("kind") != "table":
@@ -4766,17 +5063,21 @@ class KirbyCatalogPlugin(Star):
                 for cell in row if isinstance(row, list) else []:
                     if not isinstance(cell, dict):
                         continue
-                    icon_url = str(cell.get("icon_url", "") or "").strip()
-                    if icon_url and cache.get(icon_url):
-                        cell["icon_data_uri"] = cache[icon_url]
+                    legacy = cached_entry(cell.get("icon_url"))
+                    if legacy.get("data_uri"):
+                        cell["icon_data_uri"] = legacy["data_uri"]
+                    if legacy.get("kind"):
+                        cell["icon_kind"] = legacy["kind"]
                     embedded_icons: List[Dict[str, Any]] = []
                     for raw_icon in cell.get("icons", []) or []:
                         if not isinstance(raw_icon, dict):
                             continue
                         icon = dict(raw_icon)
-                        source = str(icon.get("url", "") or "").strip()
-                        if source and cache.get(source):
-                            icon["data_uri"] = cache[source]
+                        entry = cached_entry(icon.get("url"))
+                        if entry.get("data_uri"):
+                            icon["data_uri"] = entry["data_uri"]
+                        if entry.get("kind"):
+                            icon["kind"] = entry["kind"]
                         embedded_icons.append(icon)
                     if embedded_icons:
                         cell["icons"] = embedded_icons
@@ -5157,7 +5458,9 @@ class KirbyCatalogPlugin(Star):
             return "WiKirby 查询失败，请稍后再试。"
 
     @filter.llm_tool(name="kirby_catalog_lookup_wikirby")
-    async def wikirby_lookup_page(self, event: AstrMessageEvent, query: str) -> str:
+    async def wikirby_lookup_page(
+        self, event: AstrMessageEvent, query: str
+    ) -> str | CallToolResult:
         """查询 WiKirby 的角色、敌人、关卡或道具百科资料。
 
         返回页面简介、可读资料栏目、其他语言名称和来源链接；只读取公开资料，
@@ -5190,7 +5493,12 @@ class KirbyCatalogPlugin(Star):
             text, _, _ = await self._wikirby_page_content(
                 event, resolved["page"], translate=False
             )
-            return text
+            return await self._wiki_tool_result(
+                text,
+                client=client,
+                page=resolved["page"],
+                purpose="WiKirby 查询",
+            )
         except WikirbyError as exc:
             logger.warning("[%s] LLM 调用 WiKirby 百科查询失败: %s", PLUGIN_ID, exc)
             return f"WiKirby 查询失败：{exc}"
@@ -5725,7 +6033,7 @@ class KirbyCatalogPlugin(Star):
     @filter.llm_tool(name="kirby_catalog_lookup_fandom")
     async def fandom_lookup_page(
         self, event: AstrMessageEvent, query: str, section: str = ""
-    ) -> str:
+    ) -> str | CallToolResult:
         """查询 Kirby Fandom 的角色、敌人、作品、关卡或道具资料。
 
         可返回页面简介、信息框、正文、分类、多语言页面名称和来源；填写
@@ -5753,13 +6061,19 @@ class KirbyCatalogPlugin(Star):
                 )
             if resolved.get("kind") != "page":
                 return f"没有找到 Kirby Fandom 页面：{query}"
-            text, _, _, _ = await self._fandom_page_content(
+            text, _, _, rich_sections = await self._fandom_page_content(
                 event,
                 resolved["page"],
                 section=section.strip(),
                 translate=False,
             )
-            return text
+            return await self._wiki_tool_result(
+                text,
+                client=client,
+                page=resolved["page"],
+                rich_sections=rich_sections,
+                purpose="Kirby Fandom 查询",
+            )
         except KirbyFandomError as exc:
             logger.warning("[%s] LLM 调用 Kirby Fandom 查询失败: %s", PLUGIN_ID, exc)
             return f"Kirby Fandom 查询失败：{exc}"
@@ -6602,7 +6916,7 @@ class KirbyCatalogPlugin(Star):
     @filter.llm_tool(name="kirby_catalog_lookup_shinkaku")
     async def shinkaku_lookup_page(
         self, event: AstrMessageEvent, query: str, section: str = ""
-    ) -> str:
+    ) -> str | CallToolResult:
         """查询卡比真格斗竞技场攻略 Wiki 的 Boss、能力和实机攻略资料。
 
         资料来自日文的星之卡比真 Boss Battle 攻略 Wiki，适合查询真格斗、
@@ -6631,10 +6945,16 @@ class KirbyCatalogPlugin(Star):
                 )
             if resolved.get("kind") != "page":
                 return f"没有找到真格攻略 Wiki 页面：{query}"
-            text, _, _, _ = await self._shinkaku_page_content(
+            text, _, _, rich_sections = await self._shinkaku_page_content(
                 event, resolved["page"], section=section.strip(), translate=False
             )
-            return text
+            return await self._wiki_tool_result(
+                text,
+                client=client,
+                page=resolved["page"],
+                rich_sections=rich_sections,
+                purpose="真格攻略 Wiki 查询",
+            )
         except KirbyShinkakuError as exc:
             logger.warning("[%s] LLM 调用真格攻略 Wiki 失败: %s", PLUGIN_ID, exc)
             return f"真格攻略 Wiki 查询失败：{exc}"

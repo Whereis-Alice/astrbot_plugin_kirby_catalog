@@ -142,10 +142,14 @@ def _cell_value(
         ).strip()
         if not source:
             continue
+        kind = str(raw_icon.get("kind") or "icon")
         icons.append(
             {
                 "source": source,
-                "link_url": _safe_link(raw_icon.get("link_url")),
+                # 記録集 这类页面把成绩写在实机截图里，必须放大展示。
+                "kind": kind if kind in {"icon", "shot"} else "icon",
+                "link_url": _safe_link(raw_icon.get("link_url"))
+                or _safe_link(raw_icon.get("url")),
                 "alt": str(raw_icon.get("alt") or "").strip(),
             }
         )
@@ -154,7 +158,16 @@ def _cell_value(
             cell.get("icon_data_uri") or cell.get("icon_url") or ""
         ).strip()
         if legacy_image:
-            icons.append({"source": legacy_image, "link_url": "", "alt": ""})
+            icons.append(
+                {
+                    "source": legacy_image,
+                    "kind": (
+                        "shot" if str(cell.get("icon_kind") or "") == "shot" else "icon"
+                    ),
+                    "link_url": _safe_link(cell.get("icon_url")),
+                    "alt": "",
+                }
+            )
 
     links: list[dict[str, Any]] = []
     seen_links: set[str] = set()
@@ -184,15 +197,19 @@ def _cell_value(
 def _cell_icons_html(icons: list[dict[str, str]], separator: str) -> str:
     if not icons:
         return ""
+    has_shot = any(icon.get("kind") == "shot" for icon in icons)
     output: list[str] = []
     for index, icon in enumerate(icons):
         if index:
             output.append(
                 f'<span class="table-icon-separator">{html.escape(separator)}</span>'
             )
+        image_class = "table-shot" if icon.get("kind") == "shot" else "table-icon"
         image = (
-            f'<img class="table-icon" src="{html.escape(icon["source"], quote=True)}" '
-            f'alt="{html.escape(icon.get("alt", ""), quote=True)}" />'
+            f'<img class="{image_class}" '
+            f'src="{html.escape(icon["source"], quote=True)}" '
+            f'alt="{html.escape(icon.get("alt", ""), quote=True)}" '
+            f'loading="lazy" />'
         )
         link_url = icon.get("link_url", "")
         if link_url:
@@ -201,7 +218,8 @@ def _cell_icons_html(icons: list[dict[str, str]], separator: str) -> str:
                 f'target="_blank" rel="noreferrer">{image}</a>'
             )
         output.append(image)
-    return '<span class="table-icon-set">' + "".join(output) + "</span>"
+    set_class = "table-icon-set table-shot-set" if has_shot else "table-icon-set"
+    return f'<span class="{set_class}">' + "".join(output) + "</span>"
 
 
 def _cell_text_html(text: str, links: list[dict[str, Any]]) -> str:
@@ -624,6 +642,10 @@ def build_wiki_document(
     .table-icon-link {{ display: inline-flex; align-items: center; justify-content: center; }}
     .table-icon {{ display: block; width: 42px; height: 42px; object-fit: contain; }}
     .table-icon-separator {{ color: var(--muted); font-weight: 900; }}
+    .table-shot-set {{ display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: center; gap: 8px; white-space: normal; margin: 2px 0; }}
+    .table-shot {{ display: block; width: auto; height: auto; max-width: 320px; max-height: 240px; border-radius: 12px; object-fit: contain; box-shadow: 0 4px 14px rgba(15, 23, 42, 0.18); }}
+    .table-shot-set .table-icon-link {{ display: block; }}
+    @media (max-width: 720px) {{ .table-shot {{ max-width: 100%; max-height: 200px; }} }}
     .table-cell-link {{ display: inline; font-weight: 750; }}
     .table-cell-links {{ display: flex; flex-wrap: wrap; gap: 5px 8px; margin-top: 5px; font-size: 12px; }}
     .table-cell-links a {{ padding: 1px 7px; background: var(--secondary-soft); border-radius: 4px; text-decoration: none; }}

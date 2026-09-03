@@ -223,5 +223,74 @@ class WikiDocumentTests(unittest.TestCase):
         self.assertLess(document.index("身体能力"), document.index("技一覧"))
 
 
+    def test_document_scales_up_record_screenshots_but_not_ability_icons(self):
+        rich_sections = [
+            {
+                "kind": "table",
+                "title": "記録集",
+                "headers": ["能力", "タイム", "記録"],
+                "rows": [
+                    [
+                        {
+                            "text": "",
+                            "icons": [
+                                {
+                                    "data_uri": "data:image/png;base64,ICON=",
+                                    "kind": "icon",
+                                }
+                            ],
+                        },
+                        {"text": "12:45.49"},
+                        {
+                            "text": "",
+                            "icons": [
+                                {
+                                    "data_uri": "data:image/png;base64,SHOT=",
+                                    "kind": "shot",
+                                    "link_url": "https://i.imgur.com/6B8owLF.jpg",
+                                    "alt": "record",
+                                }
+                            ],
+                        },
+                    ]
+                ],
+            }
+        ]
+
+        with tempfile.TemporaryDirectory() as temporary:
+            path = build_wiki_document(
+                Path(temporary),
+                wiki_name="卡比真格攻略 Wiki",
+                title="記録集(STA)",
+                source_url="https://example.test/Records",
+                summary="记录一览。",
+                detail_text="",
+                rich_sections=rich_sections,
+            )
+            document = path.read_text(encoding="utf-8")
+
+        soup = BeautifulSoup(document, "html.parser")
+        cells = soup.select("tbody td")
+        self.assertEqual(len(cells[0].select("img.table-icon")), 1)
+        self.assertEqual(len(cells[0].select("img.table-shot")), 0)
+        self.assertEqual(
+            cells[0].select_one("span.table-icon-set").get("class"),
+            ["table-icon-set"],
+        )
+        shots = cells[2].select("img.table-shot")
+        self.assertEqual(len(shots), 1)
+        self.assertEqual(shots[0]["loading"], "lazy")
+        self.assertEqual(shots[0]["alt"], "record")
+        self.assertIn(
+            "table-shot-set",
+            cells[2].select_one("span.table-icon-set").get("class"),
+        )
+        self.assertEqual(
+            cells[2].select_one("a.table-icon-link")["href"],
+            "https://i.imgur.com/6B8owLF.jpg",
+        )
+        self.assertIn(".table-shot", document)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -316,6 +316,20 @@
         "default": true,
         "hint": "开启后，卡比百科文本、卡比F文本和卡比真格文本会把完整文字按栏目拆成合并转发；关闭后发送普通文字消息。只影响显式“文本”指令，不改变三套百科各自的默认回复形式。"
       },
+      "wiki_llm_vision_enabled": {
+        "description": "百科查询工具向模型附带页面原图",
+        "type": "bool",
+        "default": true,
+        "hint": "开启后，大模型调用卡比百科 / 卡比F / 卡比真格查询工具时，除了正文还会把页面首图和表格里的实机截图作为视觉输入一起交给模型，模型才能读出「記録集」这类把成绩直接写在图里的页面；关闭后模型只能看到纯文本，正文里仍会附上图片直链。"
+      },
+      "wiki_llm_vision_max_images": {
+        "description": "百科查询工具附带图片上限（张）",
+        "type": "int",
+        "default": 4,
+        "min": 0,
+        "max": 8,
+        "hint": "按「页面首图 → 表格截图」顺序取前 N 张，图片会先压缩再交给模型。张数越多消耗的视觉 token 越多；设为 0 等同于关闭上一项。"
+      },
       "wiki_document_translate_enabled": {
         "description": "百科文档自动翻译为简体中文",
         "type": "bool",

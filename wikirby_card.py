@@ -814,6 +814,31 @@ WIKIRBY_CARD_TEMPLATE = r"""
       font-weight: 900;
     }
 
+    .wiki-table-icons--shot {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: flex-start;
+      justify-content: center;
+      gap: 6px;
+      white-space: normal;
+    }
+
+    .wiki-table-shot {
+      display: block;
+      width: auto;
+      height: auto;
+      max-width: 268px;
+      max-height: 196px;
+      margin: 0 auto;
+      border-radius: 12px;
+      object-fit: contain;
+      box-shadow: 0 3px 10px rgba(15, 23, 42, 0.18);
+    }
+
+    .wiki-table-icons--multi .wiki-table-shot { max-width: 214px; max-height: 164px; }
+    .wiki-table--wide td.wiki-table-cell--shot:first-child { width: auto; }
+    .wiki-table-cell--shot { padding: 6px !important; text-align: center !important; }
+
     .wiki-table-cell--icon { padding: 7px !important; }
     .wiki-table-cell--rating { font-weight: 900 !important; }
     .wiki-table-cell--rating-legendary { color: #bd38c1 !important; }
@@ -1285,8 +1310,8 @@ WIKIRBY_CARD_TEMPLATE = r"""
           {% for row in section.rows %}
           <tr>
             {% for cell in row %}
-            <td class="{% if cell.icons %}wiki-table-cell--icon {% endif %}{% if cell.tone %}wiki-table-cell--rating wiki-table-cell--rating-{{ cell.tone }}{% endif %}">
-              {% if cell.icons %}<span class="wiki-table-icons{% if cell.icons | length > 1 %} wiki-table-icons--multi{% endif %}">{% for icon in cell.icons %}{% if not loop.first %}<span class="wiki-table-icon-separator">{{ cell.icon_separator | e }}</span>{% endif %}<img class="wiki-table-icon" src="{{ icon.data_uri }}" alt="" />{% endfor %}</span>{% endif %}
+            <td class="{% if cell.has_shot %}wiki-table-cell--shot {% elif cell.icons %}wiki-table-cell--icon {% endif %}{% if cell.tone %}wiki-table-cell--rating wiki-table-cell--rating-{{ cell.tone }}{% endif %}">
+              {% if cell.icons %}<span class="wiki-table-icons{% if cell.icons | length > 1 %} wiki-table-icons--multi{% endif %}{% if cell.has_shot %} wiki-table-icons--shot{% endif %}">{% for icon in cell.icons %}{% if not loop.first %}<span class="wiki-table-icon-separator">{{ cell.icon_separator | e }}</span>{% endif %}<img class="{% if icon.kind == 'shot' %}wiki-table-shot{% else %}wiki-table-icon{% endif %}" src="{{ icon.src | e }}" alt="" />{% endfor %}</span>{% endif %}
               {% if cell.text %}<span>{{ cell.text | e }}</span>{% elif not cell.icons %}<span>—</span>{% endif %}
             </td>
             {% endfor %}
@@ -1453,8 +1478,8 @@ WIKIRBY_CARD_TEMPLATE = r"""
                   {% for row in section.rows %}
                   <tr>
                     {% for cell in row %}
-                    <td class="{% if cell.icons %}wiki-table-cell--icon {% endif %}{% if cell.tone %}wiki-table-cell--rating wiki-table-cell--rating-{{ cell.tone }}{% endif %}">
-                      {% if cell.icons %}<span class="wiki-table-icons{% if cell.icons | length > 1 %} wiki-table-icons--multi{% endif %}">{% for icon in cell.icons %}{% if not loop.first %}<span class="wiki-table-icon-separator">{{ cell.icon_separator | e }}</span>{% endif %}<img class="wiki-table-icon" src="{{ icon.data_uri }}" alt="" />{% endfor %}</span>{% endif %}
+                    <td class="{% if cell.has_shot %}wiki-table-cell--shot {% elif cell.icons %}wiki-table-cell--icon {% endif %}{% if cell.tone %}wiki-table-cell--rating wiki-table-cell--rating-{{ cell.tone }}{% endif %}">
+                      {% if cell.icons %}<span class="wiki-table-icons{% if cell.icons | length > 1 %} wiki-table-icons--multi{% endif %}{% if cell.has_shot %} wiki-table-icons--shot{% endif %}">{% for icon in cell.icons %}{% if not loop.first %}<span class="wiki-table-icon-separator">{{ cell.icon_separator | e }}</span>{% endif %}<img class="{% if icon.kind == 'shot' %}wiki-table-shot{% else %}wiki-table-icon{% endif %}" src="{{ icon.src | e }}" alt="" />{% endfor %}</span>{% endif %}
                       {% if cell.text %}<span>{{ cell.text | e }}</span>{% elif not cell.icons %}<span>—</span>{% endif %}
                     </td>
                     {% endfor %}
@@ -1828,6 +1853,20 @@ def _content_group_lines(group: dict[str, Any]) -> int:
     return 6 + body_lines + rich_lines
 
 
+def _cell_min_lines(cell: Any) -> int:
+    """表格行高估算：能力小图标约 3 行，放大后的实机截图要留更多空间。"""
+
+    if not isinstance(cell, dict):
+        return 3
+    has_shot = bool(cell.get("has_shot")) or str(cell.get("icon_kind") or "") == "shot"
+    if not has_shot:
+        has_shot = any(
+            isinstance(icon, dict) and icon.get("kind") == "shot"
+            for icon in cell.get("icons", []) or []
+        )
+    return 13 if has_shot else 3
+
+
 def _rich_section_lines(section: dict[str, Any]) -> int:
     if section.get("kind") == "quotes":
         return 5 + sum(
@@ -1855,7 +1894,7 @@ def _rich_section_lines(section: dict[str, Any]) -> int:
             lines += max(
                 (
                     max(
-                        3,
+                        _cell_min_lines(cell),
                         estimate_text_lines(
                             str(
                                 cell.get("text", "")
@@ -2001,6 +2040,27 @@ def _detail_blocks_to_text(blocks: list[dict[str, Any]]) -> str:
     )
 
 
+def _prepare_table_icon(raw_icon: Any) -> dict[str, str] | None:
+    """把解析层的图标字典压成模板需要的 src / kind。
+
+    表格里既有 46px 的能力小图标，也有「記録集」那种把成绩写在图里的实机
+    截图；截图必须放大展示。下载失败时回退到远端直链，否则整格数据会消失。
+    """
+
+    if not isinstance(raw_icon, dict):
+        return None
+    src = str(
+        raw_icon.get("data_uri")
+        or raw_icon.get("icon_data_uri")
+        or raw_icon.get("url")
+        or ""
+    ).strip()
+    if not src:
+        return None
+    kind = str(raw_icon.get("kind") or "icon")
+    return {"src": src, "kind": kind if kind in {"icon", "shot"} else "icon"}
+
+
 def _prepare_rich_sections(
     rich_sections: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
@@ -2071,23 +2131,25 @@ def _prepare_rich_sections(
                             raw_cell.get("icon_data_uri", "") or ""
                         ).strip()
                         icons = [
-                            {
-                                "data_uri": str(
-                                    icon.get("data_uri")
-                                    or icon.get("icon_data_uri")
-                                    or ""
-                                ).strip()
-                            }
-                            for icon in raw_cell.get("icons", []) or []
-                            if isinstance(icon, dict)
-                            and str(
-                                icon.get("data_uri")
-                                or icon.get("icon_data_uri")
-                                or ""
-                            ).strip()
+                            icon
+                            for icon in (
+                                _prepare_table_icon(raw_icon)
+                                for raw_icon in raw_cell.get("icons", []) or []
+                            )
+                            if icon
                         ]
                         if not icons and icon_data_uri:
-                            icons = [{"data_uri": icon_data_uri}]
+                            icons = [
+                                {
+                                    "src": icon_data_uri,
+                                    "kind": (
+                                        "shot"
+                                        if str(raw_cell.get("icon_kind") or "")
+                                        == "shot"
+                                        else "icon"
+                                    ),
+                                }
+                            ]
                         icon_separator = str(
                             raw_cell.get("icon_separator") or "×"
                         ).strip() or "×"
@@ -2110,6 +2172,9 @@ def _prepare_rich_sections(
                             "icon_data_uri": icon_data_uri,
                             "icons": icons,
                             "icon_separator": icon_separator,
+                            "has_shot": any(
+                                icon.get("kind") == "shot" for icon in icons
+                            ),
                             "tone": tone,
                         }
                     )

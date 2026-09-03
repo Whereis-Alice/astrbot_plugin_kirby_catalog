@@ -16,6 +16,8 @@ from PIL import Image
 from astrbot_plugin_kirby_catalog.kirby_shinkaku import (
     KirbyShinkakuClient,
     _normalise_term,
+    classify_image_kind,
+    table_cell_shot_urls,
 )
 from astrbot_plugin_kirby_catalog.main import (
     KirbyCatalogPlugin,
@@ -1568,6 +1570,125 @@ class ShinkakuCommandTests(unittest.IsolatedAsyncioTestCase):
             table["rows"][0][0]["icon_data_uri"],
             "data:image/png;base64,AA==",
         )
+
+
+class ShinkakuTableImageKindTests(unittest.TestCase):
+    """記録集(STA) 把成绩写在站外图床截图里，不能按装饰图过滤掉。"""
+
+    SOURCE_URL = "https://seesaawiki.jp/kirby_shinkaku/d/Records"
+
+    def _parse(self, table_body):
+        client = KirbyShinkakuClient(cache_ttl_seconds=0)
+        html = (
+            '<div id="main">'
+            '<div id="page-header"><h2>Records</h2></div>'
+            "<h3>記録</h3>"
+            '<div class="wiki-section-body-1"><table>'
+            + table_body
+            + "</table></div></div>"
+        ).encode("utf-8")
+        return client._parse_page(html, "Records", self.SOURCE_URL)
+
+    def _first_row(self, table_body):
+        page = self._parse(table_body)
+        return page, page["sections"][0]["tables"][0]["rows"][0]
+
+    def test_classify_image_kind_follows_real_pixel_size(self):
+        self.assertEqual(classify_image_kind(120, 90), "icon")
+        self.assertEqual(classify_image_kind(199, 199), "icon")
+        self.assertEqual(classify_image_kind(64, 200), "shot")
+        self.assertEqual(classify_image_kind(640, 360), "shot")
+        # 读不出尺寸时保留解析阶段的猜测，非法猜测退回 icon。
+        self.assertEqual(classify_image_kind(0, 0, "shot"), "shot")
+        self.assertEqual(classify_image_kind(0, 0), "icon")
+        self.assertEqual(classify_image_kind(0, 0, "banner"), "icon")
+
+    def test_record_table_keeps_imgur_screenshot_as_shot(self):
+        _, row = self._first_row(
+            "<tr><th>タイム</th><th>記録</th></tr>"
+            "<tr><td>12:45.49</td>"
+            '<td><img src="https://i.imgur.com/6B8owLF.jpg" border="0"'
+            ' style="max-width:100%"></td></tr>'
+        )
+
+        cell = row[1]
+        self.assertEqual(cell["text"], "")
+        self.assertEqual(
+            [icon["url"] for icon in cell["icons"]],
+            ["https://i.imgur.com/6B8owLF.jpg"],
+        )
+        self.assertEqual(cell["icons"][0]["kind"], "shot")
+        self.assertEqual(
+            table_cell_shot_urls(cell), ["https://i.imgur.com/6B8owLF.jpg"]
+        )
+
+    def test_bare_imgur_page_domain_is_normalised_to_a_direct_link(self):
+        _, row = self._first_row(
+            "<tr><th>記録</th></tr>"
+            '<tr><td><img src="https://imgur.com/PtGjXqU.png"'
+            ' style="max-width:100%"></td></tr>'
+        )
+
+        self.assertEqual(
+            [icon["url"] for icon in row[0]["icons"]],
+            ["https://i.imgur.com/PtGjXqU.png"],
+        )
+
+    def test_album_pages_and_skin_assets_are_not_content_images(self):
+        _, row = self._first_row(
+            "<tr><th>記録</th></tr>"
+            '<tr><td><img src="https://imgur.com/a/AbCdEfG" style="max-width:100%">'
+            '<img src="https://static.seesaawiki.jp/img/skin/bg.png">'
+            '<img src="https://tx.creativecarrer.com/pixel.gif"></td></tr>'
+        )
+
+        self.assertEqual(row[0]["icons"], [])
+        self.assertEqual(row[0]["icon_url"], "")
+        self.assertEqual(table_cell_shot_urls(row[0]), [])
+
+    def test_sized_seesaa_thumbnail_stays_an_inline_icon(self):
+        _, row = self._first_row(
+            "<tr><th>能力</th></tr>"
+            '<tr><td><img width="40" height="40"'
+            ' src="https://image01.seesaawiki.jp/k/u/kirby_shinkaku/ice.png">'
+            "</td></tr>"
+        )
+
+        self.assertEqual(row[0]["icons"][0]["kind"], "icon")
+        self.assertEqual(table_cell_shot_urls(row[0]), [])
+
+    def test_shot_urls_are_deduplicated_and_skip_icons(self):
+        cell = {
+            "icons": [
+                {"url": "https://i.imgur.com/a.png", "kind": "shot"},
+                {"url": "https://i.imgur.com/a.png", "kind": "shot"},
+                {"url": "https://i.imgur.com/b.png", "kind": "icon"},
+                {"url": "", "kind": "shot"},
+                "not-a-dict",
+                {"url": "https://i.imgur.com/c.png"},
+                {"url": "https://i.imgur.com/d.png", "kind": "shot"},
+            ]
+        }
+
+        self.assertEqual(
+            table_cell_shot_urls(cell),
+            ["https://i.imgur.com/a.png", "https://i.imgur.com/d.png"],
+        )
+        self.assertEqual(table_cell_shot_urls({}), [])
+        self.assertEqual(table_cell_shot_urls({"icons": None}), [])
+
+    def test_plain_text_fallback_keeps_screenshot_links(self):
+        page, _ = self._first_row(
+            "<tr><th>タイム</th><th>記録</th></tr>"
+            "<tr><td>12:45.49</td>"
+            '<td><img src="https://i.imgur.com/6B8owLF.jpg"'
+            ' style="max-width:100%"></td></tr>'
+        )
+
+        text = page["sections"][0]["text"]
+        self.assertIn("图片：https://i.imgur.com/6B8owLF.jpg", text)
+        self.assertNotIn("[图标]", text)
+        self.assertNotIn("| —", text)
 
 
 if __name__ == "__main__":

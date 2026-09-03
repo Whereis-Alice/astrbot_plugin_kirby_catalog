@@ -15,7 +15,11 @@ from mcp.types import CallToolResult, ImageContent, TextContent
 from PIL import Image
 
 from astrbot_plugin_kirby_catalog.catalog_core import get_today
-from astrbot_plugin_kirby_catalog.main import KirbyCatalogPlugin
+from astrbot_plugin_kirby_catalog.main import (
+    MAX_SHINKAKU_TABLE_ICON_CACHE_BYTES,
+    MAX_SHINKAKU_TABLE_ICON_CACHE_ITEMS,
+    KirbyCatalogPlugin,
+)
 from astrbot_plugin_kirby_catalog.media_delivery import stage_local_image
 
 
@@ -1490,6 +1494,326 @@ class AllowDuplicateDrawTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(outcome.repeated)
         self.assertFalse(outcome.all_unlocked)
         self.assertEqual(plugin._draw_flags(outcome), "（保底）")
+
+
+class WikiToolVisionTests(unittest.IsolatedAsyncioTestCase):
+    """記録集 这类页面把成绩写在截图里，工具必须把原图一起交给模型。"""
+
+    @staticmethod
+    def _encoded(size, image_format, **options):
+        buffer = BytesIO()
+        Image.new("RGB", size, "pink").save(buffer, format=image_format, **options)
+        return buffer.getvalue()
+
+    @staticmethod
+    def _table_section(*shot_urls):
+        return {
+            "kind": "table",
+            "title": "記録集",
+            "headers": ["記録"],
+            "rows": [
+                [{"text": "", "icons": [{"url": url, "kind": "shot"}]}]
+                for url in shot_urls
+            ],
+        }
+
+    def _make_plugin(self, config=None):
+        plugin = make_plugin({"filename": "ally.png", "id": 1, "name": "星之卡比"})
+        plugin.config = config if config is not None else {}
+        return plugin
+
+    def test_image_pixel_size_reads_headers_without_decoding(self):
+        read = KirbyCatalogPlugin._image_pixel_size
+
+        self.assertEqual(read(self._encoded((320, 240), "PNG")), (320, 240))
+        self.assertEqual(read(self._encoded((8, 8), "PNG")), (8, 8))
+        self.assertEqual(read(self._encoded((48, 64), "GIF")), (48, 64))
+        self.assertEqual(read(self._encoded((201, 97), "JPEG")), (201, 97))
+        self.assertEqual(
+            read(self._encoded((640, 360), "JPEG", progressive=True)), (640, 360)
+        )
+        self.assertEqual(read(self._encoded((300, 150), "WEBP")), (300, 150))
+        self.assertEqual(
+            read(self._encoded((300, 150), "WEBP", lossless=True)), (300, 150)
+        )
+        # 带透明通道 / 动画的 WebP 走扩展头，Pillow 不会主动生成，手工拼一个。
+        vp8x = (
+            b"RIFF"
+            + (22).to_bytes(4, "little")
+            + b"WEBPVP8X"
+            + (10).to_bytes(4, "little")
+            + b"\x10\x00\x00\x00"
+            + (799).to_bytes(3, "little")
+            + (599).to_bytes(3, "little")
+        )
+        self.assertEqual(read(vp8x), (800, 600))
+
+    def test_image_pixel_size_returns_zero_for_unreadable_bytes(self):
+        read = KirbyCatalogPlugin._image_pixel_size
+
+        self.assertEqual(read(None), (0, 0))
+        self.assertEqual(read(b""), (0, 0))
+        self.assertEqual(read(b"\x89PNG\r\n\x1a\n"), (0, 0))
+        self.assertEqual(read(b"not an image at all, just plain bytes"), (0, 0))
+        self.assertEqual(read(b"RIFF" + b"\x00" * 4 + b"WEBPNOPE" + b"\x00" * 16), (0, 0))
+
+    def test_tool_image_urls_prefer_the_lead_image_then_table_shots(self):
+        pick = KirbyCatalogPlugin._wiki_tool_image_urls
+        page = {"image_url": "https://example.test/lead.png"}
+        sections = [
+            {"kind": "quotes", "rows": []},
+            self._table_section(
+                "https://i.imgur.com/a.png",
+                "https://i.imgur.com/a.png",
+                "https://example.test/lead.png",
+                "https://i.imgur.com/b.png",
+            ),
+        ]
+
+        self.assertEqual(
+            pick(page, sections, 4),
+            [
+                "https://example.test/lead.png",
+                "https://i.imgur.com/a.png",
+                "https://i.imgur.com/b.png",
+            ],
+        )
+        self.assertEqual(
+            pick(page, sections, 2),
+            ["https://example.test/lead.png", "https://i.imgur.com/a.png"],
+        )
+        self.assertEqual(pick(page, sections, 1), ["https://example.test/lead.png"])
+        self.assertEqual(pick(page, sections, 0), [])
+        self.assertEqual(pick(page, sections, -3), [])
+        self.assertEqual(pick({}, None, 4), [])
+        self.assertEqual(
+            pick(
+                {"image_url": ""},
+                [self._table_section("https://i.imgur.com/c.png")],
+                4,
+            ),
+            ["https://i.imgur.com/c.png"],
+        )
+
+    def test_tool_image_urls_skip_inline_icons_and_other_section_kinds(self):
+        pick = KirbyCatalogPlugin._wiki_tool_image_urls
+        sections = [
+            {
+                "kind": "table",
+                "rows": [
+                    [
+                        {
+                            "text": "Ice",
+                            "icons": [
+                                {
+                                    "url": "https://i.imgur.com/icon.png",
+                                    "kind": "icon",
+                                }
+                            ],
+                        },
+                        "not-a-dict",
+                    ],
+                    "not-a-row",
+                ],
+            },
+            {
+                "kind": "quotes",
+                "rows": [
+                    [
+                        {
+                            "icons": [
+                                {
+                                    "url": "https://i.imgur.com/quote.png",
+                                    "kind": "shot",
+                                }
+                            ]
+                        }
+                    ]
+                ],
+            },
+            "not-a-section",
+        ]
+
+        self.assertEqual(pick({"image_url": ""}, sections, 4), [])
+
+    async def test_wiki_tool_result_attaches_page_images_for_the_model(self):
+        plugin = self._make_plugin()
+        client = SimpleNamespace(
+            get_image_bytes=AsyncMock(
+                side_effect=[
+                    self._encoded((320, 240), "PNG"),
+                    self._encoded((640, 360), "JPEG"),
+                ]
+            )
+        )
+        sections = [self._table_section("https://i.imgur.com/6B8owLF.jpg")]
+
+        with tempfile.TemporaryDirectory() as temp:
+            plugin.store.root = Path(temp) / "plugin-data"
+            result = await plugin._wiki_tool_result(
+                "記録集(STA) 的正文。",
+                client=client,
+                page={"image_url": "https://example.test/lead.png"},
+                rich_sections=sections,
+                purpose="真格攻略 Wiki 查询",
+            )
+            leftovers = sorted(
+                path.name
+                for path in (Path(temp) / "plugin-data" / "media_cache").glob(
+                    "kirby-wiki-llm-*"
+                )
+            )
+
+        self.assertIsInstance(result, CallToolResult)
+        self.assertIsInstance(result.content[0], TextContent)
+        self.assertIn("記録集(STA) 的正文。", result.content[0].text)
+        self.assertIn("2 张原图", result.content[0].text)
+        images = [
+            content for content in result.content[1:]
+            if isinstance(content, ImageContent)
+        ]
+        self.assertEqual(len(images), 2)
+        self.assertEqual(images[0].mimeType, "image/png")
+        self.assertEqual(images[1].mimeType, "image/jpeg")
+        for image in images:
+            with Image.open(BytesIO(base64.b64decode(image.data))) as opened:
+                self.assertGreaterEqual(min(opened.size), 1)
+        self.assertEqual(
+            [call.args[0] for call in client.get_image_bytes.await_args_list],
+            ["https://example.test/lead.png", "https://i.imgur.com/6B8owLF.jpg"],
+        )
+        # 为压缩落的临时原图用完就删，不能在缓存目录里堆积。
+        self.assertEqual(leftovers, [])
+
+    async def test_wiki_tool_result_falls_back_to_text_when_vision_is_off(self):
+        client = SimpleNamespace(get_image_bytes=AsyncMock(return_value=b"unused"))
+        page = {"image_url": "https://example.test/lead.png"}
+
+        disabled = self._make_plugin(
+            {"delivery_settings": {"wiki_llm_vision_enabled": False}}
+        )
+        no_budget = self._make_plugin(
+            {"delivery_settings": {"wiki_llm_vision_max_images": 0}}
+        )
+
+        for plugin in (disabled, no_budget):
+            result = await plugin._wiki_tool_result(
+                "正文。", client=client, page=page, purpose="测试"
+            )
+            self.assertEqual(result, "正文。")
+
+        client.get_image_bytes.assert_not_awaited()
+
+    async def test_wiki_tool_result_falls_back_to_text_without_usable_images(self):
+        plugin = self._make_plugin()
+        page = {"image_url": "https://example.test/lead.png"}
+
+        empty_text = await plugin._wiki_tool_result(
+            "",
+            client=SimpleNamespace(get_image_bytes=AsyncMock(return_value=b"x")),
+            page=page,
+            purpose="测试",
+        )
+        self.assertEqual(empty_text, "")
+
+        no_image_url = await plugin._wiki_tool_result(
+            "正文。",
+            client=SimpleNamespace(get_image_bytes=AsyncMock(return_value=b"x")),
+            page={},
+            purpose="测试",
+        )
+        self.assertEqual(no_image_url, "正文。")
+
+        no_downloader = await plugin._wiki_tool_result(
+            "正文。", client=SimpleNamespace(), page=page, purpose="测试"
+        )
+        self.assertEqual(no_downloader, "正文。")
+
+        with tempfile.TemporaryDirectory() as temp:
+            plugin.store.root = Path(temp) / "plugin-data"
+            failed = await plugin._wiki_tool_result(
+                "正文。",
+                client=SimpleNamespace(
+                    get_image_bytes=AsyncMock(side_effect=RuntimeError("boom"))
+                ),
+                page=page,
+                purpose="测试",
+            )
+            empty_download = await plugin._wiki_tool_result(
+                "正文。",
+                client=SimpleNamespace(get_image_bytes=AsyncMock(return_value=None)),
+                page=page,
+                purpose="测试",
+            )
+            broken_bytes = await plugin._wiki_tool_result(
+                "正文。",
+                client=SimpleNamespace(
+                    get_image_bytes=AsyncMock(return_value=b"<html>404</html>")
+                ),
+                page=page,
+                purpose="测试",
+            )
+
+        self.assertEqual(failed, "正文。")
+        self.assertEqual(empty_download, "正文。")
+        self.assertEqual(broken_bytes, "正文。")
+
+
+class ShinkakuTableIconCacheTests(unittest.TestCase):
+    """整屏截图进了表格缓存，必须有条数和体积双上限，否则连着翻页会吃满内存。"""
+
+    @staticmethod
+    def _entry(payload_length):
+        return {"data_uri": "d" * payload_length, "kind": "shot"}
+
+    def test_cache_drops_oldest_entries_once_the_item_limit_is_passed(self):
+        overflow = 30
+        total = MAX_SHINKAKU_TABLE_ICON_CACHE_ITEMS + overflow
+        cache = {f"https://img.test/{index}.png": self._entry(8) for index in range(total)}
+
+        KirbyCatalogPlugin._trim_table_icon_cache(cache)
+
+        self.assertEqual(len(cache), MAX_SHINKAKU_TABLE_ICON_CACHE_ITEMS)
+        self.assertNotIn("https://img.test/0.png", cache)
+        self.assertNotIn(f"https://img.test/{overflow - 1}.png", cache)
+        self.assertIn(f"https://img.test/{overflow}.png", cache)
+        self.assertIn(f"https://img.test/{total - 1}.png", cache)
+
+    def test_cache_also_shrinks_when_only_the_byte_budget_is_exceeded(self):
+        chunk = MAX_SHINKAKU_TABLE_ICON_CACHE_BYTES // 4
+        cache = {
+            f"https://img.test/big-{index}.png": self._entry(chunk) for index in range(6)
+        }
+
+        KirbyCatalogPlugin._trim_table_icon_cache(cache)
+
+        self.assertLess(len(cache), 6)
+        self.assertLessEqual(
+            sum(len(entry["data_uri"]) for entry in cache.values()),
+            MAX_SHINKAKU_TABLE_ICON_CACHE_BYTES,
+        )
+        self.assertIn("https://img.test/big-5.png", cache)
+        self.assertNotIn("https://img.test/big-0.png", cache)
+
+    def test_urls_needed_by_the_current_page_survive_the_trim(self):
+        wanted = ["https://img.test/keep-a.png", "https://img.test/keep-b.png"]
+        cache = {url: self._entry(4) for url in wanted}
+        chunk = MAX_SHINKAKU_TABLE_ICON_CACHE_BYTES // 2
+        for index in range(4):
+            cache[f"https://img.test/stale-{index}.png"] = self._entry(chunk)
+
+        KirbyCatalogPlugin._trim_table_icon_cache(cache, protected=wanted)
+
+        for url in wanted:
+            self.assertIn(url, cache)
+        self.assertNotIn("https://img.test/stale-0.png", cache)
+
+    def test_trim_tolerates_a_cache_that_never_grew_past_the_limits(self):
+        cache = {"https://img.test/only.png": self._entry(16), "https://img.test/bad": None}
+
+        KirbyCatalogPlugin._trim_table_icon_cache(cache, protected=())
+
+        self.assertEqual(len(cache), 2)
 
 
 if __name__ == "__main__":

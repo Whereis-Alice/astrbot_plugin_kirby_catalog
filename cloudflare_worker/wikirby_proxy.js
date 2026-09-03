@@ -12,6 +12,32 @@ const FANDOM_IMAGE_HOSTS = new Set([
   "vignette.wikia.nocookie.net",
   "kirby.fandom.com",
 ]);
+// 真格攻略 Wiki 的实机记录截图托管在站外图床（記録集 页面几乎全是 imgur），
+// 只放行 Seesaa 自带图床会让代理拿不到任何记录截图。
+const SHINKAKU_EXTERNAL_IMAGE_HOST_SUFFIXES = [
+  "imgur.com",
+  "gyazo.com",
+  "gyazo.jp",
+  "twimg.com",
+  "discordapp.com",
+  "discordapp.net",
+  "nicoseiga.jp",
+  "googleusercontent.com",
+  "githubusercontent.com",
+  "postimg.cc",
+  "ibb.co",
+  "imgbb.com",
+  "imgbox.com",
+  "prntscr.com",
+  "steamusercontent.com",
+  "cloudfront.net",
+  "b-cdn.net",
+];
+const SHINKAKU_IMAGE_HOST_DENYLIST = [
+  "static.seesaawiki.jp",
+  "rainman.seesaawiki.jp",
+  "img.seesaawiki.jp",
+];
 const CONTROL_QUERY_KEYS = new Set([
   "site",
   "path",
@@ -64,12 +90,29 @@ function isAllowedFandomImagePath(hostname, pathname) {
   return pathname.startsWith("/kirby/images/");
 }
 
+function hostMatchesSuffix(hostname, suffixes) {
+  const host = String(hostname || "").toLowerCase();
+  if (!host) return false;
+  return suffixes.some(
+    (suffix) => host === suffix || host.endsWith("." + suffix),
+  );
+}
+
 function isAllowedShinkakuPath(pathname, isImage, imageHost) {
   if (isImage) {
-    return (
+    if (hostMatchesSuffix(imageHost, SHINKAKU_IMAGE_HOST_DENYLIST)) return false;
+    if (
       /^image0[1-9]\.seesaawiki\.jp$/i.test(imageHost) &&
       pathname.startsWith("/k/u/kirby_shinkaku/")
-    );
+    ) {
+      return true;
+    }
+    if (!hostMatchesSuffix(imageHost, SHINKAKU_EXTERNAL_IMAGE_HOST_SUFFIXES)) {
+      return false;
+    }
+    // imgur 的 /a/、/gallery/ 是相册 HTML 页而不是原图直链。
+    if (/^\/(?:a|gallery|t)\//i.test(pathname)) return false;
+    return !/\.(?:html?|php|aspx?)$/i.test(pathname);
   }
   return pathname.startsWith(SHINKAKU_PAGE_PREFIX) || pathname === SHINKAKU_SEARCH_PATH;
 }
@@ -129,7 +172,10 @@ function resolveRoute(incoming) {
       isImage,
       origin: isImage ? `https://${imageHost}` : SHINKAKU_ORIGIN,
       pathname,
-      referer: `${SHINKAKU_ORIGIN}/kirby_shinkaku/`,
+      // 站外图床按 Referer 做防盗链，带 Wiki 的 Referer 会换成占位图。
+      referer: isImage && !/seesaawiki\.jp$/i.test(imageHost)
+        ? `https://${imageHost}/`
+        : `${SHINKAKU_ORIGIN}/kirby_shinkaku/`,
       acceptLanguage: "ja,en-US;q=0.9,en;q=0.8",
       userAgent:
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
