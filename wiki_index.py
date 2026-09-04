@@ -5,7 +5,7 @@ import threading
 from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Optional
+from typing import Any, Dict, Iterable, List, Mapping, Optional
 
 from .catalog_core import (
     CatalogStore,
@@ -109,6 +109,13 @@ class WikiIndexStore:
             self.overrides_path,
             {"version": 1, "items": self._overrides},
         )
+
+    def reload(self) -> None:
+        """重新从磁盘读取序号覆盖，用于整包导入后刷新内存状态。"""
+
+        with self._lock:
+            self._overrides = {site: {} for site in WIKI_SITES}
+            self._load()
 
     def _catalog_entries(self, site: str) -> List[Dict[str, Any]]:
         rows: List[Dict[str, Any]] = []
@@ -306,6 +313,252 @@ class WikiIndexStore:
                 raise ValueError("该条目没有可恢复的覆盖版本")
             self._save()
         return self.detail(site_name, target_key)
+
+    WIKI_IMPORT_FIELDS = ("site", "key", "number", "target", "enabled")
+
+    def export_rows(
+        self,
+        site: Any = "",
+        *,
+        overrides_only: bool = False,
+    ) -> List[Dict[str, Any]]:
+        """Return the merged (or override-only) index rows for a transfer export."""
+        rows = self.entries(site)
+        if overrides_only:
+            rows = [row for row in rows if row.get("has_override")]
+        return rows
+
+    def _row_states(self):
+        current: Dict[tuple, tuple] = {}
+        defaults: Dict[tuple, tuple] = {}
+        labels: Dict[tuple, str] = {}
+        for row in self.entries():
+            ident = (row["site"], row["key"])
+            current[ident] = (
+                int(row["number"]),
+                _text(row["target"]),
+                bool(row["enabled"]),
+            )
+            defaults[ident] = (
+                int(row["default_number"]),
+                _text(row["default_target"]),
+                bool(row["default_enabled"]),
+            )
+            labels[ident] = _text(row["label_zh"]) or _text(row["target"]) or row["key"]
+        return current, defaults, labels
+
+    @staticmethod
+    def _override_state(payload: Mapping[str, Any]) -> tuple:
+        return (
+            int(payload.get("number", 0) or 0),
+            _text(payload.get("target")),
+            _bool(payload.get("enabled"), True),
+        )
+
+    def _plan_import(
+        self,
+        rows: Iterable[Mapping[str, Any]],
+        *,
+        replace_overrides: bool = False,
+        updated_by: str = "",
+    ) -> Dict[str, Any]:
+        """Validate bulk rows and compute the resulting override table.
+
+        Unlike :meth:`save` this never raises on a single bad row: a bulk import
+        has to report per-row problems instead of aborting the whole file. Number
+        collisions are resolved after every row has been applied, so swapping two
+        numbers in one file works even though each half would clash on its own.
+        """
+        current, defaults, labels = self._row_states()
+        with self._lock:
+            existing = {
+                (site, key): dict(value)
+                for site, items in self._overrides.items()
+                for key, value in items.items()
+            }
+        baseline = dict(current)
+        if replace_overrides:
+            for ident in existing:
+                if ident in defaults:
+                    baseline[ident] = defaults[ident]
+        working = dict(baseline)
+        desired: Dict[tuple, tuple] = {}
+        warnings: List[str] = []
+        skipped = 0
+        total = 0
+
+        def _warn(message: str) -> None:
+            if len(warnings) < 12:
+                warnings.append(message)
+
+        for index, raw in enumerate(rows, start=1):
+            total += 1
+            if not isinstance(raw, Mapping):
+                skipped += 1
+                _warn(f"第 {index} 行不是有效记录，已跳过")
+                continue
+            try:
+                site = self.normalize_site(raw.get("site"))
+            except ValueError:
+                skipped += 1
+                _warn(f"第 {index} 行的百科类型无效，已跳过")
+                continue
+            key = _text(raw.get("key"))
+            ident = (site, key)
+            if not key or ident not in current:
+                skipped += 1
+                _warn(f"第 {index} 行的条目“{key or chr(32)}”不在当前索引中，已跳过")
+                continue
+            fallback = baseline[ident]
+            number = parse_wiki_number(raw.get("number"))
+            if number is None:
+                try:
+                    number = int(raw.get("number", fallback[0]) or 0)
+                except (TypeError, ValueError):
+                    number = 0
+            if number <= 0 or number > 999999:
+                skipped += 1
+                _warn(f"第 {index} 行的序号必须在 1 至 999999 之间，已跳过")
+                continue
+            target = _text(raw.get("target")) or fallback[1]
+            if not target:
+                skipped += 1
+                _warn(f"第 {index} 行缺少查询目标，已跳过")
+                continue
+            enabled = _bool(raw.get("enabled"), fallback[2])
+            state = (number, target[:500], enabled)
+            desired[ident] = state
+            working[ident] = state
+
+        applied = set(desired)
+        for _ in range(6):
+            counts: Dict[tuple, int] = {}
+            for ident, state in working.items():
+                bucket = (ident[0], state[0])
+                counts[bucket] = counts.get(bucket, 0) + 1
+            clashing = [
+                ident
+                for ident in desired
+                if ident in applied
+                and counts.get((ident[0], working[ident][0]), 0) > 1
+            ]
+            if not clashing:
+                break
+            for ident in clashing:
+                _warn(
+                    f"序号 #{desired[ident][0]} 与其它条目冲突，"
+                    f"“{labels.get(ident, ident[1])}”已跳过"
+                )
+                working[ident] = baseline[ident]
+                applied.discard(ident)
+                skipped += 1
+
+        overrides: Dict[str, Dict[str, Dict[str, Any]]] = {site: {} for site in WIKI_SITES}
+        if not replace_overrides:
+            for (site, key), payload in existing.items():
+                overrides.setdefault(site, {})[key] = dict(payload)
+        stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        author = _text(updated_by) or "dashboard"
+        for ident in desired:
+            if ident not in applied:
+                continue
+            site, key = ident
+            state = working[ident]
+            if state == defaults.get(ident):
+                overrides.setdefault(site, {}).pop(key, None)
+                continue
+            overrides.setdefault(site, {})[key] = {
+                "number": state[0],
+                "target": state[1],
+                "enabled": state[2],
+                "updated_at": stamp,
+                "updated_by": author,
+            }
+
+        before = {ident: self._override_state(payload) for ident, payload in existing.items()}
+        after = {
+            (site, key): self._override_state(payload)
+            for site, items in overrides.items()
+            for key, payload in items.items()
+        }
+        added = sum(1 for ident in after if ident not in before)
+        updated = sum(
+            1 for ident, state in after.items() if ident in before and before[ident] != state
+        )
+        removed = sum(1 for ident in before if ident not in after)
+        unchanged = 0
+        samples: List[Dict[str, str]] = []
+        for ident in desired:
+            if ident not in applied:
+                continue
+            in_before = ident in before
+            in_after = ident in after
+            if in_after and in_before and before[ident] == after[ident]:
+                state_name = "unchanged"
+            elif not in_after and not in_before:
+                state_name = "unchanged"
+            elif in_after and not in_before:
+                state_name = "added"
+            elif in_after:
+                state_name = "updated"
+            else:
+                state_name = "removed"
+            if state_name == "unchanged":
+                unchanged += 1
+            elif len(samples) < 8:
+                samples.append(
+                    {
+                        "id": f"{ident[0]}/{ident[1]}",
+                        "label": f"#{working[ident][0]} {labels.get(ident, ident[1])}",
+                        "state": state_name,
+                    }
+                )
+        return {
+            "overrides": overrides,
+            "summary": {
+                "total": total,
+                "added": added,
+                "updated": updated,
+                "unchanged": unchanged,
+                "removed": removed,
+                "skipped": skipped,
+            },
+            "warnings": warnings,
+            "samples": samples,
+        }
+
+    def preview_rows(
+        self,
+        rows: Iterable[Mapping[str, Any]],
+        *,
+        replace_overrides: bool = False,
+    ) -> Dict[str, Any]:
+        """Report what a bulk import would change without touching the override file."""
+        plan = self._plan_import(rows, replace_overrides=replace_overrides)
+        result = dict(plan["summary"])
+        result["warnings"] = plan["warnings"]
+        result["samples"] = plan["samples"]
+        return result
+
+    def import_rows(
+        self,
+        rows: Iterable[Mapping[str, Any]],
+        *,
+        replace_overrides: bool = False,
+        updated_by: str = "",
+    ) -> Dict[str, Any]:
+        """Apply a bulk override import in a single atomic write."""
+        plan = self._plan_import(
+            rows,
+            replace_overrides=replace_overrides,
+            updated_by=updated_by,
+        )
+        with self._lock:
+            self._overrides = plan["overrides"]
+            self._save()
+        result = dict(plan["summary"])
+        result["warnings"] = plan["warnings"]
+        return result
 
     def stats(self) -> Dict[str, Any]:
         rows = self.entries()

@@ -33,6 +33,7 @@ import { initWikiIndex, loadWikiIndex } from "./js/views/wiki-index.js";
 import { initGroups, loadGroups } from "./js/views/groups.js";
 import { initTrash, loadTrash } from "./js/views/trash.js";
 import { initAudit, loadAudit } from "./js/views/audit.js";
+import { initTransfer, loadTransfer } from "./js/views/transfer.js";
 
 /* ==========================================================================
    Nav badges
@@ -52,7 +53,11 @@ function paintBadge(node, value) {
   setHidden(node, false);
 }
 
-/** Catalog badge counts anything needing attention; trash badge counts rows. */
+/**
+ * Catalog badge counts anything needing attention; trash badge counts rows.
+ * The transfer badge is painted here too (not only inside the transfer view) so
+ * the nav never resizes the first time that view is opened.
+ */
 function renderNavBadges(summary) {
   const catalog = (summary && summary.catalog) || {};
   const attention =
@@ -60,6 +65,7 @@ function renderNavBadges(summary) {
     Math.max(0, Number(catalog.missing_descriptions) || 0);
   paintBadge(qs("#navBadgeCatalog"), attention);
   paintBadge(qs("#navBadgeTrash"), summary && summary.trash);
+  paintBadge(qs("#navBadgeTransfer"), summary && summary.transfer_pending);
 }
 
 /* ==========================================================================
@@ -151,6 +157,7 @@ function initViews() {
   initGroups();
   initTrash();
   initAudit();
+  initTransfer();
 
   registerView("overview", loadOverview);
   registerView("catalog", loadCatalog);
@@ -159,6 +166,7 @@ function initViews() {
   registerView("groups", loadGroups);
   registerView("trash", loadTrash);
   registerView("audit", loadAudit);
+  registerView("transfer", loadTransfer);
 }
 
 /* ==========================================================================

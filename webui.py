@@ -23,11 +23,13 @@ from .catalog_core import (
     _read_json,
     get_today,
 )
+from .catalog_transfer import CatalogTransferService
 from .terminology import KirbyTerminologyStore, TerminologyError
 from .wiki_index import WIKI_SITE_LABELS, WikiIndexStore
 
 PLUGIN_ID = "astrbot_plugin_kirby_catalog"
 MAX_UPLOAD_BYTES = 16 * 1024 * 1024
+UPLOAD_CHUNK_BYTES = 1024 * 1024
 MAX_DESCRIPTION_CHARS = 30000
 THUMBNAIL_SIZE = 192
 THUMBNAIL_CACHE_LIMIT = 512
@@ -139,6 +141,39 @@ async def _upload_bytes(upload: Any) -> bytes:
     if inspect.isawaitable(result):
         result = await result
     return bytes(result or b"")
+
+
+async def _upload_to_path(upload: Any, target: Path, limit: int) -> int:
+    """Stream an upload straight to disk so large archives never buffer in RAM.
+
+    ``_upload_bytes`` is capped at 16 MB and materialises the whole payload,
+    which is fine for images but not for a 96 MB asset archive.
+    """
+    reader = getattr(upload, "read", None)
+    if reader is None:
+        raise ValueError("上传对象不支持分块读取")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    written = 0
+    try:
+        with target.open("wb") as handle:
+            while True:
+                chunk = reader(UPLOAD_CHUNK_BYTES)
+                if inspect.isawaitable(chunk):
+                    chunk = await chunk
+                if not chunk:
+                    break
+                written += len(chunk)
+                if written > limit:
+                    raise ValueError(
+                        f"文件超过 {limit // (1024 * 1024)} MB 上限"
+                    )
+                handle.write(chunk)
+        if written <= 0:
+            raise ValueError("上传的文件是空的")
+    except Exception:
+        target.unlink(missing_ok=True)
+        raise
+    return written
 
 
 def _request_username() -> str:
@@ -1332,6 +1367,7 @@ class KirbyCatalogWebUI:
     ) -> None:
         self.context = context
         self.service = CatalogAdminService(store, terminology, wiki_index)
+        self.transfer = CatalogTransferService(store, terminology, wiki_index)
         self.write_lock = write_lock or asyncio.Lock()
 
     def register(self) -> None:
@@ -1453,6 +1489,42 @@ class KirbyCatalogWebUI:
                 ["POST"],
                 "Restore wiki index entry",
             ),
+            (
+                "admin/transfer/manifest",
+                self.transfer_manifest,
+                ["GET"],
+                "Describe importable and exportable datasets",
+            ),
+            (
+                "admin/transfer/download",
+                self.transfer_download,
+                ["GET"],
+                "Stream a dataset export",
+            ),
+            (
+                "admin/transfer/stage/<dataset>",
+                self.transfer_stage,
+                ["POST"],
+                "Stage and dry-run an import file",
+            ),
+            (
+                "admin/transfer/stage",
+                self.transfer_stage,
+                ["POST"],
+                "Stage an import file (dataset inferred from filename)",
+            ),
+            (
+                "admin/transfer/apply",
+                self.transfer_apply,
+                ["POST"],
+                "Apply a staged import",
+            ),
+            (
+                "admin/transfer/discard",
+                self.transfer_discard,
+                ["POST"],
+                "Discard a staged import",
+            ),
         ]
         for path, handler, methods, description in routes:
             self.context.register_web_api(
@@ -1484,8 +1556,21 @@ class KirbyCatalogWebUI:
             logger.exception("[%s] WebUI 写入失败: %s", PLUGIN_ID, exc)
             return error_response("写入图鉴管理数据失败", status_code=500)
 
+    def _summary_payload(self, username: str) -> Dict[str, Any]:
+        """概览摘要 + 暂存导入数。
+
+        导航角标必须在任何页面都拿到 transfer_pending，否则第一次切到
+        「数据备份」时角标才被创建，导航条会被顶宽一次、造成布局跳动。
+        """
+        payload = self.service.summary(username)
+        try:
+            payload["transfer_pending"] = len(self.transfer.pending())
+        except Exception:  # noqa: BLE001 - 暂存目录读不动不该让概览整页失败
+            payload["transfer_pending"] = 0
+        return payload
+
     async def summary(self):
-        return await self._read(self.service.summary, _request_username())
+        return await self._read(self._summary_payload, _request_username())
 
     async def preferences(self):
         return await self._write(
@@ -1741,6 +1826,89 @@ class KirbyCatalogWebUI:
             payload.get("key"),
             _request_username(),
         )
+
+    async def transfer_manifest(self):
+        return await self._read(self.transfer.manifest)
+
+    async def transfer_download(self):
+        try:
+            export = await asyncio.to_thread(
+                self.transfer.export,
+                _query_value("dataset", ""),
+                _query_value("format", ""),
+                scope=_query_value("scope", ""),
+                group_id=_query_value("group_id", ""),
+                volume=_query_value("volume", 1),
+            )
+        except ValueError as exc:
+            return error_response(str(exc), status_code=400)
+        except Exception as exc:
+            logger.exception("[%s] WebUI 数据导出失败: %s", PLUGIN_ID, exc)
+            return error_response("导出数据失败", status_code=500)
+        headers = {
+            "Content-Disposition": (
+                f'attachment; filename="{export.filename}"; '
+                f"filename*=UTF-8''{quote(export.filename)}"
+            ),
+            "Content-Length": str(export.total_bytes),
+            "Cache-Control": "no-store",
+        }
+        return stream_response(
+            export.chunks(), content_type=export.mime_type, headers=headers
+        )
+
+    async def transfer_stage(self, dataset: str = ""):
+        upload = await _request_upload()
+        if upload is None:
+            return error_response("没有收到导入文件", status_code=400)
+        filename = str(getattr(upload, "filename", "") or "")
+        # bridge.upload() 的 endpoint 不允许带 query，所以数据类型走路径参数；
+        # 保留 query 与文件名反推两级兜底，方便老版本 Dashboard 与手动调用。
+        chosen = str(dataset or "") or _query_value("dataset", "")
+        try:
+            plan = await asyncio.to_thread(
+                self.transfer.begin_upload,
+                chosen,
+                filename,
+            )
+        except ValueError as exc:
+            return error_response(str(exc), status_code=400)
+        except Exception as exc:
+            logger.exception("[%s] WebUI 导入暂存失败: %s", PLUGIN_ID, exc)
+            return error_response("暂存导入文件失败", status_code=500)
+        token = plan["token"]
+        try:
+            if plan["archive"]:
+                await _upload_to_path(upload, plan["path"], plan["limit"])
+                record = await asyncio.to_thread(
+                    self.transfer.stage, token, filename
+                )
+            else:
+                data = await _upload_bytes(upload)
+                record = await asyncio.to_thread(
+                    self.transfer.stage, token, filename, data=data
+                )
+        except ValueError as exc:
+            await asyncio.to_thread(self.transfer.discard, token)
+            return error_response(str(exc), status_code=400)
+        except Exception as exc:
+            await asyncio.to_thread(self.transfer.discard, token)
+            logger.exception("[%s] WebUI 导入预检失败: %s", PLUGIN_ID, exc)
+            return error_response("解析导入文件失败", status_code=500)
+        return json_response(record)
+
+    async def transfer_apply(self):
+        payload = await _request_json()
+        return await self._write(
+            self.transfer.apply,
+            payload.get("token"),
+            payload.get("mode"),
+            _request_username(),
+        )
+
+    async def transfer_discard(self):
+        payload = await _request_json()
+        return await self._write(self.transfer.discard, payload.get("token"))
 
 
 __all__ = ["CatalogAdminService", "KirbyCatalogWebUI"]

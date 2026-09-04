@@ -154,6 +154,10 @@
           <button type="button" class="nav-item" data-view="audit">
             <i data-icon="history"></i><span>操作记录</span>
           </button>
+          <button type="button" class="nav-item" data-view="transfer">
+            <i data-icon="database"></i><span>数据备份</span>
+            <span class="nav-badge" id="navBadgeTransfer" hidden></span>
+          </button>
           <span class="nav-indicator" id="navIndicator" aria-hidden="true"></span>
         </nav>
 
@@ -614,6 +618,57 @@
             </div>
             <div class="panel-empty" id="auditEmpty" hidden></div>
           </section>
+        </section>
+
+        <!-- ================================================== transfer -->
+        <section class="view is-fill" data-view-panel="transfer" hidden>
+          <div class="page-heading">
+            <div class="page-heading-copy">
+              <span class="eyebrow">BACKUP &amp; MIGRATION</span>
+              <h1>数据备份</h1>
+              <p>把图鉴资料、名称库与素材图片导出成文件，或从备份文件恢复到这台机器。</p>
+            </div>
+            <div class="heading-actions">
+              <span class="quiet-label" id="transferStageLabel">暂存区空闲</span>
+              <button type="button" class="button ghost" id="refreshTransferButton">
+                <i data-icon="refresh-cw"></i><span>刷新</span>
+              </button>
+            </div>
+          </div>
+
+          <div class="metric-grid" id="transferMetrics"></div>
+
+          <div class="transfer-workbench">
+            <section class="surface is-flush transfer-catalog">
+              <div class="section-heading dense">
+                <span class="section-icon"><i data-icon="database"></i></span>
+                <div class="section-heading-copy">
+                  <h2>可备份的数据</h2>
+                  <small>点格式按钮直接下载，点导入选择备份文件</small>
+                </div>
+              </div>
+              <div class="transfer-scroll">
+                <div class="transfer-list" id="transferDatasets"></div>
+              </div>
+            </section>
+
+            <section class="surface is-flush transfer-queue">
+              <div class="section-heading dense">
+                <span class="section-icon"><i data-icon="scan-search"></i></span>
+                <div class="section-heading-copy">
+                  <h2>待确认的导入</h2>
+                  <small>预检通过并确认后才会写入</small>
+                </div>
+              </div>
+              <div class="transfer-scroll">
+                <div class="transfer-pending" id="transferPending"></div>
+                <div class="panel-empty" id="transferPendingEmpty" hidden></div>
+                <div class="transfer-notice" id="transferLimits"></div>
+              </div>
+            </section>
+          </div>
+
+          <input type="file" id="transferImportInput" accept=".json,.csv,.zip" hidden />
         </section>
       </main>
     </div>

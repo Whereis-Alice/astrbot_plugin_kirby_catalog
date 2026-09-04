@@ -68,6 +68,21 @@ export const state = {
   trash: { items: [] },
   audit: { items: [], limit: 200 },
 
+  transfer: {
+    /** Latest admin/transfer/manifest payload. */
+    manifest: null,
+    datasets: [],
+    pending: [],
+    limits: {},
+    assets: {},
+    /** Per-dataset UI choices: dataset -> scope | volume, token -> mode. */
+    scopes: {},
+    volumes: {},
+    modes: {},
+    /** Dataset name the hidden file input is currently collecting for. */
+    importTarget: "",
+  },
+
   selectedGroupId: null,
 
   /** Drawer working copies. */
@@ -100,6 +115,7 @@ export const state = {
     trash: 0,
     audit: 0,
     summary: 0,
+    transfer: 0,
   },
 };
 

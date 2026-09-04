@@ -945,7 +945,69 @@ class KirbyTerminologyStore:
         self.reload()
         return {"imported": len(parsed), "overrides": len(overrides)}
 
-    def import_json(self, data: bytes | str, *, replace_overrides: bool = False) -> dict[str, int]:
+    def preview_rows(
+        self,
+        rows: Iterable[Mapping[str, Any]],
+        *,
+        replace_overrides: bool = False,
+    ) -> dict[str, Any]:
+        """Validate rows and report what an import would change, writing nothing.
+
+        The WebUI stages large uploads before applying them, so the preview has
+        to run the exact same validation as :meth:`import_rows` while leaving the
+        override file untouched.
+        """
+        self._ensure_loaded()
+        parsed: dict[str, TerminologyEntry] = {}
+        for index, row in enumerate(rows, start=1):
+            payload = dict(row)
+            if not _normalise_space(payload.get("term_id")):
+                payload["term_id"] = f"custom:{uuid.uuid4().hex}"
+            try:
+                entry = TerminologyEntry.from_mapping(payload)
+            except TerminologyError as exc:
+                raise TerminologyError(f"导入文件第 {index} 条术语无效：{exc}") from exc
+            parsed[entry.term_id] = entry
+        with self._lock:
+            current = {key: value.to_mapping() for key, value in self._entries.items()}
+            override_ids = set(self._overrides)
+        added = 0
+        updated = 0
+        unchanged = 0
+        samples: list[dict[str, str]] = []
+        for term_id, entry in parsed.items():
+            existing = current.get(term_id)
+            if existing is None:
+                state = "added"
+                added += 1
+            elif existing == entry.to_mapping():
+                state = "unchanged"
+                unchanged += 1
+            else:
+                state = "updated"
+                updated += 1
+            if state != "unchanged" and len(samples) < 8:
+                samples.append(
+                    {
+                        "id": term_id,
+                        "label": entry.zh_cn or entry.en or entry.ja or term_id,
+                        "state": state,
+                    }
+                )
+        removed = len(override_ids - set(parsed)) if replace_overrides else 0
+        return {
+            "total": len(parsed),
+            "added": added,
+            "updated": updated,
+            "unchanged": unchanged,
+            "removed": removed,
+            "skipped": 0,
+            "samples": samples,
+        }
+
+    @staticmethod
+    def parse_json_rows(data: bytes | str) -> list[dict[str, Any]]:
+        """Decode a name-library JSON payload into plain row mappings."""
         try:
             text = data.decode("utf-8-sig") if isinstance(data, bytes) else str(data)
             raw = json.loads(text)
@@ -953,18 +1015,18 @@ class KirbyTerminologyStore:
             raise TerminologyError(f"名称库 JSON 无效：{exc}") from exc
         items = raw.get("items", raw) if isinstance(raw, dict) else raw
         if isinstance(items, Mapping):
-            rows = [
+            return [
                 {"term_id": term_id, **dict(value)}
                 for term_id, value in items.items()
                 if isinstance(value, Mapping)
             ]
-        elif isinstance(items, list):
-            rows = items
-        else:
-            raise TerminologyError("名称库 JSON 必须包含 items 数组或对象")
-        return self.import_rows(rows, replace_overrides=replace_overrides)
+        if isinstance(items, list):
+            return [dict(row) for row in items if isinstance(row, Mapping)]
+        raise TerminologyError("名称库 JSON 必须包含 items 数组或对象")
 
-    def import_csv(self, data: bytes | str, *, replace_overrides: bool = False) -> dict[str, int]:
+    @staticmethod
+    def parse_csv_rows(data: bytes | str) -> list[dict[str, Any]]:
+        """Decode a name-library CSV payload into plain row mappings."""
         try:
             text = data.decode("utf-8-sig") if isinstance(data, bytes) else str(data)
         except UnicodeDecodeError as exc:
@@ -972,11 +1034,21 @@ class KirbyTerminologyStore:
         reader = csv.DictReader(StringIO(text))
         rows: list[dict[str, Any]] = []
         for raw in reader:
-            row = dict(raw)
+            row = {key: value for key, value in raw.items() if key}
             for key in ("aliases_zh", "aliases_en", "aliases_ja", "sources"):
                 row[key] = _string_list(row.get(key))
             rows.append(row)
-        return self.import_rows(rows, replace_overrides=replace_overrides)
+        return rows
+
+    def import_json(self, data: bytes | str, *, replace_overrides: bool = False) -> dict[str, int]:
+        return self.import_rows(
+            self.parse_json_rows(data), replace_overrides=replace_overrides
+        )
+
+    def import_csv(self, data: bytes | str, *, replace_overrides: bool = False) -> dict[str, int]:
+        return self.import_rows(
+            self.parse_csv_rows(data), replace_overrides=replace_overrides
+        )
 
     def export_json(self, *, overrides_only: bool = False) -> bytes:
         self._ensure_loaded()

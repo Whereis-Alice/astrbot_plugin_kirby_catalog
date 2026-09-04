@@ -961,6 +961,30 @@ class CatalogStore:
     def refresh(self) -> None:
         self._refresh_catalog()
 
+    def reload(self) -> None:
+        """Re-read every persisted file after an out-of-band restore.
+
+        The transfer service can overwrite ``catalog.json`` and the whole
+        ``config/`` directory behind our back, so the in-memory indexes have to
+        be rebuilt from disk instead of merely rescanning the asset folder.
+        Bundled profiles are read-only and therefore kept as-is.
+        """
+        with self._lock:
+            self._draw_pool_cache = None
+            self._catalog.clear()
+            self._draw_limits.clear()
+            self._draw_bonuses.clear()
+            self._description_overrides.clear()
+            self._audit_entries.clear()
+            self._tombstones.clear()
+        self._load_tombstones()
+        self._load_audit_entries()
+        self._load_catalog()
+        self._load_draw_limits()
+        self._load_draw_bonuses()
+        self._load_description_overrides()
+        self._refresh_catalog(include_legacy=False, repair_legacy_assets=False)
+
     def migrate_legacy(
         self,
         legacy_dirs: Optional[Sequence[Path]] = None,

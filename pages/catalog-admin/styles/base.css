@@ -509,7 +509,8 @@ body.is-wide-shell {
   }
 
   .view.is-fill > .surface,
-  .view.is-fill > .group-workbench {
+  .view.is-fill > .group-workbench,
+  .view.is-fill > .transfer-workbench {
     flex: 1 1 auto;
     min-height: 0;
   }
@@ -690,13 +691,34 @@ body.is-wide-shell {
    Responsive chrome
    ========================================================================== */
 
+@media (max-width: 1440px) {
+  /* 第八个导航项（数据备份）会把导航条推到 836px，
+     在 1300-1440px 之间挤出横向滚动并裁掉角标，所以这里提前收紧内边距。 */
+  .nav-item {
+    gap: 6px;
+    padding: 7px 9px;
+  }
+
+  .nav-item .icon {
+    width: 15px;
+    height: 15px;
+  }
+
+  .nav-badge {
+    min-width: 16px;
+    height: 16px;
+    padding: 0 4px;
+  }
+}
+
 @media (max-width: 1360px) {
   :root {
     --shell-gutter: 24px;
   }
 
   .nav-item {
-    padding: 7px 11px;
+    gap: 6px;
+    padding: 7px 8px;
   }
 
   .brand-copy small {

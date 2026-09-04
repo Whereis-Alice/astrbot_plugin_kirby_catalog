@@ -695,7 +695,7 @@ class KirbyCatalogWebUiRegistrationTests(unittest.TestCase):
 
             webui.register()
 
-            self.assertEqual(len(routes), 32)
+            self.assertEqual(len(routes), 38)
             self.assertTrue(
                 all(route[0].startswith(f"/{PLUGIN_ID}/admin/") for route in routes)
             )
@@ -717,6 +717,12 @@ class KirbyCatalogWebUiRegistrationTests(unittest.TestCase):
             self.assertIn(f"/{PLUGIN_ID}/admin/wiki-index-entry", paths)
             self.assertIn(f"/{PLUGIN_ID}/admin/wiki-index/save", paths)
             self.assertIn(f"/{PLUGIN_ID}/admin/wiki-index/restore", paths)
+            self.assertIn(f"/{PLUGIN_ID}/admin/transfer/manifest", paths)
+            self.assertIn(f"/{PLUGIN_ID}/admin/transfer/download", paths)
+            self.assertIn(f"/{PLUGIN_ID}/admin/transfer/stage/<dataset>", paths)
+            self.assertIn(f"/{PLUGIN_ID}/admin/transfer/stage", paths)
+            self.assertIn(f"/{PLUGIN_ID}/admin/transfer/apply", paths)
+            self.assertIn(f"/{PLUGIN_ID}/admin/transfer/discard", paths)
 
     def test_register_replaces_stale_legacy_terminology_route(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -963,6 +969,10 @@ class KirbyCatalogWebUiRegistrationTests(unittest.TestCase):
             'apiGet("admin/wiki-index-entry"',
             'apiPost("admin/wiki-index/save"',
             'apiPost("admin/wiki-index/restore"',
+            'apiGet("admin/transfer/manifest"',
+            'apiDownload("admin/transfer/download"',
+            'apiPost("admin/transfer/apply"',
+            'apiPost("admin/transfer/discard"',
         ):
             self.assertTrue(
                 re.sub(r"\s+", "", endpoint) in calls,
@@ -970,7 +980,7 @@ class KirbyCatalogWebUiRegistrationTests(unittest.TestCase):
             )
         self.assertTrue("confirmAction({" in script, "destructive actions need confirm")
 
-        # Seven views exist as nav entries and panels.
+        # Eight views exist as nav entries and panels.
         for view in (
             "overview",
             "catalog",
@@ -979,6 +989,7 @@ class KirbyCatalogWebUiRegistrationTests(unittest.TestCase):
             "groups",
             "trash",
             "audit",
+            "transfer",
         ):
             self.assertIn(f'data-view="{view}"', index)
             self.assertIn(f'data-view-panel="{view}"', index)
@@ -1034,7 +1045,7 @@ class KirbyCatalogWebUiRegistrationTests(unittest.TestCase):
                 plugin = plugin_main.KirbyCatalogPlugin(context, {})
 
             self.assertIsNotNone(plugin.webui)
-            self.assertEqual(len(routes), 32)
+            self.assertEqual(len(routes), 38)
             self.assertIs(plugin.webui.write_lock, plugin._draw_lock)
             self.assertEqual(plugin.store.legacy_dirs, [])
             self.assertFalse(plugin.store._profiles_loaded)

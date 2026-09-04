@@ -1,5 +1,5 @@
 /**
- * Hash router for the seven workspace views.
+ * Hash router for the eight workspace views.
  *
  * Each view registers a loader that is invoked the first time the view becomes
  * visible; afterwards state.loaded gates re-fetching. Navigation writes real
@@ -18,6 +18,7 @@ export const VIEW_IDS = Object.freeze([
   "groups",
   "trash",
   "audit",
+  "transfer",
 ]);
 
 const DEFAULT_VIEW = "overview";

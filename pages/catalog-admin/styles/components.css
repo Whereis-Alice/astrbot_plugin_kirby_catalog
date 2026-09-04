@@ -126,6 +126,11 @@
   color: var(--ink-faint);
 }
 
+/* Used by the backup view to flag that the staging area is not idle. */
+.quiet-label.is-active {
+  color: var(--accent);
+}
+
 /* A bare counter floats unanchored at the right edge of a page heading; the
    pill gives it the same optical weight as the buttons it sits beside. */
 .heading-actions .quiet-label {
@@ -498,6 +503,15 @@
   background-size: 5px 5px, 5px 5px;
   background-repeat: no-repeat;
   cursor: pointer;
+}
+
+/* Inline volume picker: shrink-wrapped so it can sit next to a chip row. */
+.select.transfer-volume {
+  width: auto;
+  min-height: 32px;
+  padding: 0 30px 0 11px;
+  font-size: var(--text-2xs);
+  font-weight: 800;
 }
 
 .search-field {
