@@ -4,11 +4,108 @@ import { h, clear, replaceChildren, safeUrl } from "../core/dom.js";
 import { icon } from "../core/icons.js";
 import { formatNumber, formatPercent } from "../core/format.js";
 
+/** Clamps any input into a 0-100 percentage. */
+function clampPercent(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) {
+    return 0;
+  }
+  return Math.max(0, Math.min(100, numeric));
+}
+
+/** Inline viz: stacked labelled progress meters. */
+function vizMeter(viz) {
+  const rows = (Array.isArray(viz.rows) ? viz.rows : []).map((row) => {
+    const percent = clampPercent(row.percent);
+    return h(
+      "div",
+      { class: "meter-row" },
+      h("span", { text: row.label || "" }),
+      h("b", { text: row.caption || formatPercent(percent) }),
+      h(
+        "div",
+        { class: "progress-track" },
+        h("span", {
+          class: "progress-fill",
+          style: { width: percent + "%", "--fill": "var(--metric-color, var(--accent))" },
+        })
+      )
+    );
+  });
+  return rows.length ? h("div", { class: "metric-meter" }, rows) : null;
+}
+
+/** Inline viz: a small stroke-dash ring plus a caption. */
+function vizRate(viz) {
+  const percent = clampPercent(viz.percent);
+  const radius = 22;
+  const circumference = 2 * Math.PI * radius;
+  return h(
+    "div",
+    { class: "metric-rate" },
+    h(
+      "svg",
+      { class: "metric-ring", viewBox: "0 0 52 52", "aria-hidden": "true", focusable: "false" },
+      h("circle", { class: "ring-track", cx: "26", cy: "26", r: String(radius) }),
+      h("circle", {
+        class: "ring-value",
+        cx: "26",
+        cy: "26",
+        r: String(radius),
+        "stroke-dasharray": circumference.toFixed(2),
+        "stroke-dashoffset": (circumference * (1 - percent / 100)).toFixed(2),
+      })
+    ),
+    h(
+      "div",
+      { class: "metric-rate-copy" },
+      h("strong", { text: viz.title || formatPercent(percent) }),
+      viz.caption ? h("span", { text: viz.caption }) : null
+    )
+  );
+}
+
+/** Inline viz: a position marker on a min/max ruler. */
+function vizRuler(viz) {
+  const percent = clampPercent(viz.percent);
+  return h(
+    "div",
+    { class: "metric-ruler" },
+    h("div", { class: "metric-ruler-track", style: { "--pos": percent + "%" } }, h("i"), h("b")),
+    h(
+      "div",
+      { class: "metric-ruler-scale" },
+      h("span", { text: viz.min === undefined ? "0" : String(viz.min) }),
+      h("span", { text: viz.max === undefined ? "" : String(viz.max) })
+    )
+  );
+}
+
+const VIZ_RENDERERS = { meter: vizMeter, rate: vizRate, ruler: vizRuler };
+
+/** Builds the optional inline visualisation of a metric card. */
+function metricViz(viz) {
+  if (!viz || !viz.kind) {
+    return null;
+  }
+  const renderer = VIZ_RENDERERS[viz.kind];
+  if (!renderer) {
+    return null;
+  }
+  const body = renderer(viz);
+  return body ? h("div", { class: "metric-viz" }, body) : null;
+}
+
 /**
  * Renders the metric strip.
  *
+ * Each metric may carry an optional inline visualisation via "viz":
+ * {kind: "meter", rows: [{label, percent, caption?}]} draws stacked bars,
+ * {kind: "rate", percent, title?, caption?} draws a progress ring and
+ * {kind: "ruler", percent, min?, max?} draws a marker on a scale.
+ *
  * @param {Element} container
- * @param {Array<{label: string, value: any, note?: string, glyph: string, color?: string}>} metrics
+ * @param {Array<{label: string, value: any, note?: string, glyph: string, color?: string, viz?: Object}>} metrics
  */
 export function renderMetrics(container, metrics) {
   if (!container) {
@@ -31,6 +128,7 @@ export function renderMetrics(container, metrics) {
         class: "metric-value",
         text: typeof metric.value === "number" ? formatNumber(metric.value) : String(metric.value),
       }),
+      metricViz(metric.viz),
       metric.note ? h("span", { class: "metric-note", text: metric.note }) : null
     )
   );

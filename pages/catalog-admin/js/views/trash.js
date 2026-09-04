@@ -32,19 +32,27 @@ function trashRow(record) {
     h(
       "td",
       null,
-      primaryCell(record.name || "未命名", "#" + record.id + (record.filename ? " · " + record.filename : "")),
-      badgeRow(
-        record.asset_present
-          ? badge("图片已保留", "good", "image")
-          : badge("图片已丢失", "bad", "image-off")
+      h(
+        "div",
+        { class: "trash-entry-cell" },
+        primaryCell(record.name || "未命名", "#" + record.id + (record.filename ? " · " + record.filename : "")),
+        badgeRow(
+          record.asset_present
+            ? badge("图片已保留", "good", "image")
+            : badge("图片已丢失", "bad", "image-off")
+        )
       )
     ),
     h("td", null, h("span", { text: record.source || "--" })),
     h(
       "td",
       null,
-      h("span", { text: formatDateTime(record.deleted_at) }),
-      h("span", { class: "cell-muted", text: record.deleted_by ? "由 " + record.deleted_by : "由 dashboard" })
+      h(
+        "div",
+        { class: "stack-cell" },
+        h("span", { text: formatDateTime(record.deleted_at) }),
+        h("span", { class: "cell-muted", text: record.deleted_by ? "由 " + record.deleted_by : "由 dashboard" })
+      )
     ),
     h(
       "td",

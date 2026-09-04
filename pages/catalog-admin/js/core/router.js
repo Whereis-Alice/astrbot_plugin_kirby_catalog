@@ -98,6 +98,9 @@ export function switchView(requested, options) {
 
   if (changed) {
     activeView = viewId;
+    // Mirrors the active view onto <body> so styles and integration tests can
+    // target a single view without querying the panel tree.
+    document.body.dataset.view = viewId;
     for (const [id, panel] of panels) {
       setHidden(panel, id !== viewId);
     }

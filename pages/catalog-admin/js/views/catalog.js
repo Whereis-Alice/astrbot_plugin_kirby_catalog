@@ -8,7 +8,7 @@
  * page cannot leave an empty table behind.
  */
 
-import { h, qs, clear, setHidden, replaceChildren } from "../core/dom.js";
+import { h, qs, clear, setHidden, setText, replaceChildren } from "../core/dom.js";
 import { apiGet, apiPost, apiUpload } from "../core/bridge.js";
 import { state, nextSequence, isCurrentSequence, invalidateView } from "../core/state.js";
 import { debounce, formatNumber, stringifyValue } from "../core/format.js";
@@ -144,8 +144,12 @@ function entryRow(entry) {
     h(
       "td",
       null,
-      h("span", { class: "catalog-id", text: "#" + entry.id }),
-      primaryCell(entry.name || "未命名", entry.name_en || entry.page_title || "")
+      h(
+        "div",
+        { class: "catalog-name-cell" },
+        h("span", { class: "catalog-id", text: "#" + entry.id }),
+        primaryCell(entry.name || "未命名", entry.name_en || entry.page_title || "")
+      )
     ),
     h(
       "td",
@@ -165,8 +169,12 @@ function entryRow(entry) {
     h(
       "td",
       null,
-      h("span", { text: kindLabel(entry.catalog_kind) }),
-      entry.variant_key ? h("span", { class: "cell-muted", text: entry.variant_key }) : null
+      h(
+        "div",
+        { class: "stack-cell" },
+        h("span", { text: kindLabel(entry.catalog_kind) }),
+        entry.variant_key ? h("span", { class: "cell-muted", text: entry.variant_key }) : null
+      )
     ),
     h("td", null, statusBadges(entry))
   );
@@ -186,6 +194,8 @@ function renderEntries() {
   const tbody = qs("#entryRows");
   const empty = qs("#entryEmpty");
   const items = state.entries.items;
+
+  setText(qs("#entryTotalLabel"), formatNumber(state.entries.total) + " 个素材");
 
   clear(tbody);
   if (!items.length) {

@@ -1,12 +1,13 @@
 /*!
- * Kirby Catalog Admin — design tokens
+ * Kirby Catalog Admin - design tokens
  * ---------------------------------------------------------------------------
- * Three hand-tuned skins plus an "auto" mode that mirrors the AstrBot host.
+ * Three hand-tuned Kirby skins plus an "auto" mode that mirrors the AstrBot
+ * host appearance.
  *
- * The host dashboard rewrites <html data-theme> on every render, so this
- * dashboard never touches that attribute. Instead the skin lives on
- * <html data-kirby-skin> (resolved value) while the user's raw preference is
- * kept on <html data-kirby-theme> for the segmented control.
+ * The host dashboard rewrites <html data-theme> on every render, so this page
+ * never touches that attribute. The resolved skin lives on
+ * <html data-kirby-skin>; the raw user preference stays on
+ * <html data-kirby-theme> so the segmented control can highlight "auto".
  */
 
 :root {
@@ -21,6 +22,7 @@
   --font-mono: "JetBrains Mono", "Cascadia Code", "SFMono-Regular", Consolas,
     "Liberation Mono", monospace;
 
+  --text-hero: clamp(2rem, 3.4vw, 3.25rem);
   --text-3xl: 1.75rem;
   --text-2xl: 1.375rem;
   --text-xl: 1.125rem;
@@ -29,6 +31,10 @@
   --text-sm: 0.8125rem;
   --text-xs: 0.75rem;
   --text-2xs: 0.6875rem;
+
+  --track-tight: -0.03em;
+  --track-hero: -0.052em;
+  --track-eyebrow: 0.14em;
 
   /* Space ---------------------------------------------------------------- */
   --sp-1: 4px;
@@ -53,16 +59,23 @@
   /* Motion --------------------------------------------------------------- */
   --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
   --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
-  --ease-spring: cubic-bezier(0.34, 1.4, 0.5, 1);
+  --ease-spring: cubic-bezier(0.16, 1.2, 0.3, 1);
   --dur-1: 120ms;
   --dur-2: 200ms;
   --dur-3: 320ms;
   --dur-4: 520ms;
+  --dur-5: 720ms;
 
   /* Layout -------------------------------------------------------------- */
-  --shell-max: 1520px;
-  --topbar-h: 68px;
-  --drawer-w: 560px;
+  --shell-max: 1560px;
+  --shell-gutter: 34px;
+  --topbar-h: 62px;
+  --topbar-offset: 14px;
+  --drawer-w: 580px;
+  --panel-r: 24px;
+  --card-r: 20px;
+  --metric-h: 152px;
+  --glass-blur: blur(26px) saturate(150%);
   --z-drawer: 60;
   --z-scrim: 55;
   --z-topbar: 40;
@@ -70,39 +83,56 @@
 }
 
 /* ==========================================================================
-   Skin: Dream Land — the daylight Pop Star palette.
+   Skin: Dream Land - the daylight Pop Star palette.
    Warm blossom pinks over a hazy sky, with candy accents.
    ========================================================================== */
 [data-kirby-skin="dreamland"] {
   color-scheme: light;
 
-  --canvas: #fdf3f7;
-  --canvas-deep: #f6e6ee;
+  --canvas: #fbf1f5;
+  --canvas-deep: #f3e3ec;
+  --canvas-grad: linear-gradient(155deg, #fff8fb 0%, #fbf0f6 38%, #f4e6f0 100%);
   --aurora-1: rgba(255, 137, 187, 0.42);
   --aurora-2: rgba(150, 205, 255, 0.4);
   --aurora-3: rgba(255, 214, 137, 0.32);
+  --orb-a: rgba(255, 133, 184, 0.5);
+  --orb-b: rgba(139, 199, 255, 0.42);
+  --orb-c: rgba(255, 209, 128, 0.38);
+  --noise-opacity: 0.028;
   --star-ink: rgba(216, 90, 148, 0.16);
 
-  --surface: rgba(255, 255, 255, 0.76);
+  --surface: rgba(255, 255, 255, 0.74);
   --surface-solid: #ffffff;
   --surface-raised: rgba(255, 255, 255, 0.92);
-  --surface-sunken: rgba(255, 240, 246, 0.72);
-  --surface-border: rgba(226, 129, 172, 0.2);
-  --surface-border-strong: rgba(226, 129, 172, 0.34);
+  --surface-sunken: rgba(255, 240, 246, 0.7);
+  --surface-border: rgba(206, 116, 158, 0.18);
+  --surface-border-strong: rgba(206, 116, 158, 0.32);
   --surface-sheen: rgba(255, 255, 255, 0.9);
+  --glass-bg: rgba(255, 252, 253, 0.78);
+  --glass-border: rgba(255, 255, 255, 0.78);
+  --rail-bg: rgba(93, 46, 70, 0.055);
 
   --ink: #3b2632;
-  --ink-strong: #24141d;
-  --ink-muted: #8b7280;
-  --ink-faint: #ab97a2;
+  --ink-strong: #22121b;
+  --ink-muted: #8a7080;
+  --ink-faint: #ab95a2;
   --ink-inverse: #ffffff;
 
-  --accent: #f0518f;
+  --accent: #ef4b8d;
   --accent-hot: #d92f74;
-  --accent-soft: rgba(240, 81, 143, 0.12);
-  --accent-ring: rgba(240, 81, 143, 0.3);
-  --accent-grad: linear-gradient(135deg, #ff85b8 0%, #f0518f 52%, #e0407f 100%);
+  --accent-soft: rgba(239, 75, 141, 0.12);
+  --accent-ring: rgba(239, 75, 141, 0.3);
+  --accent-grad: linear-gradient(135deg, #ff85b8 0%, #ef4b8d 52%, #dd3a7c 100%);
   --accent-on: #ffffff;
+  --grad-text: linear-gradient(102deg, #ef4b8d 4%, #7c53e0 96%);
+  --hero-grad: radial-gradient(
+      120% 150% at 8% 0%,
+      rgba(255, 255, 255, 0.94) 0%,
+      rgba(255, 255, 255, 0.4) 44%,
+      rgba(255, 255, 255, 0) 100%
+    ),
+    linear-gradient(128deg, rgba(255, 168, 206, 0.42) 0%, rgba(178, 205, 255, 0.32) 52%, rgba(255, 219, 158, 0.3) 100%);
+  --star-glow: rgba(255, 197, 84, 0.55);
 
   --cyan: #0f93bd;
   --green: #16a077;
@@ -123,10 +153,10 @@
   --tone-mute-fg: #7d6672;
   --tone-mute-bg: rgba(96, 66, 82, 0.08);
 
-  --field-bg: rgba(255, 255, 255, 0.86);
-  --field-border: rgba(198, 120, 158, 0.28);
+  --field-bg: rgba(255, 255, 255, 0.88);
+  --field-border: rgba(198, 120, 158, 0.26);
   --field-border-hover: rgba(198, 120, 158, 0.46);
-  --row-hover: rgba(255, 233, 242, 0.86);
+  --row-hover: rgba(255, 235, 244, 0.8);
   --divider: rgba(180, 128, 155, 0.16);
   --skeleton: linear-gradient(
     90deg,
@@ -136,36 +166,44 @@
   );
 
   --shadow-xs: 0 1px 2px rgba(120, 47, 84, 0.08);
-  --shadow-sm: 0 2px 8px rgba(120, 47, 84, 0.08);
-  --shadow-card: 0 1px 1px rgba(255, 255, 255, 0.6) inset,
-    0 10px 30px -18px rgba(120, 47, 84, 0.34);
-  --shadow-lift: 0 1px 1px rgba(255, 255, 255, 0.6) inset,
-    0 18px 44px -20px rgba(120, 47, 84, 0.4);
-  --shadow-pop: 0 30px 80px -28px rgba(96, 32, 66, 0.4);
-  --shadow-accent: 0 10px 26px -12px rgba(240, 81, 143, 0.6);
+  --shadow-sm: 0 10px 28px -18px rgba(120, 47, 84, 0.34);
+  --shadow-card: 0 1px 1px rgba(255, 255, 255, 0.7) inset,
+    0 18px 44px -26px rgba(114, 44, 80, 0.42);
+  --shadow-lift: 0 1px 1px rgba(255, 255, 255, 0.7) inset,
+    0 26px 60px -26px rgba(114, 44, 80, 0.46);
+  --shadow-pop: 0 34px 90px -30px rgba(88, 28, 60, 0.42);
+  --shadow-accent: 0 12px 28px -12px rgba(239, 75, 141, 0.58);
 }
 
 /* ==========================================================================
-   Skin: Starlight — night sky over Dream Land.
+   Skin: Starlight - night sky over Dream Land.
    Deep plum nebula, neon blossom accent.
    ========================================================================== */
 [data-kirby-skin="starlight"] {
   color-scheme: dark;
 
-  --canvas: #140d1b;
-  --canvas-deep: #0b0710;
+  --canvas: #150d1c;
+  --canvas-deep: #0a0610;
+  --canvas-grad: linear-gradient(158deg, #1d1229 0%, #150d1c 42%, #0c0713 100%);
   --aurora-1: rgba(255, 108, 178, 0.3);
   --aurora-2: rgba(108, 138, 255, 0.28);
   --aurora-3: rgba(255, 196, 116, 0.16);
+  --orb-a: rgba(255, 108, 178, 0.34);
+  --orb-b: rgba(116, 142, 255, 0.3);
+  --orb-c: rgba(255, 196, 116, 0.2);
+  --noise-opacity: 0.05;
   --star-ink: rgba(255, 233, 249, 0.3);
 
-  --surface: rgba(41, 27, 54, 0.7);
+  --surface: rgba(43, 28, 57, 0.68);
   --surface-solid: #201530;
-  --surface-raised: rgba(52, 35, 68, 0.86);
-  --surface-sunken: rgba(24, 15, 34, 0.62);
-  --surface-border: rgba(255, 214, 240, 0.11);
+  --surface-raised: rgba(55, 37, 72, 0.86);
+  --surface-sunken: rgba(23, 14, 33, 0.6);
+  --surface-border: rgba(255, 214, 240, 0.1);
   --surface-border-strong: rgba(255, 214, 240, 0.2);
   --surface-sheen: rgba(255, 255, 255, 0.08);
+  --glass-bg: rgba(38, 24, 51, 0.76);
+  --glass-border: rgba(255, 214, 240, 0.14);
+  --rail-bg: rgba(255, 255, 255, 0.06);
 
   --ink: #f3e9f6;
   --ink-strong: #ffffff;
@@ -179,6 +217,15 @@
   --accent-ring: rgba(255, 124, 184, 0.42);
   --accent-grad: linear-gradient(135deg, #ff9ecb 0%, #ff6fae 48%, #d0499a 100%);
   --accent-on: #2a0f21;
+  --grad-text: linear-gradient(102deg, #ffa3cd 4%, #b48cff 96%);
+  --hero-grad: radial-gradient(
+      120% 150% at 10% 0%,
+      rgba(255, 255, 255, 0.14) 0%,
+      rgba(255, 255, 255, 0.04) 46%,
+      rgba(255, 255, 255, 0) 100%
+    ),
+    linear-gradient(128deg, rgba(255, 124, 184, 0.26) 0%, rgba(120, 140, 255, 0.22) 54%, rgba(255, 200, 120, 0.16) 100%);
+  --star-glow: rgba(255, 206, 106, 0.5);
 
   --cyan: #4fd2ef;
   --green: #46dda4;
@@ -212,36 +259,44 @@
   );
 
   --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.4);
-  --shadow-sm: 0 2px 10px rgba(0, 0, 0, 0.4);
+  --shadow-sm: 0 12px 30px -20px rgba(0, 0, 0, 0.85);
   --shadow-card: 0 1px 0 rgba(255, 255, 255, 0.06) inset,
-    0 16px 40px -24px rgba(0, 0, 0, 0.9);
-  --shadow-lift: 0 1px 0 rgba(255, 255, 255, 0.08) inset,
-    0 24px 56px -24px rgba(0, 0, 0, 0.95);
-  --shadow-pop: 0 40px 100px -30px rgba(0, 0, 0, 0.9);
-  --shadow-accent: 0 12px 30px -14px rgba(255, 124, 184, 0.55);
+    0 20px 50px -28px rgba(0, 0, 0, 0.9);
+  --shadow-lift: 0 1px 0 rgba(255, 255, 255, 0.09) inset,
+    0 28px 66px -28px rgba(0, 0, 0, 0.95);
+  --shadow-pop: 0 44px 110px -34px rgba(0, 0, 0, 0.9);
+  --shadow-accent: 0 14px 34px -16px rgba(255, 124, 184, 0.55);
 }
 
 /* ==========================================================================
-   Skin: Meta Knight — cold steel and moonlight.
+   Skin: Meta Knight - cold steel and moonlight.
    Midnight navy, violet edge, a colder and more clinical read.
    ========================================================================== */
 [data-kirby-skin="metaknight"] {
   color-scheme: dark;
 
   --canvas: #0b1124;
-  --canvas-deep: #060a16;
+  --canvas-deep: #050912;
+  --canvas-grad: linear-gradient(158deg, #101a36 0%, #0b1124 44%, #070c1a 100%);
   --aurora-1: rgba(112, 140, 255, 0.28);
   --aurora-2: rgba(180, 124, 255, 0.24);
   --aurora-3: rgba(84, 216, 255, 0.16);
+  --orb-a: rgba(112, 140, 255, 0.32);
+  --orb-b: rgba(180, 124, 255, 0.28);
+  --orb-c: rgba(84, 216, 255, 0.2);
+  --noise-opacity: 0.05;
   --star-ink: rgba(224, 234, 255, 0.28);
 
-  --surface: rgba(22, 32, 60, 0.72);
+  --surface: rgba(23, 33, 62, 0.7);
   --surface-solid: #141d38;
-  --surface-raised: rgba(30, 43, 76, 0.88);
-  --surface-sunken: rgba(12, 19, 38, 0.66);
-  --surface-border: rgba(158, 187, 255, 0.13);
+  --surface-raised: rgba(32, 45, 79, 0.88);
+  --surface-sunken: rgba(11, 18, 36, 0.64);
+  --surface-border: rgba(158, 187, 255, 0.12);
   --surface-border-strong: rgba(158, 187, 255, 0.24);
   --surface-sheen: rgba(255, 255, 255, 0.07);
+  --glass-bg: rgba(20, 29, 56, 0.76);
+  --glass-border: rgba(158, 187, 255, 0.16);
+  --rail-bg: rgba(158, 187, 255, 0.07);
 
   --ink: #e7eeff;
   --ink-strong: #ffffff;
@@ -255,6 +310,15 @@
   --accent-ring: rgba(127, 155, 255, 0.42);
   --accent-grad: linear-gradient(135deg, #9db2ff 0%, #7189ff 50%, #8b5cf0 100%);
   --accent-on: #08102a;
+  --grad-text: linear-gradient(102deg, #9db2ff 4%, #c48cff 96%);
+  --hero-grad: radial-gradient(
+      120% 150% at 10% 0%,
+      rgba(255, 255, 255, 0.13) 0%,
+      rgba(255, 255, 255, 0.04) 46%,
+      rgba(255, 255, 255, 0) 100%
+    ),
+    linear-gradient(128deg, rgba(127, 155, 255, 0.26) 0%, rgba(180, 124, 255, 0.2) 54%, rgba(84, 216, 255, 0.16) 100%);
+  --star-glow: rgba(140, 200, 255, 0.45);
 
   --cyan: #57d6f2;
   --green: #4fd9a6;
@@ -288,11 +352,11 @@
   );
 
   --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.45);
-  --shadow-sm: 0 2px 10px rgba(0, 0, 0, 0.45);
+  --shadow-sm: 0 12px 30px -20px rgba(0, 0, 0, 0.85);
   --shadow-card: 0 1px 0 rgba(255, 255, 255, 0.06) inset,
-    0 16px 40px -24px rgba(0, 0, 0, 0.9);
-  --shadow-lift: 0 1px 0 rgba(255, 255, 255, 0.08) inset,
-    0 24px 56px -24px rgba(0, 0, 0, 0.95);
-  --shadow-pop: 0 40px 100px -30px rgba(0, 0, 0, 0.92);
-  --shadow-accent: 0 12px 30px -14px rgba(127, 155, 255, 0.55);
+    0 20px 50px -28px rgba(0, 0, 0, 0.9);
+  --shadow-lift: 0 1px 0 rgba(255, 255, 255, 0.09) inset,
+    0 28px 66px -28px rgba(0, 0, 0, 0.95);
+  --shadow-pop: 0 44px 110px -34px rgba(0, 0, 0, 0.92);
+  --shadow-accent: 0 14px 34px -16px rgba(127, 155, 255, 0.55);
 }

@@ -10,50 +10,118 @@
     <link rel="stylesheet" href="./styles/views.css" />
   </head>
   <body>
+    <div class="ambient" aria-hidden="true">
+      <span class="orb orb-a"></span>
+      <span class="orb orb-b"></span>
+      <span class="orb orb-c"></span>
+    </div>
+    <div class="starfield" aria-hidden="true"></div>
     <div class="app-shell" id="appShell" aria-busy="true">
       <header class="topbar">
         <div class="brand">
           <span class="brand-mark" aria-hidden="true">
-            <!-- Plugin logo: a Kirby-style mascot carrying a warp star. Inlined so it
-                 never depends on the host asset token, which expires after 60s. -->
-            <svg class="brand-logo" viewBox="0 0 44 44" focusable="false">
+            <!-- Plugin logo, inlined on purpose: the host asset token expires
+                 after 60s, so an external image reference would break on reload. -->
+            <svg class="brand-logo" viewBox="0 0 512 512" focusable="false" aria-hidden="true">
               <defs>
-                <linearGradient id="kirbyLogoBody" x1="11" y1="8" x2="33" y2="35" gradientUnits="userSpaceOnUse">
-                  <stop offset="0" stop-color="#ffe6f3" />
-                  <stop offset="0.48" stop-color="#ffa8d2" />
-                  <stop offset="1" stop-color="#f778b3" />
+                <clipPath id="kcClip"><rect x="0" y="0" width="512" height="512" rx="136" ry="136"/></clipPath>
+                <linearGradient id="kcPlate" x1="0.06" y1="0" x2="0.92" y2="1">
+                  <stop offset="0" stop-color="#FF9DCB"/>
+                  <stop offset="0.34" stop-color="#F14E93"/>
+                  <stop offset="0.70" stop-color="#C22475"/>
+                  <stop offset="1" stop-color="#6C1350"/>
                 </linearGradient>
-                <linearGradient id="kirbyLogoFoot" x1="8" y1="30" x2="36" y2="39" gradientUnits="userSpaceOnUse">
-                  <stop offset="0" stop-color="#ff7d9e" />
-                  <stop offset="1" stop-color="#df3350" />
+                <radialGradient id="kcCyan" cx="0.5" cy="0.5" r="0.5">
+                  <stop offset="0" stop-color="#8CE8FF" stop-opacity="0.46"/>
+                  <stop offset="1" stop-color="#8CE8FF" stop-opacity="0"/>
+                </radialGradient>
+                <radialGradient id="kcViolet" cx="0.5" cy="0.5" r="0.5">
+                  <stop offset="0" stop-color="#B98CFF" stop-opacity="0.5"/>
+                  <stop offset="1" stop-color="#B98CFF" stop-opacity="0"/>
+                </radialGradient>
+                <radialGradient id="kcSheen" cx="0.22" cy="0.12" r="0.8">
+                  <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.44"/>
+                  <stop offset="0.42" stop-color="#FFFFFF" stop-opacity="0.10"/>
+                  <stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/>
+                </radialGradient>
+                <radialGradient id="kcVig" cx="0.84" cy="0.94" r="0.85">
+                  <stop offset="0" stop-color="#3E0A2C" stop-opacity="0.42"/>
+                  <stop offset="0.58" stop-color="#3E0A2C" stop-opacity="0.12"/>
+                  <stop offset="1" stop-color="#3E0A2C" stop-opacity="0"/>
+                </radialGradient>
+                <radialGradient id="kcFace" cx="0.32" cy="0.24" r="0.90">
+                  <stop offset="0" stop-color="#FFFDFE"/>
+                  <stop offset="0.28" stop-color="#FFDDED"/>
+                  <stop offset="0.64" stop-color="#FFB3D7"/>
+                  <stop offset="1" stop-color="#FF8FC2"/>
+                </radialGradient>
+                <radialGradient id="kcFaceShade" cx="0.74" cy="0.84" r="0.7">
+                  <stop offset="0" stop-color="#E4479A" stop-opacity="0.42"/>
+                  <stop offset="0.62" stop-color="#E4479A" stop-opacity="0.10"/>
+                  <stop offset="1" stop-color="#E4479A" stop-opacity="0"/>
+                </radialGradient>
+                <radialGradient id="kcCheek" cx="0.5" cy="0.5" r="0.5">
+                  <stop offset="0" stop-color="#FF4F93" stop-opacity="0.92"/>
+                  <stop offset="0.6" stop-color="#FF6BA5" stop-opacity="0.66"/>
+                  <stop offset="1" stop-color="#FF8CBC" stop-opacity="0"/>
+                </radialGradient>
+                <linearGradient id="kcEye" x1="0.5" y1="0" x2="0.5" y2="1">
+                  <stop offset="0" stop-color="#1B2350"/>
+                  <stop offset="0.58" stop-color="#111A3D"/>
+                  <stop offset="1" stop-color="#0B1230"/>
                 </linearGradient>
-                <linearGradient id="kirbyLogoStar" x1="30" y1="2" x2="42" y2="14" gradientUnits="userSpaceOnUse">
-                  <stop offset="0" stop-color="#fff4bd" />
-                  <stop offset="1" stop-color="#ffab1a" />
+                <linearGradient id="kcIris" x1="0.5" y1="0" x2="0.5" y2="1">
+                  <stop offset="0" stop-color="#4CC7F5"/>
+                  <stop offset="0.55" stop-color="#7EDCFB"/>
+                  <stop offset="1" stop-color="#C9F2FE"/>
                 </linearGradient>
+                <linearGradient id="kcMouth" x1="0.5" y1="0" x2="0.5" y2="1">
+                  <stop offset="0" stop-color="#B02350"/>
+                  <stop offset="1" stop-color="#7A1236"/>
+                </linearGradient>
+                <linearGradient id="kcStar" x1="0.2" y1="0" x2="0.82" y2="1">
+                  <stop offset="0" stop-color="#FFF9D2"/>
+                  <stop offset="0.42" stop-color="#FFD84C"/>
+                  <stop offset="1" stop-color="#FF9A17"/>
+                </linearGradient>
+                <clipPath id="kcEyeL"><ellipse cx="200" cy="262" rx="22" ry="43"/></clipPath>
+                <clipPath id="kcEyeR"><ellipse cx="272" cy="262" rx="22" ry="43"/></clipPath>
               </defs>
-              <ellipse cx="14.6" cy="33.6" rx="7.1" ry="4.4" transform="rotate(-17 14.6 33.6)" fill="url(#kirbyLogoFoot)" />
-              <ellipse cx="29.4" cy="33.6" rx="7.1" ry="4.4" transform="rotate(17 29.4 33.6)" fill="url(#kirbyLogoFoot)" />
-              <ellipse cx="8.2" cy="22.4" rx="4.3" ry="5.5" transform="rotate(-28 8.2 22.4)" fill="url(#kirbyLogoBody)" />
-              <ellipse cx="35.8" cy="22.4" rx="4.3" ry="5.5" transform="rotate(28 35.8 22.4)" fill="url(#kirbyLogoBody)" />
-              <circle cx="22" cy="21" r="12.6" fill="url(#kirbyLogoBody)" />
-              <ellipse cx="13.4" cy="23.6" rx="2.9" ry="1.7" transform="rotate(-12 13.4 23.6)" fill="#ff6fa8" opacity="0.62" />
-              <ellipse cx="30.6" cy="23.6" rx="2.9" ry="1.7" transform="rotate(12 30.6 23.6)" fill="#ff6fa8" opacity="0.62" />
-              <ellipse cx="17.7" cy="17.2" rx="2.1" ry="4" fill="#1d2b4d" />
-              <ellipse cx="26.3" cy="17.2" rx="2.1" ry="4" fill="#1d2b4d" />
-              <ellipse cx="17.7" cy="19.1" rx="1.5" ry="1.9" fill="#4fb9f2" />
-              <ellipse cx="26.3" cy="19.1" rx="1.5" ry="1.9" fill="#4fb9f2" />
-              <ellipse cx="17.9" cy="14.8" rx="1" ry="1.5" fill="#ffffff" />
-              <ellipse cx="26.5" cy="14.8" rx="1" ry="1.5" fill="#ffffff" />
-              <ellipse cx="22" cy="24.4" rx="2" ry="1.5" fill="#c8305f" />
-              <path
-                class="brand-logo-star"
-                d="M36 1.6L37.47 5.98L42.09 6.02L38.38 8.77L39.76 13.18L36 10.5L32.24 13.18L33.62 8.77L29.91 6.02L34.53 5.98Z"
-                fill="url(#kirbyLogoStar)"
-                stroke="#ff8f1f"
-                stroke-width="0.7"
-                stroke-linejoin="round"
-              />
+              <g clip-path="url(#kcClip)">
+                <rect x="0" y="0" width="512" height="512" rx="136" ry="136" fill="url(#kcPlate)"/>
+                <circle cx="452" cy="86" r="196" fill="url(#kcCyan)"/>
+                <circle cx="72" cy="452" r="214" fill="url(#kcViolet)"/>
+                <rect x="0" y="0" width="512" height="512" rx="136" ry="136" fill="url(#kcSheen)"/>
+                <rect x="0" y="0" width="512" height="512" rx="136" ry="136" fill="url(#kcVig)"/>
+                <g fill="#FFFFFF">
+                  <path d="M112.00 97.00L116.60 113.40L133.00 118.00L116.60 122.60L112.00 139.00L107.40 122.60L91.00 118.00L107.40 113.40Z" opacity="0.92"/>
+                  <path d="M430.00 284.00L433.54 296.46L446.00 300.00L433.54 303.54L430.00 316.00L426.46 303.54L414.00 300.00L426.46 296.46Z" opacity="0.6"/>
+                  <path d="M96.00 323.00L98.83 333.17L109.00 336.00L98.83 338.83L96.00 349.00L93.17 338.83L83.00 336.00L93.17 333.17Z" opacity="0.5"/>
+                  <path d="M330.00 440.00L332.55 449.45L342.00 452.00L332.55 454.55L330.00 464.00L327.45 454.55L318.00 452.00L327.45 449.45Z" opacity="0.42"/>
+                  <path d="M176.00 66.00L178.12 73.88L186.00 76.00L178.12 78.12L176.00 86.00L173.88 78.12L166.00 76.00L173.88 73.88Z" opacity="0.55"/>
+                </g>
+                <g class="brand-logo-star">
+                  <path d="M379.65 88.58L400.68 124.16L441.93 121.70L414.59 152.69L429.68 191.16L391.76 174.74L359.83 200.98L363.73 159.84L328.91 137.58L369.24 128.58Z" fill="#6E1350" opacity="0.3"/>
+                  <path d="M372.65 79.58L393.68 115.16L434.93 112.70L407.59 143.69L422.68 182.16L384.76 165.74L352.83 191.98L356.73 150.84L321.91 128.58L362.24 119.58Z" fill="#FFFFFF" stroke="#FFFFFF" stroke-width="17" stroke-linejoin="round"/>
+                  <path d="M372.65 79.58L393.68 115.16L434.93 112.70L407.59 143.69L422.68 182.16L384.76 165.74L352.83 191.98L356.73 150.84L321.91 128.58L362.24 119.58Z" fill="url(#kcStar)"/>
+                  <ellipse cx="362" cy="112" rx="12" ry="8" fill="#FFFFFF" opacity="0.62" transform="rotate(-30 362 112)"/>
+                </g>
+                <g>
+                  <circle cx="244" cy="302" r="133" fill="#6E1350" opacity="0.3"/>
+                  <circle cx="236" cy="292" r="133" fill="#FFFFFF"/>
+                  <circle cx="236" cy="292" r="124" fill="url(#kcFace)"/>
+                  <circle cx="236" cy="292" r="124" fill="url(#kcFaceShade)"/>
+                  <ellipse cx="172" cy="327" rx="28" ry="16" fill="url(#kcCheek)" transform="rotate(-13 172 327)"/>
+                  <ellipse cx="300" cy="327" rx="28" ry="16" fill="url(#kcCheek)" transform="rotate(13 300 327)"/>
+                  <ellipse cx="200" cy="262" rx="22" ry="43" fill="url(#kcEye)"/>
+                  <ellipse cx="272" cy="262" rx="22" ry="43" fill="url(#kcEye)"/>
+                  <g clip-path="url(#kcEyeL)"><ellipse cx="200" cy="290" rx="17" ry="23" fill="url(#kcIris)"/></g>
+                  <g clip-path="url(#kcEyeR)"><ellipse cx="272" cy="290" rx="17" ry="23" fill="url(#kcIris)"/></g>
+                  <ellipse cx="200" cy="236" rx="8.5" ry="13" fill="#FFFFFF"/>
+                  <ellipse cx="272" cy="236" rx="8.5" ry="13" fill="#FFFFFF"/>
+                  <path d="M220 320 Q236 307 252 320 Q236 342 220 320 Z" fill="url(#kcMouth)"/>
+                </g>
+              </g>
             </svg>
           </span>
           <span class="brand-copy">
@@ -118,32 +186,32 @@
         <section class="view dashboard-view" data-view-panel="overview" hidden>
           <div class="dash-topline">
             <div class="dash-topline-copy">
-              <span class="eyebrow">CATALOG CONTROL</span>
-              <h1>运行概览</h1>
+              <span class="eyebrow">Dream Land Control</span>
+              <div class="dash-topline-line">
+                <h1>图鉴 <span>总览</span></h1>
+                <p class="dash-topline-note">素材、名称库、百科序号与群抽取的实时状态，一屏读完。</p>
+              </div>
             </div>
-            <div class="dash-topline-meta" id="overviewStamp"></div>
-            <div class="heading-actions">
+            <div class="dash-topline-meta">
+              <span class="dash-live">
+                <span class="dash-live-dot" aria-hidden="true"></span>
+                <span id="overviewStamp">同步中</span>
+              </span>
               <button type="button" class="button ghost" id="refreshSummaryButton">
                 <i data-icon="refresh-cw"></i><span>刷新数据</span>
               </button>
             </div>
           </div>
 
+          <div class="dash-band">
+            <section class="dash-hero" id="overviewHero" aria-label="素材总量"></section>
+            <aside class="dash-spotlight" id="overviewSpotlight" aria-label="今日抽取"></aside>
+          </div>
+
+          <div class="metric-grid" id="overviewMetrics"></div>
+
           <div class="dash-grid">
-            <section class="surface dash-hero" id="overviewHero"></section>
-            <section class="surface dash-spotlight" id="overviewSpotlight"></section>
-            <section class="surface dash-panel dash-health">
-              <div class="section-heading">
-                <span class="section-icon"><i data-icon="gauge"></i></span>
-                <div class="section-heading-copy">
-                  <h2>资料完整度</h2>
-                  <small>缺失素材与简介的补全进度</small>
-                </div>
-              </div>
-              <div class="health-list" id="overviewHealth"></div>
-              <div class="dash-mini-stats" id="overviewMetrics"></div>
-            </section>
-            <section class="surface dash-panel dash-sources">
+            <section class="dash-panel dash-sources">
               <div class="section-heading">
                 <span class="section-icon"><i data-icon="chart-no-axes-column-increasing"></i></span>
                 <div class="section-heading-copy">
@@ -151,16 +219,37 @@
                   <small>收录条目最多的作品</small>
                 </div>
               </div>
-              <div class="dash-scroll">
-                <div class="bar-list" id="overviewSources"></div>
-              </div>
+              <div class="bar-list dash-scroll" id="overviewSources"></div>
             </section>
-            <section class="surface dash-panel dash-activity">
+
+            <section class="dash-panel dash-health">
+              <div class="section-heading">
+                <span class="section-icon"><i data-icon="gauge"></i></span>
+                <div class="section-heading-copy">
+                  <h2>资料完整度</h2>
+                  <small>各数据源的补全进度</small>
+                </div>
+              </div>
+              <div class="health-list dash-scroll" id="overviewHealth"></div>
+            </section>
+
+            <section class="dash-panel dash-kinds">
+              <div class="section-heading">
+                <span class="section-icon"><i data-icon="shapes"></i></span>
+                <div class="section-heading-copy">
+                  <h2>条目分类</h2>
+                  <small>按图鉴类型拆分</small>
+                </div>
+              </div>
+              <div class="bar-list dash-scroll" id="overviewKinds"></div>
+            </section>
+
+            <section class="dash-panel dash-activity">
               <div class="section-heading">
                 <span class="section-icon"><i data-icon="history"></i></span>
                 <div class="section-heading-copy">
                   <h2>最近操作</h2>
-                  <small>Dashboard 管理变更</small>
+                  <small>管理台写入变更</small>
                 </div>
                 <button type="button" class="text-button" data-view-link="audit">
                   <span>查看全部</span><i data-icon="arrow-right"></i>
@@ -172,7 +261,7 @@
         </section>
 
         <!-- ================================================== catalog -->
-        <section class="view" data-view-panel="catalog" hidden>
+        <section class="view is-fill" data-view-panel="catalog" hidden>
           <div class="page-heading">
             <div class="page-heading-copy">
               <span class="eyebrow">ASSET LIBRARY</span>
@@ -180,9 +269,7 @@
               <p>管理图鉴条目的名称、作品、简介与立绘素材。</p>
             </div>
             <div class="heading-actions">
-              <button type="button" class="button primary" id="addEntryButton">
-                <i data-icon="plus"></i><span>新增素材</span>
-              </button>
+              <span class="quiet-label" id="entryTotalLabel">0 个素材</span>
             </div>
           </div>
 
@@ -234,13 +321,13 @@
                 <tbody id="entryRows"></tbody>
               </table>
             </div>
-            <div id="entryEmpty" hidden></div>
+            <div class="panel-empty" id="entryEmpty" hidden></div>
             <div class="pagination" id="entryPagination"></div>
           </section>
         </section>
 
         <!-- ================================================== terminology -->
-        <section class="view" data-view-panel="terminology" hidden>
+        <section class="view is-fill" data-view-panel="terminology" hidden>
           <div class="page-heading">
             <div class="page-heading-copy">
               <span class="eyebrow">TERM CONTROL</span>
@@ -323,13 +410,13 @@
                 <tbody id="terminologyRows"></tbody>
               </table>
             </div>
-            <div id="terminologyEmpty" hidden></div>
+            <div class="panel-empty" id="terminologyEmpty" hidden></div>
             <div class="pagination" id="terminologyPagination"></div>
           </section>
         </section>
 
         <!-- ================================================== wiki-index -->
-        <section class="view" data-view-panel="wiki-index" hidden>
+        <section class="view is-fill" data-view-panel="wiki-index" hidden>
           <div class="page-heading">
             <div class="page-heading-copy">
               <span class="eyebrow">WIKI QUICK INDEX</span>
@@ -386,13 +473,13 @@
                 <tbody id="wikiIndexRows"></tbody>
               </table>
             </div>
-            <div id="wikiIndexEmpty" hidden></div>
+            <div class="panel-empty" id="wikiIndexEmpty" hidden></div>
             <div class="pagination" id="wikiIndexPagination"></div>
           </section>
         </section>
 
         <!-- ================================================== groups -->
-        <section class="view" data-view-panel="groups" hidden>
+        <section class="view is-fill" data-view-panel="groups" hidden>
           <div class="page-heading">
             <div class="page-heading-copy">
               <span class="eyebrow">GROUP RECORDS</span>
@@ -428,8 +515,8 @@
             </section>
 
             <section class="surface member-index">
-              <div id="groupSelectionEmpty"></div>
-              <div id="groupSelectionContent" hidden>
+              <div class="panel-empty" id="groupSelectionEmpty"></div>
+              <div class="member-body" id="groupSelectionContent" hidden>
                 <div class="selected-group-head">
                   <div>
                     <span class="eyebrow">SELECTED GROUP</span>
@@ -467,7 +554,7 @@
                     <tbody id="userRows"></tbody>
                   </table>
                 </div>
-                <div id="userEmpty" hidden></div>
+                <div class="panel-empty" id="userEmpty" hidden></div>
                 <div class="pagination" id="userPagination"></div>
               </div>
             </section>
@@ -475,7 +562,7 @@
         </section>
 
         <!-- ================================================== trash -->
-        <section class="view" data-view-panel="trash" hidden>
+        <section class="view is-fill" data-view-panel="trash" hidden>
           <div class="page-heading">
             <div class="page-heading-copy">
               <span class="eyebrow">RECYCLE BIN</span>
@@ -502,12 +589,12 @@
                 <tbody id="trashRows"></tbody>
               </table>
             </div>
-            <div id="trashEmpty" hidden></div>
+            <div class="panel-empty" id="trashEmpty" hidden></div>
           </section>
         </section>
 
         <!-- ================================================== audit -->
-        <section class="view" data-view-panel="audit" hidden>
+        <section class="view is-fill" data-view-panel="audit" hidden>
           <div class="page-heading">
             <div class="page-heading-copy">
               <span class="eyebrow">AUDIT TRAIL</span>
@@ -521,9 +608,11 @@
             </div>
           </div>
 
-          <section class="surface">
-            <div id="auditRows"></div>
-            <div id="auditEmpty" hidden></div>
+          <section class="surface is-flush audit-panel">
+            <div class="audit-scroll">
+              <div id="auditRows"></div>
+            </div>
+            <div class="panel-empty" id="auditEmpty" hidden></div>
           </section>
         </section>
       </main>
