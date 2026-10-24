@@ -3,8 +3,10 @@ from __future__ import annotations
 import json
 import re
 import tempfile
+import threading
 import unittest
 import zipfile
+from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
 from pathlib import Path
 from unittest.mock import patch
@@ -474,6 +476,50 @@ class CatalogTransferTests(unittest.TestCase):
         with patch.object(self.store, "refresh") as refresh:
             self.service.apply(token, "merge", "alice")
         self.assertEqual(refresh.call_count, 1)
+
+    def test_concurrent_apply_consumes_upload_only_once(self) -> None:
+        token, _record = self.stage_bytes(
+            "terminology", "terms.json", self.terminology_payload("并发测试卡比")
+        )
+        importing = threading.Event()
+        second_started = threading.Event()
+        second_read = threading.Event()
+        original_record = self.service._record
+        original_import = self.terminology.import_rows
+        record_calls = 0
+
+        def read_record(value):
+            nonlocal record_calls
+            result = original_record(value)
+            record_calls += 1
+            if record_calls == 2:
+                second_read.set()
+            return result
+
+        def import_rows(*args, **kwargs):
+            importing.set()
+            self.assertTrue(second_started.wait(2))
+            # Give the duplicate request time to reach the in-flight upload.
+            second_read.wait(0.2)
+            return original_import(*args, **kwargs)
+
+        def duplicate_apply():
+            second_started.set()
+            return self.service.apply(token, "merge", "alice")
+
+        with (
+            patch.object(self.service, "_record", side_effect=read_record),
+            patch.object(self.terminology, "import_rows", side_effect=import_rows) as apply,
+            ThreadPoolExecutor(max_workers=2) as executor,
+        ):
+            first = executor.submit(self.service.apply, token, "merge", "alice")
+            self.assertTrue(importing.wait(2))
+            second = executor.submit(duplicate_apply)
+            self.assertEqual(first.result(timeout=3)["dataset"], "terminology")
+            with self.assertRaisesRegex(ValueError, "不存在|过期"):
+                second.result(timeout=3)
+            self.assertEqual(apply.call_count, 1)
+        self.assertEqual(self.service.pending(), [])
 
     def test_bundle_merge_keeps_local_index_while_replace_overwrites(self) -> None:
         _atomic_write_json(self.store.draw_limits_path, {"1": 5})

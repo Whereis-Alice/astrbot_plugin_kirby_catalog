@@ -40,7 +40,7 @@ def inline_markup_html(value: str, *, linkify: bool = True) -> str:
     if linkify:
         escaped = _URL_RE.sub(
             lambda match: (
-                f'<a href="{html.escape(match.group(1), quote=True)}" '
+                f'<a href="{html.escape(html.unescape(match.group(1)), quote=True)}" '
                 f'target="_blank" rel="noreferrer">{match.group(1)}</a>'
             ),
             escaped,

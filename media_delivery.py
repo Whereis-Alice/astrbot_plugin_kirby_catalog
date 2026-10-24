@@ -207,29 +207,38 @@ def prepare_image_for_delivery(
         background.paste(prepared, mask=prepared.getchannel("A"))
 
     quality = max(60, min(98, int(jpeg_quality)))
-    while True:
-        background.save(
-            output_path,
-            format="JPEG",
-            quality=quality,
-            optimize=True,
-            progressive=False,
-            subsampling=0,
-        )
-        if max_bytes <= 0 or output_path.stat().st_size <= max_bytes:
-            break
-        if quality > 68:
-            quality = max(68, quality - 8)
-            continue
-        if background.width <= 320 or background.height <= 320:
-            break
-        background = background.resize(
-            (
-                max(1, int(background.width * 0.85)),
-                max(1, int(background.height * 0.85)),
-            ),
-            Image.Resampling.LANCZOS,
-        )
+    temporary_path = output_root / (
+        f"kirby-delivery-{cache_key}-tmp-{uuid.uuid4().hex}.jpg"
+    )
+    try:
+        while True:
+            background.save(
+                temporary_path,
+                format="JPEG",
+                quality=quality,
+                optimize=True,
+                progressive=False,
+                subsampling=0,
+            )
+            if max_bytes <= 0 or temporary_path.stat().st_size <= max_bytes:
+                break
+            if quality > 68:
+                quality = max(68, quality - 8)
+                continue
+            if background.width <= 320 or background.height <= 320:
+                break
+            background = background.resize(
+                (
+                    max(1, int(background.width * 0.85)),
+                    max(1, int(background.height * 0.85)),
+                ),
+                Image.Resampling.LANCZOS,
+            )
+        # Publish only a finished JPEG. Concurrent readers must never observe
+        # the shared cache entry while another worker is encoding it.
+        temporary_path.replace(output_path)
+    finally:
+        temporary_path.unlink(missing_ok=True)
     return output_path
 
 

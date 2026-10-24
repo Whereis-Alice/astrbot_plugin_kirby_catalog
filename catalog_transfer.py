@@ -1130,9 +1130,10 @@ class CatalogTransferService:
 
     def discard(self, token: Any) -> Dict[str, Any]:
         """丢弃一个暂存任务，把整个目录删掉。"""
-        directory = self._token_dir(token)
-        shutil.rmtree(directory, ignore_errors=True)
-        return {"token": _text(token).lower(), "pending": self.pending()}
+        with self._lock:
+            directory = self._token_dir(token)
+            shutil.rmtree(directory, ignore_errors=True)
+            return {"token": _text(token).lower(), "pending": self.pending()}
 
     def cleanup(self) -> None:
         """清掉过期的暂存目录与残留的导出临时包。"""
@@ -1665,13 +1666,15 @@ class CatalogTransferService:
 
     def apply(self, token: Any, mode: Any = "", username: Any = "") -> Dict[str, Any]:
         """真正落盘。只有这一处会改业务数据，而且一定写一条审计记录。"""
-        record, payload = self._record(token)
-        dataset = self._dataset_name(record.get("dataset"))
-        mode_name = self._mode_name(dataset, mode)
-        fmt = _text(record.get("format")) or "json"
-        who = _text(username) or "dashboard"
-        spec = DATASET_SPECS[dataset]
         with self._lock:
+            # Keep lookup and token consumption in the same critical section as
+            # the import, so concurrent confirmations cannot apply it twice.
+            record, payload = self._record(token)
+            dataset = self._dataset_name(record.get("dataset"))
+            mode_name = self._mode_name(dataset, mode)
+            fmt = _text(record.get("format")) or "json"
+            who = _text(username) or "dashboard"
+            spec = DATASET_SPECS[dataset]
             if dataset == "assets":
                 result = self._apply_assets(payload)
             elif dataset == "bundle":
@@ -1719,30 +1722,30 @@ class CatalogTransferService:
                 }
             else:
                 raise ValueError("该数据不支持导入")
-        summary = result["summary"]
-        self.store.append_audit(
-            "transfer.import",
-            spec["label"],
-            "{0}：新增 {1}、更新 {2}、跳过 {3}".format(
-                MODE_LABELS[mode_name],
-                summary.get("added", 0),
-                summary.get("updated", 0),
-                summary.get("skipped", 0),
-            ),
-            username=who,
-        )
-        self.discard(token)
-        self.invalidate()
-        return {
-            "dataset": dataset,
-            "label": spec["label"],
-            "mode": mode_name,
-            "mode_label": MODE_LABELS[mode_name],
-            "summary": summary,
-            "warnings": result.get("warnings") or [],
-            "notes": result.get("notes") or [],
-            "pending": self.pending(),
-        }
+            summary = result["summary"]
+            self.store.append_audit(
+                "transfer.import",
+                spec["label"],
+                "{0}：新增 {1}、更新 {2}、跳过 {3}".format(
+                    MODE_LABELS[mode_name],
+                    summary.get("added", 0),
+                    summary.get("updated", 0),
+                    summary.get("skipped", 0),
+                ),
+                username=who,
+            )
+            self.discard(token)
+            self.invalidate()
+            return {
+                "dataset": dataset,
+                "label": spec["label"],
+                "mode": mode_name,
+                "mode_label": MODE_LABELS[mode_name],
+                "summary": summary,
+                "warnings": result.get("warnings") or [],
+                "notes": result.get("notes") or [],
+                "pending": self.pending(),
+            }
 
     def _apply_assets(self, path: Path) -> Dict[str, Any]:
         store = self.store

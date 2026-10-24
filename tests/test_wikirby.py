@@ -144,6 +144,18 @@ class RetryingCompleteTranslationContext:
 
     async def llm_generate(self, **kwargs):
         self.calls.append(kwargs)
+        if "JSON：\n" in kwargs["prompt"]:
+            payload = json.loads(kwargs["prompt"].split("JSON：\n", 1)[1])
+            if self.always_incomplete or len(self.calls) == 1:
+                return SimpleNamespace(completion_text="{", finish_reason="length")
+            translated = {
+                identifier: self._complete_translation(f"BEGIN\n{source}\nEND").split("\n", 1)[1].rsplit("\n", 1)[0]
+                for identifier, source in payload.items()
+            }
+            return SimpleNamespace(
+                completion_text=json.dumps(translated, ensure_ascii=False),
+                finish_reason="stop",
+            )
         marked_source = kwargs["prompt"].split("原文：\n", 1)[1]
         begin_marker = marked_source.splitlines()[0]
         if self.always_incomplete or len(self.calls) == 1:
@@ -166,6 +178,20 @@ class JapaneseResidueRepairContext:
 
     async def llm_generate(self, **kwargs):
         self.calls.append(kwargs)
+        if "JSON：\n" in kwargs["prompt"]:
+            payload = json.loads(kwargs["prompt"].split("JSON：\n", 1)[1])
+            translated = {}
+            for identifier, source in payload.items():
+                if source.startswith("【"):
+                    translated[identifier] = "【概览】"
+                elif len(self.calls) == 1:
+                    translated[identifier] = "这是中文说明，但招式名仍写作ファイター。"
+                else:
+                    translated[identifier] = "这是已彻底翻译的中文说明，招式名称也已改为格斗家。"
+            return SimpleNamespace(
+                completion_text=json.dumps(translated, ensure_ascii=False),
+                finish_reason="stop",
+            )
         marked_source = kwargs["prompt"].split("原文：\n", 1)[1]
         begin_marker = marked_source.splitlines()[0]
         end_marker = marked_source.splitlines()[-1]
@@ -188,6 +214,22 @@ class NumberPlaceholderTranslationContext:
 
     async def llm_generate(self, **kwargs):
         self.calls.append(kwargs)
+        if "JSON：\n" in kwargs["prompt"]:
+            payload = json.loads(kwargs["prompt"].split("JSON：\n", 1)[1])
+            translated = {}
+            token_count = 0
+            for identifier, source in payload.items():
+                tokens = re.findall(r"⟦KNUM-[0-9]{4}⟧", source)
+                token_count += len(tokens)
+                translated[identifier] = (
+                    f"攻击发生为 {tokens[0]}，威力为 {tokens[1]}，成功率为 {tokens[2]}。"
+                    if tokens else source
+                )
+            assert token_count == 3
+            return SimpleNamespace(
+                completion_text=json.dumps(translated, ensure_ascii=False),
+                finish_reason="stop",
+            )
         marked_source = kwargs["prompt"].split("原文：\n", 1)[1]
         begin_marker = marked_source.splitlines()[0]
         end_marker = marked_source.splitlines()[-1]
@@ -1121,7 +1163,7 @@ class WikirbyCommandTests(unittest.IsolatedAsyncioTestCase):
         generate_calls = [call for call in plugin.context.calls if call[0] == "generate"]
         self.assertEqual(len(generate_calls), 1)
 
-    async def test_strict_translation_splits_truncated_chunk_and_then_caches(self):
+    async def test_strict_translation_retries_truncated_units_and_then_caches(self):
         plugin = KirbyCatalogPlugin.__new__(KirbyCatalogPlugin)
         plugin.config = {
             "wikirby_translate_provider_id": "provider",
@@ -1261,9 +1303,12 @@ class WikirbyCommandTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(plugin.context.calls), 2)
         repair_prompt = plugin.context.calls[1]["prompt"]
-        self.assertIn("这是一次纠错重译", repair_prompt)
+        self.assertIn("本批需要修复的问题", repair_prompt)
         self.assertIn("japanese_residue", repair_prompt)
-        self.assertIn("⟪ファイター⟫", repair_prompt)
+        first_payload = json.loads(plugin.context.calls[0]["prompt"].split("JSON：\n", 1)[1])
+        repair_payload = json.loads(repair_prompt.split("JSON：\n", 1)[1])
+        self.assertEqual(len(first_payload), 2)
+        self.assertEqual(len(repair_payload), 1)
         self.assertNotRegex(translated, r"[ぁ-ゖァ-ヺーｦ-ﾟ]")
         self.assertIn("格斗家", translated)
 
@@ -1383,6 +1428,12 @@ class WikirbyCommandTests(unittest.IsolatedAsyncioTestCase):
             ("wikirby", "provider"): (999999.0, "wiki"),
             ("卡比真格攻略 wiki", "provider"): (999999.0, "shinkaku"),
         }
+        plugin._wiki_translation_unit_cache = {
+            ("wikirby", "provider", "wiki-unit"): (999999.0, "wiki paragraph"),
+            ("kirby fandom", "provider", "fandom-unit"): (999999.0, "fandom paragraph"),
+            ("卡比真格攻略 wiki", "provider", "shinkaku-unit-1"): (999999.0, "shinkaku paragraph 1"),
+            ("卡比真格攻略 wiki", "provider", "shinkaku-unit-2"): (999999.0, "shinkaku paragraph 2"),
+        }
         plugin.wikirby = FakeCacheClient(2)
         plugin.fandom = FakeCacheClient(3)
         plugin.shinkaku = FakeCacheClient(4)
@@ -1400,8 +1451,13 @@ class WikirbyCommandTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(plugin.shinkaku.calls, 1)
         self.assertEqual(len(plugin._wiki_translation_cache), 1)
         self.assertIn(("wikirby", "provider"), plugin._wiki_translation_cache)
+        self.assertEqual(len(plugin._wiki_translation_unit_cache), 2)
+        self.assertEqual(
+            {key[0] for key in plugin._wiki_translation_unit_cache},
+            {"wikirby", "kirby fandom"},
+        )
         self.assertFalse(plugin._shinkaku_table_icon_cache)
-        self.assertIn("翻译 1 项", results[0])
+        self.assertIn("翻译 3 项", results[0])
         self.assertIn("页面/搜索 4 项", results[0])
 
     async def test_translation_protects_and_restores_terminology(self):

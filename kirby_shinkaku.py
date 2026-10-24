@@ -1258,6 +1258,21 @@ class KirbyShinkakuClient:
 
     @staticmethod
     def _decode_html(raw: bytes) -> str:
+        # Workers and saved copies may serve UTF-8 instead of Seesaa's usual
+        # EUC-JP. Shift-JIS can decode some UTF-8 byte sequences without an
+        # exception, so use the document's declaration before trying fallbacks.
+        if raw.startswith(b"\xef\xbb\xbf"):
+            return raw.decode("utf-8-sig", errors="replace")
+        declaration = re.search(
+            br"<meta\b[^>]*\bcharset\s*=\s*[\"']?\s*([a-zA-Z0-9_.-]+)",
+            raw[:8192],
+            re.IGNORECASE,
+        )
+        if declaration:
+            try:
+                return raw.decode(declaration.group(1).decode("ascii"))
+            except (LookupError, UnicodeDecodeError):
+                pass
         for encoding in ("euc_jp", "euc_jis_2004", "cp932", "utf-8"):
             try:
                 return raw.decode(encoding)
@@ -1623,21 +1638,31 @@ class KirbyShinkakuClient:
         japanese_aliases: list[str] = []
         try:
             for candidate in supplied_aliases:
+                base, suffix = self._english_base_and_suffix(candidate)
                 term_rows = await self.lookup_terms(candidate, limit=20)
                 exact_rows = [
                     row for row in term_rows if self._term_row_matches(row, candidate)
                 ]
-                japanese_aliases.extend(row["japanese"] for row in exact_rows)
+                for row in exact_rows:
+                    exact_name = _normalise_term(candidate) in {
+                        _normalise_term(row["japanese"]),
+                        _normalise_term(row["english"]),
+                    }
+                    japanese_aliases.append(
+                        f"{row['japanese']}{suffix}"
+                        if suffix and not exact_name
+                        else row["japanese"]
+                    )
 
-                base, suffix = self._english_base_and_suffix(candidate)
                 if base.casefold() == candidate.casefold():
                     continue
                 for row in await self.lookup_terms(base, limit=20):
                     if not self._term_row_matches(row, base):
                         continue
-                    japanese_aliases.append(row["japanese"])
-                    if suffix:
-                        japanese_aliases.append(f"{row['japanese']}{suffix}")
+                    # A game suffix / EX form is part of the requested page.
+                    # Trying the unqualified base first can return the wrong
+                    # game (or normal boss) even when the desired page exists.
+                    japanese_aliases.append(f"{row['japanese']}{suffix}")
         except KirbyShinkakuError:
             # An unavailable optional English table must not prevent a direct
             # Japanese page title from working.

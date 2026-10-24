@@ -44993,11 +44993,8 @@
       "en": "Star Block",
       "ja": "星ブロック",
       "aliases_zh": [],
-      "aliases_en": [
-        "*游戏开发初期的名称叫《春风啵啵啵》，后来改为《闪耀☆啵啵》（ティンクル☆ポポ/Twinkle Popo）。原定于1992年1月下旬发售，任天堂介入后，游戏名最终改为了《星之卡比》。"
-      ],
+      "aliases_en": [],
       "aliases_ja": [
-        "*游戏开发初期的名称叫《春风啵啵啵》，后来改为《闪耀☆啵啵》（ティンクル☆ポポ/Twinkle Popo）。原定于1992年1月下旬发售，任天堂介入后，游戏名最终改为了《星之卡比》。",
         "スターブロック"
       ],
       "zh_status": "official_reused",
@@ -48076,9 +48073,9 @@
       "sources": [
         "bwiki-table"
       ],
-      "notes": "BWIKI table: 客串游戏",
+      "notes": "BWIKI table: 客串游戏；已禁用：表格列错位将文件名、曲目名与数字记录组合成术语，不可用于名称替换。",
       "priority": 100,
-      "enabled": true,
+      "enabled": false,
       "match_case": false
     },
     {

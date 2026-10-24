@@ -138,6 +138,7 @@ ASCII_WORD_RE = re.compile(r"[A-Za-z0-9_]")
 HIRAGANA_CHAR_RE = re.compile(r"[\u3040-\u309f]")
 KATAKANA_CHAR_RE = re.compile(r"[\u30a0-\u30ff\uff66-\uff9fー]")
 SPACE_RE = re.compile(r"\s+")
+SENTENCE_END_RE = re.compile(r"。|[.!?](?:\s|$)")
 CSV_FIELDS = (
     "term_id",
     "category",
@@ -547,7 +548,14 @@ class _AhoCorasickMatcher:
     @staticmethod
     def _matchable_alias(alias: str) -> bool:
         text = _normalise_space(alias)
-        if len(text) < 2 or text.isdigit():
+        # Numeric rows imported from Wiki tables are measurements, not names.
+        # isdigit() alone misses values such as 121・213・382・630 or 12:45.49.
+        # Names containing digits (e.g. 中ボス軍団4体) still have letters.
+        if len(text) < 2 or not any(char.isalpha() for char in text):
+            return False
+        # A misplaced table note must never turn an entire paragraph into one
+        # name placeholder. Long complete work titles remain valid aliases.
+        if len(text) >= 64 and len(SENTENCE_END_RE.findall(text)) >= 2:
             return False
         return not PLACEHOLDER_RE.fullmatch(text)
 
