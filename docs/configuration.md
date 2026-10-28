@@ -32,6 +32,8 @@
 | 配置项 | 说明 |
 | --- | --- |
 | `draw_message_template` | `今日盟友` 的基础文案 |
+| `ally_draw_output_mode` | 今日盟友与 Bot 今日盟友使用“文字＋素材”“精美卡片”或“卡片＋文字”；默认文字＋素材 |
+| `ally_draw_card_theme` | 收藏卡片主题：“星愿收藏”粉蓝奶油天空或“银河档案”深蓝星空；默认星愿收藏，见[卡面预览](daily-ally-card.md) |
 | `random_message_template` | `随机盟友` 的基础文案 |
 | `query_message_template` | `查盟友` 的基础文案 |
 | `ally_description_enabled` | 是否显示简介，默认开启 |
@@ -51,6 +53,10 @@
 三个基础文案都支持 `{name}`、`{id}`、`{source}` 和 `{source_text}`。`今日盟友` 与 `Bot今日盟友` 另支持 `{nickname}`、`{flags}`、`{remaining}`；查询文案另支持 `{nickname}`、`{unlock_date}`、`{unlock_text}`。
 
 `ally_detail_template` 支持 `{base}`、`{description}`、`{description_block}`、`{wiki_hint}` 和 `{wiki_hint_block}`。`description_block` 会自动生成换行、`简介：` 标题和正文；`wiki_hint_block` 会自动在提示前换行。模板字段错误时插件会记录警告并回退到默认编排。
+
+今日盟友收藏卡片在本机以 Pillow 生成，使用当前盟友素材和已保存的抽取结果，展示名称、出处、简介、收藏者、剩余次数及新伙伴、重复、保底等真实状态。“精美卡片”会附一行名称与图鉴编号，引用消息后仍可准确查百科和简介；“卡片＋文字”同时发送完整自定义文案。卡片中的简介遵守 `ally_description_enabled` 开关，并为卡面阅读进一步缩短摘要；百科提示遵守现有提示开关。
+
+卡片方式同样适用于 `Bot今日盟友` 和 Bot 抽取 LLM 工具。图片准备与绘制在后台线程执行，抽取结果先保存再渲染；生成失败时使用原文字和素材图，不会再次抽取或重复扣次数。`随机盟友`、`查盟友` 继续使用各自现有输出方式。
 
 ## 图片发送与长图保护
 

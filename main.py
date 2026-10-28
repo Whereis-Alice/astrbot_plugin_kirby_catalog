@@ -9,6 +9,7 @@ import random
 import re
 import struct
 import time
+import uuid
 from collections import Counter
 from collections.abc import Callable, Iterable
 from copy import deepcopy
@@ -24,6 +25,7 @@ from astrbot.core.star import StarTools
 from astrbot.core.star.filter.event_message_type import EventMessageType
 from mcp.types import CallToolResult, ImageContent, TextContent
 
+from .ally_draw_card import build_ally_draw_card_data, render_ally_draw_card
 from .catalog_core import (
     CatalogStore,
     TERMINOLOGY_OVERRIDES_FILENAME,
@@ -177,6 +179,9 @@ class AllyDrawOutcome:
     pity: bool
     existing_today: bool = False
     all_unlocked: bool = False
+    collected: int | None = None
+    total: int | None = None
+    draw_date: str = ""
 
 
 class WikiTranslationIncompleteError(RuntimeError):
@@ -208,7 +213,7 @@ class WikiTranslationIncompleteError(RuntimeError):
     PLUGIN_ID,
     "Whereis-Alice",
     "星之卡比盟友抽取、收藏图鉴与三百科查询插件",
-    "4.5.0",
+    "4.6.0",
     "https://github.com/Whereis-Alice/astrbot_plugin_kirby_catalog",
 )
 class KirbyCatalogPlugin(Star):
@@ -1397,6 +1402,88 @@ class KirbyCatalogPlugin(Star):
             chain[0] = Comp.Plain(f"{text}\n图片暂时不可用，请管理员检查素材。")
         return chain
 
+    async def _daily_ally_chain(
+        self, outcome: AllyDrawOutcome, nickname: str, text: str
+    ) -> list[Any]:
+        """Render the completed draw without changing its saved result or count."""
+        mode = str(
+            self._config_value("ally_draw_output_mode", "文字＋素材") or ""
+        ).strip()
+        if mode not in {"精美卡片", "卡片＋文字"}:
+            return await self._ally_chain(outcome.entry, text)
+        entry = outcome.entry
+        try:
+            image_bytes = await asyncio.to_thread(self.store.asset_bytes, entry, True)
+            profile_getter = getattr(self.store, "profile_for", None)
+            profile = (
+                await asyncio.to_thread(profile_getter, entry)
+                if callable(profile_getter)
+                else {}
+            )
+            card_entry = {**(profile if isinstance(profile, dict) else {}), **entry}
+            description = await asyncio.to_thread(self._ally_description_text, entry)
+            wiki_hint = (
+                str(
+                    self._config_value("ally_wiki_hint_text", DEFAULT_ALLY_WIKI_HINT)
+                    or ""
+                ).strip()
+                if self._bool_value(self._config_value("ally_wiki_hint_enabled", True))
+                else ""
+            )
+            payload = await asyncio.to_thread(
+                build_ally_draw_card_data,
+                card_entry,
+                nickname=nickname,
+                date=outcome.draw_date or get_today(),
+                remaining=outcome.remaining,
+                description=description,
+                image_bytes=image_bytes,
+                repeated=outcome.repeated,
+                pity=outcome.pity,
+                existing_today=outcome.existing_today,
+                all_unlocked=outcome.all_unlocked,
+                collected=outcome.collected,
+                total=outcome.total,
+                theme=str(
+                    self._config_value("ally_draw_card_theme", "星愿收藏") or "星愿收藏"
+                ),
+                wiki_hint=wiki_hint,
+            )
+            cache_dir = await asyncio.to_thread(self._media_cache_dir)
+            rendered = await asyncio.to_thread(
+                render_ally_draw_card,
+                payload,
+                cache_dir / f"kirby-ally-card-{uuid.uuid4().hex}.png",
+            )
+            if not rendered:
+                raise RuntimeError("今日盟友卡片渲染没有返回图片")
+            rendered = str(rendered)
+            image = (
+                Comp.Image.fromURL(rendered)
+                if rendered.startswith(("http://", "https://"))
+                else Comp.Image.fromFileSystem(rendered)
+            )
+            # Keep the catalogue ID outside the image so a quoted card still
+            # resolves the exact entry after Wiki index numbers are edited.
+            caption = (
+                text
+                if mode == "卡片＋文字"
+                else (
+                    f"今日盟友：{self._display_name(entry)}，"
+                    f"图鉴编号 #{int(entry.get('id', 0) or 0)}"
+                )
+            )
+            return [Comp.Plain(caption), image]
+        except Exception as exc:
+            logger.warning(
+                "[%s] 今日盟友卡片渲染失败，使用文字与素材: entry=#%s, error_type=%s, error=%s",
+                PLUGIN_ID,
+                entry.get("id", "?"),
+                type(exc).__name__,
+                exc,
+            )
+            return await self._ally_chain(entry, text)
+
     @staticmethod
     def _tool_image_mime_type(data: bytes) -> str:
         if data.startswith(b"\x89PNG\r\n\x1a\n"):
@@ -1646,7 +1733,7 @@ class KirbyCatalogPlugin(Star):
         image = await self._bot_draw_llm_image(chain)
         if image is None:
             return (
-                f"{prompt}素材图片已发到群里，但本次无法作为视觉输入附给模型。"
+                f"{prompt}盟友图片已发到群里，但本次无法作为视觉输入附给模型。"
                 "请基于文案自然回复一两句，不要重复抽取结果。"
             )
         return CallToolResult(
@@ -1654,7 +1741,7 @@ class KirbyCatalogPlugin(Star):
                 TextContent(
                     type="text",
                     text=(
-                        f"{prompt}下方是同一张盟友素材图。请先看图，再以爱丽丝的"
+                        f"{prompt}下方是同一张盟友图片。请先看图，再以爱丽丝的"
                         "身份自然回复一两句，可以表达感想或和群友互动；不要重复"
                         "发送抽取文案、图鉴编号、简介或图片。"
                     ),
@@ -7757,6 +7844,25 @@ class KirbyCatalogPlugin(Star):
             )
             return default_template.format_map(values)
 
+    def _daily_card_progress(
+        self, user: dict[str, Any]
+    ) -> tuple[int | None, int | None]:
+        """Snapshot canonical collection counts only when a card needs them."""
+        if self._config_value("ally_draw_output_mode", "文字＋素材") not in {
+            "精美卡片",
+            "卡片＋文字",
+        }:
+            return None, None
+        progress_getter = getattr(self.store, "user_progress", None)
+        if not callable(progress_getter):
+            return None, None
+        try:
+            progress = progress_getter(user)
+            return int(progress["unlocked"]), int(progress["total"])
+        except Exception as exc:
+            logger.warning("[%s] 卡片收藏进度读取失败: %s", PLUGIN_ID, exc)
+            return None, None
+
     async def _draw_for_identity(
         self,
         *,
@@ -7767,7 +7873,7 @@ class KirbyCatalogPlugin(Star):
         cooldown: float = 0,
         include_bonus: bool = True,
         reuse_today: bool = False,
-    ) -> Tuple[AllyDrawOutcome | None, str | None]:
+    ) -> tuple[AllyDrawOutcome | None, str | None]:
         now = time.monotonic()
         last_draw = self._cooldowns.get(group_id, {}).get(user_id, 0.0)
         if now - last_draw < cooldown:
@@ -7784,9 +7890,7 @@ class KirbyCatalogPlugin(Star):
             user = self._user_data(config, user_id, nickname)
             count = self.store.draw_count(group_id, user_id, today)
             bonus = (
-                self.store.draw_bonus(group_id, user_id, today)
-                if include_bonus
-                else 0
+                self.store.draw_bonus(group_id, user_id, today) if include_bonus else 0
             )
             limit = max(1, int(base_limit)) + bonus
             if reuse_today:
@@ -7796,6 +7900,7 @@ class KirbyCatalogPlugin(Star):
                         str(current.get("ally_filename") or "")
                     )
                     if current_entry is not None:
+                        collected, total = self._daily_card_progress(user)
                         return (
                             AllyDrawOutcome(
                                 entry=current_entry,
@@ -7803,6 +7908,9 @@ class KirbyCatalogPlugin(Star):
                                 repeated=False,
                                 pity=False,
                                 existing_today=True,
+                                collected=collected,
+                                total=total,
+                                draw_date=today,
                             ),
                             None,
                         )
@@ -7838,6 +7946,7 @@ class KirbyCatalogPlugin(Star):
             config[user_id] = user
             self.store.save_group(group_id, config)
             self.store.increment_draw(group_id, user_id, today)
+            collected, total = self._daily_card_progress(user)
             if cooldown > 0:
                 self._cooldowns.setdefault(group_id, {})[user_id] = time.monotonic()
 
@@ -7848,6 +7957,9 @@ class KirbyCatalogPlugin(Star):
                 repeated=repeated,
                 pity=pity,
                 all_unlocked=all_unlocked,
+                collected=collected,
+                total=total,
+                draw_date=today,
             ),
             None,
         )
@@ -7885,7 +7997,7 @@ class KirbyCatalogPlugin(Star):
             entry, self._draw_message(entry, nickname, outcome.remaining, flags)
         )
         asset_started_at = time.monotonic()
-        chain = await self._ally_chain(entry, text)
+        chain = await self._daily_ally_chain(outcome, nickname, text)
         asset_seconds = time.monotonic() - asset_started_at
         delivery_timing: Dict[str, Any] = {}
         result = await self._chain_result_with_media(
@@ -8090,7 +8202,10 @@ class KirbyCatalogPlugin(Star):
         text = self._ally_detail_message(
             outcome.entry, self._bot_draw_message(outcome)
         )
-        chain = await self._ally_chain(outcome.entry, text)
+        nickname = str(
+            self._config_value("bot_draw_nickname", "星之卡比图鉴") or "星之卡比图鉴"
+        ).strip()
+        chain = await self._daily_ally_chain(outcome, nickname, text)
         result = await self._chain_result_with_media(event, chain)
         if result is not None:
             yield result
@@ -8102,8 +8217,8 @@ class KirbyCatalogPlugin(Star):
         """让 Bot 为自己抽取当前群今天的星之卡比盟友。
 
         使用独立且持久化的 Bot 身份，不占用提问者的次数或图鉴。每日次数
-        与群友共用 daily_draw_limit；调用后会立即向当前群发送文字和素材图片。
-        工具会同时提供完整文案和轻量化素材图给支持视觉的 LLM，用于自然回应。
+        与群友共用 daily_draw_limit；调用后按配置向当前群发送盟友图片与文案。
+        工具会同时提供完整文案和同一张轻量化图片给支持视觉的 LLM，用于自然回应。
         """
         outcome, error = await self._draw_bot_ally(event)
         if error or outcome is None:
@@ -8111,7 +8226,10 @@ class KirbyCatalogPlugin(Star):
         text = self._ally_detail_message(
             outcome.entry, self._bot_draw_message(outcome)
         )
-        chain = await self._ally_chain(outcome.entry, text)
+        nickname = str(
+            self._config_value("bot_draw_nickname", "星之卡比图鉴") or "星之卡比图鉴"
+        ).strip()
+        chain = await self._daily_ally_chain(outcome, nickname, text)
         try:
             await self._chain_result_with_media(
                 event, chain, send_immediately=True

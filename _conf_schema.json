@@ -23,6 +23,20 @@
           "default": "{nickname}，你今天的盟友是 {name}{flags}，图鉴编号 #{id}{source_text}。\n今日剩余次数：{remaining}",
           "hint": "支持 {nickname}、{name}、{id}、{source}、{source_text}、{flags}、{remaining}。source_text 会在有出处时自动生成“，首次登场于《作品》”；模板无效时自动使用默认文案。"
         },
+        "ally_draw_output_mode": {
+          "description": "今日盟友输出方式",
+          "type": "string",
+          "options": ["文字＋素材", "精美卡片", "卡片＋文字"],
+          "default": "文字＋素材",
+          "hint": "同时作用于今日盟友、Bot今日盟友及 Bot 抽取工具。精美卡片保留一行名称与图鉴编号，方便引用查百科；卡片＋文字保留完整自定义文案。卡片生成失败会使用原文字与素材，不会重新抽取或重复扣次数。"
+        },
+        "ally_draw_card_theme": {
+          "description": "今日盟友卡片主题",
+          "type": "string",
+          "options": ["星愿收藏", "银河档案"],
+          "default": "星愿收藏",
+          "hint": "仅用于两种卡片输出方式。星愿收藏采用粉蓝奶油天空与金色跃星，银河档案采用深蓝星空与波普之星；展示现有素材、简介、真实抽取状态与收藏进度。本机生成，不调用大模型或网页截图服务；需系统中文字体。"
+        },
         "random_message_template": {
           "description": "随机盟友基础文案模板",
           "type": "text",
@@ -97,7 +111,7 @@
           "description": "允许 Bot 使用独立身份抽取盟友",
           "type": "bool",
           "default": true,
-          "hint": "启用 Bot今日盟友 命令和 kirby_catalog_draw_bot_ally LLM 工具。Bot 数据按群独立保存，不占用群友次数；每日可抽次数与“每人每日抽取次数”共用，默认均为 3 次。LLM 工具调用后会立即在当前群发送文字和素材图片。"
+          "hint": "启用 Bot今日盟友 命令和 kirby_catalog_draw_bot_ally LLM 工具。Bot 数据按群独立保存，不占用群友次数；每日可抽次数与“每人每日抽取次数”共用，默认均为 3 次。LLM 工具调用后会按今日盟友输出设置在当前群发送结果。"
         },
         "bot_draw_nickname": {
           "description": "Bot 抽取身份显示名称",
