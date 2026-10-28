@@ -11,7 +11,7 @@ import struct
 import time
 import uuid
 from collections import Counter
-from collections.abc import Callable, Iterable
+from collections.abc import AsyncIterator, Callable, Iterable
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
@@ -25,6 +25,7 @@ from astrbot.core.star import StarTools
 from astrbot.core.star.filter.event_message_type import EventMessageType
 from mcp.types import CallToolResult, ImageContent, TextContent
 
+from .ally_card_refs import AllyCardReferences
 from .ally_draw_card import build_ally_draw_card_data, render_ally_draw_card
 from .catalog_core import (
     CatalogStore,
@@ -213,7 +214,7 @@ class WikiTranslationIncompleteError(RuntimeError):
     PLUGIN_ID,
     "Whereis-Alice",
     "星之卡比盟友抽取、收藏图鉴与三百科查询插件",
-    "4.6.0",
+    "4.6.1",
     "https://github.com/Whereis-Alice/astrbot_plugin_kirby_catalog",
 )
 class KirbyCatalogPlugin(Star):
@@ -234,6 +235,7 @@ class KirbyCatalogPlugin(Star):
             startup_full_scan=False,
             lazy_profiles=True,
         )
+        self._card_refs = AllyCardReferences(data_dir / "card_references.json")
         catalog_elapsed = time.perf_counter() - catalog_started
         self.terminology = KirbyTerminologyStore(
             BUNDLED_TERMINOLOGY_PATH,
@@ -656,7 +658,69 @@ class KirbyCatalogPlugin(Star):
                         return data
         return None
 
+    def _card_reference_store(self) -> AllyCardReferences | None:
+        refs = getattr(self, "_card_refs", None)
+        if refs is None:
+            root = getattr(getattr(self, "store", None), "root", None)
+            if root is None:
+                return None
+            refs = AllyCardReferences(Path(root) / "card_references.json")
+            self._card_refs = refs
+        return refs
+
+    def _card_reference_scope(self, event: AstrMessageEvent) -> str:
+        platform_getter = getattr(event, "get_platform_id", None)
+        platform = platform_getter() if callable(platform_getter) else str(
+            getattr(event, "unified_msg_origin", "") or ""
+        ).split(":", 1)[0]
+        message = getattr(event, "message_obj", None)
+        raw = getattr(message, "raw_message", None)
+        self_id = getattr(message, "self_id", "") or (
+            raw.get("self_id", "") if hasattr(raw, "get") else ""
+        )
+        return f"{platform}:{self_id}:{self._group_id(event)}"
+
+    @staticmethod
+    def _image_reference_values(components: Iterable[Any]) -> List[str]:
+        values = []
+        for component in components:
+            if isinstance(component, Comp.Image):
+                values.extend(str(getattr(component, name, "") or "") for name in ("file", "url", "path"))
+            elif isinstance(component, dict) and str(component.get("type", "")).casefold() == "image":
+                data = component.get("data", component)
+                if isinstance(data, dict):
+                    values.extend(str(data.get(name) or "") for name in ("file", "url", "path"))
+        return values
+
+    def _quoted_card_target(self, event: AstrMessageEvent) -> str:
+        refs = self._card_reference_store()
+        if refs is None:
+            return ""
+        message_ids = []
+        values = []
+        components = getattr(getattr(event, "message_obj", None), "message", []) or []
+        for component in components:
+            if isinstance(component, Comp.Reply):
+                message_ids.append(str(component.id))
+                values.extend(self._image_reference_values(self._nested_components(component.chain)))
+            elif isinstance(component, dict) and str(component.get("type", "")).casefold() == "reply":
+                data = component.get("data", component)
+                if isinstance(data, dict):
+                    message_ids.append(str(data.get("id") or data.get("message_id") or ""))
+                values.extend(self._image_reference_values(self._nested_components(
+                    component.get("chain") or component.get("message") or (data.get("message") if isinstance(data, dict) else [])
+                )))
+        raw = getattr(getattr(event, "message_obj", None), "raw_message", None)
+        reply = raw.get("reply") if hasattr(raw, "get") else None
+        if isinstance(reply, dict):
+            message_ids.append(str(reply.get("id") or reply.get("message_id") or ""))
+            values.extend(self._image_reference_values(self._nested_components(reply.get("message") or reply.get("chain"))))
+        return refs.quoted_target(self._card_reference_scope(event), message_ids, values)
+
     def _quoted_target(self, event: AstrMessageEvent) -> str:
+        card_target = self._quoted_card_target(event)
+        if card_target:
+            return card_target
         text = self._quoted_text(event)
         match = re.search(
             r"(?:#|(?:编号|序号)\s*[:：]?)\s*(\d+)", text, re.IGNORECASE
@@ -968,8 +1032,9 @@ class KirbyCatalogPlugin(Star):
         components: List[Any],
         *,
         media_profile: str = "ally",
+        card_key: str = "",
     ) -> bool:
-        if self._media_send_mode() == "standard":
+        if self._media_send_mode() == "standard" and not card_key:
             return False
         umo = str(getattr(event, "unified_msg_origin", "") or "").casefold()
         if not umo.startswith("aiocqhttp:"):
@@ -988,9 +1053,12 @@ class KirbyCatalogPlugin(Star):
                     )
                 continue
             if isinstance(component, Comp.Image):
-                image_value = await self._direct_image_value(
-                    component, media_profile=media_profile
-                )
+                if card_key and self._media_send_mode() == "standard":
+                    image_value = f"base64://{await component.convert_to_base64()}"
+                else:
+                    image_value = await self._direct_image_value(
+                        component, media_profile=media_profile
+                    )
                 if not image_value:
                     return False
                 segments.append(
@@ -1034,9 +1102,20 @@ class KirbyCatalogPlugin(Star):
         )
         for attempt in range(retries + 1):
             try:
-                await send(**routing)
+                receipt = await send(**routing)
+                if card_key and isinstance(receipt, dict):
+                    message_id = receipt.get("message_id")
+                    if not message_id and isinstance(receipt.get("data"), dict):
+                        message_id = receipt["data"].get("message_id")
+                    refs = self._card_reference_store()
+                    if refs is not None and message_id:
+                        try:
+                            await asyncio.to_thread(refs.bind_message, card_key,
+                                                    self._card_reference_scope(event), message_id)
+                        except OSError as exc:
+                            logger.warning("[%s] 卡片消息引用记录保存失败: %s", PLUGIN_ID, exc)
                 logger.info(
-                    "[%s] NapCat 本地文件直发成功: images=%d, attempt=%d",
+                    "[%s] OneBot 图片发送成功: images=%d, attempt=%d",
                     PLUGIN_ID,
                     image_count,
                     attempt + 1,
@@ -1341,9 +1420,20 @@ class KirbyCatalogPlugin(Star):
         send_immediately: bool = False,
     ) -> Any | None:
         started_at = time.monotonic()
+        refs = self._card_reference_store()
+        card_key = refs.image_card(self._image_reference_values(components)) if refs is not None else ""
         components = await self._prepare_media_components(
             components, media_profile=media_profile
         )
+        if card_key and refs is not None:
+            for component in components:
+                if isinstance(component, Comp.Image):
+                    source = local_path_from_image_file(str(component.file or ""), str(component.path or ""))
+                    if source is not None:
+                        try:
+                            await asyncio.to_thread(refs.register_image, source, {}, card_key)
+                        except OSError as exc:
+                            logger.warning("[%s] 卡片图片引用记录保存失败: %s", PLUGIN_ID, exc)
         if timing is not None:
             timing["prepare_seconds"] = time.monotonic() - started_at
 
@@ -1356,7 +1446,7 @@ class KirbyCatalogPlugin(Star):
                 timing["delivery_mode"] = "direct_forward"
             return None
         if await self._try_direct_media_send(
-            event, components, media_profile=media_profile
+            event, components, media_profile=media_profile, card_key=card_key
         ):
             if timing is not None:
                 timing["send_seconds"] = time.monotonic() - send_started_at
@@ -1403,7 +1493,7 @@ class KirbyCatalogPlugin(Star):
         return chain
 
     async def _daily_ally_chain(
-        self, outcome: AllyDrawOutcome, nickname: str, text: str
+        self, outcome: AllyDrawOutcome, nickname: str, text: str, *, is_bot: bool = False
     ) -> list[Any]:
         """Render the completed draw without changing its saved result or count."""
         mode = str(
@@ -1421,7 +1511,13 @@ class KirbyCatalogPlugin(Star):
                 else {}
             )
             card_entry = {**(profile if isinstance(profile, dict) else {}), **entry}
-            description = await asyncio.to_thread(self._ally_description_text, entry)
+            description = ""
+            if self._bool_value(
+                self._config_value("ally_draw_card_description_enabled", True)
+            ):
+                description = await asyncio.to_thread(
+                    self._ally_description_text, entry, respect_enabled=False
+                )
             wiki_hint = (
                 str(
                     self._config_value("ally_wiki_hint_text", DEFAULT_ALLY_WIKI_HINT)
@@ -1447,7 +1543,9 @@ class KirbyCatalogPlugin(Star):
                 theme=str(
                     self._config_value("ally_draw_card_theme", "星愿收藏") or "星愿收藏"
                 ),
-                wiki_hint=wiki_hint,
+                wiki_hint="\n".join(value for value in (
+                    "引用本条消息回复「素材」获取角色素材。", wiki_hint
+                ) if value),
             )
             cache_dir = await asyncio.to_thread(self._media_cache_dir)
             rendered = await asyncio.to_thread(
@@ -1458,19 +1556,24 @@ class KirbyCatalogPlugin(Star):
             if not rendered:
                 raise RuntimeError("今日盟友卡片渲染没有返回图片")
             rendered = str(rendered)
+            refs = self._card_reference_store()
+            if refs is not None:
+                try:
+                    await asyncio.to_thread(refs.register_image, rendered, entry)
+                except OSError as exc:
+                    logger.warning("[%s] 卡片引用记录保存失败: %s", PLUGIN_ID, exc)
             image = (
                 Comp.Image.fromURL(rendered)
                 if rendered.startswith(("http://", "https://"))
                 else Comp.Image.fromFileSystem(rendered)
             )
-            # Keep the catalogue ID outside the image so a quoted card still
-            # resolves the exact entry after Wiki index numbers are edited.
+            # The reference registry resolves quoted cards without repeating
+            # their name or catalogue number in the human caption.
             caption = (
                 text
                 if mode == "卡片＋文字"
                 else (
-                    f"今日盟友：{self._display_name(entry)}，"
-                    f"图鉴编号 #{int(entry.get('id', 0) or 0)}"
+                    "这是我的今日盟友" if is_bot else "这是你的今日盟友"
                 )
             )
             return [Comp.Plain(caption), image]
@@ -1942,6 +2045,10 @@ class KirbyCatalogPlugin(Star):
         )
 
     def _quoted_wiki_query(self, event: AstrMessageEvent, site: str) -> str:
+        card_target = self._quoted_card_target(event)
+        if card_target:
+            entry, _ = self._entry_or_error(card_target)
+            return self._entry_wiki_query(entry) if entry else ""
         text = self._quoted_text(event)
         if not text:
             return ""
@@ -8205,7 +8312,7 @@ class KirbyCatalogPlugin(Star):
         nickname = str(
             self._config_value("bot_draw_nickname", "星之卡比图鉴") or "星之卡比图鉴"
         ).strip()
-        chain = await self._daily_ally_chain(outcome, nickname, text)
+        chain = await self._daily_ally_chain(outcome, nickname, text, is_bot=True)
         result = await self._chain_result_with_media(event, chain)
         if result is not None:
             yield result
@@ -8229,7 +8336,7 @@ class KirbyCatalogPlugin(Star):
         nickname = str(
             self._config_value("bot_draw_nickname", "星之卡比图鉴") or "星之卡比图鉴"
         ).strip()
-        chain = await self._daily_ally_chain(outcome, nickname, text)
+        chain = await self._daily_ally_chain(outcome, nickname, text, is_bot=True)
         try:
             await self._chain_result_with_media(
                 event, chain, send_immediately=True
@@ -8612,6 +8719,25 @@ class KirbyCatalogPlugin(Star):
         if result is not None:
             yield result
 
+    @filter.regex(r"^/?素材$")
+    @filter.event_message_type(EventMessageType.GROUP_MESSAGE)
+    async def view_ally_asset(self, event: AstrMessageEvent) -> AsyncIterator[Any]:
+        """引用盟友卡片回复“素材”，发送对应条目的素材图片。"""
+        target = self._quoted_target(event)
+        if not target:
+            return
+        entry, error = self._entry_or_error(target)
+        if error:
+            yield event.plain_result(error)
+            return
+        assert entry is not None
+        chain = await self._ally_chain(
+            entry, f"{self._display_name(entry)} 的素材，图鉴编号 #{entry['id']}"
+        )
+        result = await self._chain_result_with_media(event, chain)
+        if result is not None:
+            yield result
+
     @filter.regex(r"^/?(?:查看简介|查看盟友简介)(?:\s+.+)?$")
     @filter.event_message_type(EventMessageType.GROUP_MESSAGE)
     async def view_ally_description(self, event: AstrMessageEvent):
@@ -8970,6 +9096,7 @@ class KirbyCatalogPlugin(Star):
             "今日盟友：每天抽取盟友\n"
             "查盟友：查看自己今天的盟友，可 @ 成员\n"
             "查看简介：引用 Bot 的盟友消息查看简介，也可直接填写图鉴编号\n"
+            "素材：引用盟友卡片回复“素材”，发送对应角色素材\n"
             "我的盟友图鉴：查看个人收藏\n"
             "我的图鉴进度：查看有效解锁数、完成率和剩余数量\n"
             "星之卡比图鉴：查看本群图鉴（编号和名字）\n"

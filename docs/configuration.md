@@ -34,9 +34,10 @@
 | `draw_message_template` | `今日盟友` 的基础文案 |
 | `ally_draw_output_mode` | 今日盟友与 Bot 今日盟友使用“文字＋素材”“精美卡片”或“卡片＋文字”；默认文字＋素材 |
 | `ally_draw_card_theme` | 收藏卡片主题：“星愿收藏”粉蓝奶油天空或“银河档案”深蓝星空；默认星愿收藏，见[卡面预览](daily-ally-card.md) |
+| `ally_draw_card_description_enabled` | 卡面伙伴小档案开关，默认开启；优先使用管理员人工简介，其次使用内置资料，独立于文字简介开关 |
 | `random_message_template` | `随机盟友` 的基础文案 |
 | `query_message_template` | `查盟友` 的基础文案 |
-| `ally_description_enabled` | 是否显示简介，默认开启 |
+| `ally_description_enabled` | 是否在消息文字中显示简介，默认开启；不控制卡面小档案 |
 | `ally_description_max_chars` | 简介最大字符数，默认 600；`0` 表示不截断 |
 | `ally_description_view_mode` | `查看简介` 使用普通消息、合并转发或简介卡片 |
 | `ally_description_card_template` | 简介卡片模板：梦之泉、卡比粉彩、瓦豆鲁迪或星际档案 |

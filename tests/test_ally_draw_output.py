@@ -1,5 +1,6 @@
 """Daily draw card routing, saved-result safety and quoted lookup regressions."""
 
+import json
 import unittest
 from io import BytesIO
 from pathlib import Path
@@ -8,6 +9,7 @@ from unittest.mock import AsyncMock, patch
 
 from astrbot.api import message_components as Comp
 from astrbot_plugin_kirby_catalog import main as main_module
+from astrbot_plugin_kirby_catalog.catalog_core import CatalogStore
 from astrbot_plugin_kirby_catalog.main import AllyDrawOutcome
 from PIL import Image
 
@@ -62,11 +64,11 @@ class DailyDrawCardOutputTests(unittest.IsolatedAsyncioTestCase):
             chain = await self.plugin._daily_ally_chain(
                 self.outcome, "收藏者", self.text
             )
-        self.assertEqual(chain[0].text, "今日盟友：瓦豆鲁迪，图鉴编号 #12")
+        self.assertEqual(chain[0].text, "这是你的今日盟友")
         self.assertEqual(len(chain), 2)
         quoted = Comp.Reply(id="card-message", chain=chain)
         event = FakeEvent("卡比百科", [quoted])
-        self.assertEqual(self.plugin._quoted_target(event), "12")
+        self.assertEqual(self.plugin._quoted_target(event), self.entry["filename"])
         self.assertEqual(
             self.plugin._wikirby_query_parts(event), ("Waddle Dee", False, "")
         )
@@ -87,6 +89,7 @@ class DailyDrawCardOutputTests(unittest.IsolatedAsyncioTestCase):
             "ally_draw_output_mode": "精美卡片",
             "ally_draw_card_theme": "银河档案",
             "ally_description_enabled": False,
+            "ally_draw_card_description_enabled": False,
             "ally_wiki_hint_enabled": False,
         }
         outcome = AllyDrawOutcome(
@@ -111,7 +114,7 @@ class DailyDrawCardOutputTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["nickname"], "真实收藏者")
         self.assertEqual(payload["remaining"], 0)
         self.assertEqual(payload["description"], "")
-        self.assertEqual(payload["wiki_hint"], "")
+        self.assertEqual(payload["wiki_hint"], "引用本条消息回复「素材」获取角色素材。")
         for state in ("repeated", "pity", "existing_today", "all_unlocked"):
             self.assertTrue(payload[state])
         self.assertEqual(builder.call_args.args[0]["name_en"], "Waddle Dee")
@@ -198,6 +201,7 @@ class DailyDrawCardOutputTests(unittest.IsolatedAsyncioTestCase):
             ]
             tool_result = await self.plugin.draw_bot_ally_tool(FakeEvent("Bot今日盟友"))
         self.assertEqual(len(results[0]), 2)
+        self.assertEqual(results[0][0].text, "这是我的今日盟友")
         self.assertEqual(
             [call.kwargs["nickname"] for call in builder.call_args_list],
             ["爱丽丝", "爱丽丝"],
@@ -277,3 +281,147 @@ class DailyDrawCardOutputTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(outcome)
         self.assertIsNone(outcome.collected)
         self.assertEqual(sum(self.plugin.store.draws.values()), 1)
+
+    async def test_real_bundled_roly_poly_profile_is_used_when_text_intro_is_off(self):
+        root = Path(self.temporary.name) / "real-store"
+        root.mkdir()
+        entry = {
+            "id": 539,
+            "filename": "星之卡比 镜之大迷宫.Roly-Poly.png",
+            "name": "Roly-Poly",
+            "source": "星之卡比 镜之大迷宫",
+            "entry_key": "wikirby-page:2705",
+            "page_title": "Roly-Poly",
+        }
+        (root / "catalog.json").write_text(
+            json.dumps({"items": [entry]}, ensure_ascii=False), encoding="utf-8"
+        )
+        self.plugin.store = CatalogStore(
+            root,
+            profiles_path=Path(main_module.CATALOG_PROFILES_PATH),
+            startup_full_scan=False,
+            startup_migrate_legacy=False,
+        )
+        self.plugin.store.asset_bytes = lambda *_args: b""
+        self.plugin.config = {
+            "draw_settings": {
+                "ally_draw_output_mode": "精美卡片",
+                "ally_description_enabled": False,
+            }
+        }
+        outcome = AllyDrawOutcome(entry, remaining=3, repeated=False, pity=False)
+        with (
+            patch.object(
+                main_module,
+                "build_ally_draw_card_data",
+                side_effect=lambda _entry, **kwargs: kwargs,
+            ) as builder,
+            patch.object(main_module, "render_ally_draw_card", side_effect=self.render),
+        ):
+            await self.plugin._daily_ally_chain(outcome, "收藏者", "简短文字")
+            self.assertIn("圆形的蓝色生物", builder.call_args.kwargs["description"])
+            self.plugin.store.set_description(entry, "管理员为这位角色修改的小档案。")
+            await self.plugin._daily_ally_chain(outcome, "收藏者", "简短文字")
+            self.assertEqual(
+                builder.call_args.kwargs["description"],
+                "管理员为这位角色修改的小档案。",
+            )
+        self.assertEqual(self.plugin._ally_description_text(entry), "")
+
+    async def test_quote_material_returns_asset_instead_of_the_card_without_drawing(
+        self,
+    ):
+        original = Path(self.temporary.name) / "original.png"
+        Image.new("RGBA", (21, 33), (0, 180, 220, 100)).save(original)
+        self.plugin.store.asset_path = lambda _entry: original
+        self.plugin._chain_result_with_media = AsyncMock(
+            side_effect=lambda _event, chain, **kwargs: chain
+        )
+        self.plugin.config = {"ally_draw_output_mode": "精美卡片"}
+        with patch.object(
+            main_module, "render_ally_draw_card", side_effect=self.render
+        ):
+            card = await self.plugin._daily_ally_chain(
+                self.outcome, "收藏者", self.text
+            )
+        event = FakeEvent("素材", [Comp.Reply(id="quoted-card", chain=card)])
+        with patch.object(
+            self.plugin,
+            "_daily_ally_chain",
+            new=AsyncMock(side_effect=AssertionError("must not draw a card")),
+        ):
+            result = [x async for x in self.plugin.view_ally_asset(event)]
+        self.assertEqual(Path(result[0][-1].path), original)
+        self.assertIn("#12", result[0][0].text)
+        self.assertEqual(self.plugin.store.draws, {})
+        self.assertEqual(self.plugin.store.group, {})
+
+    async def test_quote_material_keeps_an_animated_original(self):
+        path = Path(self.temporary.name) / "animated.gif"
+        first = Image.new("RGB", (20, 20), "pink")
+        second = Image.new("RGB", (20, 20), "blue")
+        first.save(
+            path,
+            save_all=True,
+            append_images=[second],
+            format="GIF",
+            duration=100,
+            loop=0,
+        )
+        self.plugin.store.asset_path = lambda _entry: path
+        before = path.read_bytes()
+        event = FakeEvent(
+            "/素材", [Comp.Reply(id="old-card", message_str="今日盟友，图鉴编号 #12")]
+        )
+        result = [x async for x in self.plugin.view_ally_asset(event)]
+        self.assertEqual(Path(result[0][-1].path), path)
+        self.assertEqual(path.read_bytes(), before)
+        with Image.open(path) as image:
+            self.assertEqual(image.n_frames, 2)
+
+    async def test_unquoted_material_word_does_not_trigger_plugin_output(self):
+        self.assertEqual(
+            [x async for x in self.plugin.view_ally_asset(FakeEvent("素材"))], []
+        )
+
+    async def test_quoted_material_unknown_entry_reports_failure(self):
+        event = FakeEvent(
+            "素材", [Comp.Reply(id="missing", message_str="图鉴编号 #999999")]
+        )
+        result = [x async for x in self.plugin.view_ally_asset(event)]
+        self.assertIn("没有找到盟友", result[0])
+
+    async def test_receipt_reference_survives_reload_and_resolves_wiki_without_numbers(
+        self,
+    ):
+        self.plugin.config = {
+            "ally_draw_output_mode": "精美卡片",
+            "media_send_mode": "AstrBot标准发送",
+        }
+        event = FakeEvent("今日盟友", group_id="1234")
+        event.unified_msg_origin = "aiocqhttp:GroupMessage:1234"
+        event.bot = type(
+            "Bot", (), {"send_group_msg": AsyncMock(return_value={"message_id": 8877})}
+        )()
+        with patch.object(
+            main_module, "render_ally_draw_card", side_effect=self.render
+        ):
+            chain = await self.plugin._daily_ally_chain(
+                self.outcome, "收藏者", self.text
+            )
+        result = await self.plugin._chain_result_with_media(event, chain)
+        self.assertIsNone(result)
+        event.bot.send_group_msg.assert_awaited_once()
+        del self.plugin._card_refs
+        quoted = FakeEvent(
+            "素材",
+            [Comp.Reply(id="8877", message_str="这是你的今日盟友")],
+            group_id="1234",
+        )
+        quoted.unified_msg_origin = "aiocqhttp:GroupMessage:1234"
+        self.assertEqual(self.plugin._quoted_target(quoted), self.entry["filename"])
+        self.assertEqual(
+            self.plugin._quoted_wiki_query(quoted, "wikirby"), "Waddle Dee"
+        )
+        quoted.message_obj.group_id = "5678"
+        self.assertEqual(self.plugin._quoted_target(quoted), "")
