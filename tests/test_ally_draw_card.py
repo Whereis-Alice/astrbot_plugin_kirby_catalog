@@ -13,6 +13,7 @@ from astrbot_plugin_kirby_catalog.ally_draw_card import (
     ALLY_DRAW_CARD_THEMES,
     CARD_HEIGHT,
     CARD_WIDTH,
+    MAX_CARD_HEIGHT,
     build_ally_draw_card_data,
     render_ally_draw_card,
 )
@@ -111,7 +112,9 @@ class AllyDrawCardTests(unittest.TestCase):
                     with Image.open(output) as rendered:
                         rendered.load()
                         self.assertEqual(rendered.format, "PNG")
-                        self.assertEqual(rendered.size, (CARD_WIDTH, CARD_HEIGHT))
+                        self.assertEqual(rendered.width, CARD_WIDTH)
+                        self.assertGreater(rendered.height, CARD_HEIGHT)
+                        self.assertLessEqual(rendered.height, MAX_CARD_HEIGHT)
                         self.assertEqual(rendered.mode, "RGB")
                     self.assertLess(output.stat().st_size, 4 * 1024 * 1024)
             self.assertEqual(list(Path(directory).glob("*-tmp-*.png")), [])
@@ -166,3 +169,40 @@ class AllyDrawCardTests(unittest.TestCase):
                 card_module._font(24)
         finally:
             card_module._font.cache_clear()
+
+    def test_archive_wrap_retains_text_after_500_chars_and_latin_words(self):
+        description = (
+            "这是已有档案中的一段资料。" * 45
+        ) + "\n\nParasol Waddle Doo可以撑着阳伞漂浮。"
+        draw = ImageDraw.Draw(Image.new("RGB", (1, 1)))
+        font = card_module._font(26)
+        lines = card_module._lines(draw, description, font, 832, 40)
+        self.assertIn("Parasol Waddle Doo", "\n".join(lines))
+        self.assertIn("", lines)
+        self.assertEqual(
+            "".join(lines).replace(" ", ""),
+            description.replace("\n", "").replace(" ", ""),
+        )
+        for line in lines:
+            self.assertLessEqual(draw.textlength(line, font=font), 832)
+
+    def test_card_grows_with_archive_and_marks_safety_truncation(self):
+        short = self.card_data(description="卡比是星之卡比系列的主角。")
+        long = self.card_data(description="卡比是星之卡比系列的主角。" * 50)
+        bounded = self.card_data(
+            description="卡比是星之卡比系列的主角。" * 1000, description_max_chars=0
+        )
+        self.assertEqual(long["description"].count("系列的主角。"), 50)
+        self.assertTrue(bounded["description"].endswith("…"))
+        with tempfile.TemporaryDirectory() as directory:
+            sizes = []
+            for index, data in enumerate((short, long, bounded)):
+                result = render_ally_draw_card(
+                    data, Path(directory) / f"archive-{index}.png"
+                )
+                with Image.open(result) as image:
+                    sizes.append(image.height)
+                    self.assertLessEqual(image.height, MAX_CARD_HEIGHT)
+            self.assertEqual(sizes[0], CARD_HEIGHT)
+            self.assertGreater(sizes[1], sizes[0])
+            self.assertGreaterEqual(sizes[2], sizes[1])

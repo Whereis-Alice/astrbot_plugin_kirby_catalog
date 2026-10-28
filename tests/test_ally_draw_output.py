@@ -61,10 +61,8 @@ class DailyDrawCardOutputTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(
             main_module, "render_ally_draw_card", side_effect=self.render
         ):
-            chain = await self.plugin._daily_ally_chain(
-                self.outcome, "收藏者", self.text
-            )
-        self.assertEqual(chain[0].text, "这是你的今日盟友")
+            chain = await self.plugin._daily_ally_chain(self.outcome, "狐狸", self.text)
+        self.assertEqual(chain[0].text, "狐狸，这是你的今日盟友")
         self.assertEqual(len(chain), 2)
         quoted = Comp.Reply(id="card-message", chain=chain)
         event = FakeEvent("卡比百科", [quoted])
@@ -201,7 +199,7 @@ class DailyDrawCardOutputTests(unittest.IsolatedAsyncioTestCase):
             ]
             tool_result = await self.plugin.draw_bot_ally_tool(FakeEvent("Bot今日盟友"))
         self.assertEqual(len(results[0]), 2)
-        self.assertEqual(results[0][0].text, "这是我的今日盟友")
+        self.assertEqual(results[0][0].text, "爱丽丝：这是我的今日盟友")
         self.assertEqual(
             [call.kwargs["nickname"] for call in builder.call_args_list],
             ["爱丽丝", "爱丽丝"],
@@ -355,6 +353,30 @@ class DailyDrawCardOutputTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("#12", result[0][0].text)
         self.assertEqual(self.plugin.store.draws, {})
         self.assertEqual(self.plugin.store.group, {})
+
+    async def test_card_archive_length_is_independent_of_text_limit(self):
+        description = "这是已有的长篇角色资料。" * 90
+        self.plugin.store.description = description
+        self.plugin.config = {
+            "ally_draw_output_mode": "精美卡片",
+            "ally_description_enabled": True,
+            "ally_description_max_chars": 20,
+            "ally_draw_card_description_max_chars": 900,
+        }
+        with (
+            patch.object(
+                main_module,
+                "build_ally_draw_card_data",
+                side_effect=lambda _entry, **kwargs: kwargs,
+            ) as builder,
+            patch.object(main_module, "render_ally_draw_card", side_effect=self.render),
+        ):
+            await self.plugin._daily_ally_chain(self.outcome, "狐狸", self.text)
+        self.assertEqual(builder.call_args.kwargs["description"], description)
+        self.assertEqual(builder.call_args.kwargs["description_max_chars"], 900)
+        self.assertLess(
+            len(self.plugin._ally_description_text(self.entry)), len(description)
+        )
 
     async def test_quote_material_keeps_an_animated_original(self):
         path = Path(self.temporary.name) / "animated.gif"

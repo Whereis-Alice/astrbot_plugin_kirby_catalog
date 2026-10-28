@@ -10,13 +10,16 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any
 
-from PIL import Image, ImageColor, ImageDraw, ImageFilter, ImageFont
+from PIL import Image, ImageChops, ImageColor, ImageDraw, ImageFilter, ImageFont
 
 from .wiki_content import inline_markup_plain
 
 ALLY_DRAW_CARD_THEMES = ("星愿收藏", "银河档案")
 CARD_WIDTH = 1024
-CARD_HEIGHT = 1456
+CARD_HEIGHT = 1640
+MAX_CARD_HEIGHT = 3000
+MAX_CARD_DESCRIPTION_CHARS = 2000
+MAX_CARD_DESCRIPTION_LINES = 40
 
 _PALETTES = {
     "星愿收藏": {
@@ -69,7 +72,7 @@ def _number(value: Any, default: int = 0) -> int:
         return default
 
 
-def _description(value: str, name: str) -> str:
+def _description(value: str, name: str, limit: int) -> str:
     plain = inline_markup_plain(value)
     # Some wiki leads begin with a quotation and its game citation. Prefer the
     # introductory paragraph when it can be identified without inventing text.
@@ -82,14 +85,14 @@ def _description(value: str, name: str) -> str:
             )
             if introduction:
                 plain = tail[introduction.start() :]
-    return _text(
-        re.sub(
-            r"(?<=[\u3400-\u9fff])[（(][A-Za-z][A-Za-z0-9'’:&.,/\s-]*[）)]",
-            "",
-            plain,
-        ),
-        600,
+    plain = re.sub(
+        r"(?<=[\u3400-\u9fff])[（(][A-Za-z][A-Za-z0-9'’:&.,/\s-]*[）)]",
+        "",
+        plain,
     )
+    plain = re.sub(r"[^\S\n]+", " ", plain.replace("\r\n", "\n")).strip()
+    plain = re.sub(r"\n{3,}", "\n\n", plain)
+    return plain if len(plain) <= limit else plain[:limit].rstrip() + "…"
 
 
 def _artwork_bytes(raw: bytes | None) -> bytes | None:
@@ -132,6 +135,7 @@ def build_ally_draw_card_data(
     date: str,
     remaining: int,
     description: str = "",
+    description_max_chars: int = 1000,
     image_bytes: bytes | None = None,
     repeated: bool = False,
     pity: bool = False,
@@ -184,7 +188,14 @@ def build_ally_draw_card_data(
         "nickname": _text(nickname, 150) or "旅行者",
         "date": _text(date, 32).replace("-", "."),
         "remaining": _number(remaining),
-        "description": _description(description, name or display_name),
+        "description": _description(
+            description,
+            name or display_name,
+            min(
+                _number(description_max_chars) or MAX_CARD_DESCRIPTION_CHARS,
+                MAX_CARD_DESCRIPTION_CHARS,
+            ),
+        ),
         "artwork": _artwork_bytes(image_bytes),
         "theme": theme if theme in ALLY_DRAW_CARD_THEMES else ALLY_DRAW_CARD_THEMES[0],
         "status": status,
@@ -234,37 +245,44 @@ def _lines(
     max_lines: int,
 ) -> list[str]:
     """Bound mixed Chinese and English text by measured pixels, with ellipsis."""
-    remaining = _text(text)
+    # Keep Latin words together and preserve paragraphs. The former _text()
+    # call silently discarded everything after 500 characters before wrapping.
     result: list[str] = []
-    while remaining and len(result) < max_lines:
-        if draw.textlength(remaining, font=font) <= width:
-            result.append(remaining)
-            break
-        last = len(result) == max_lines - 1
-        suffix = "…" if last else ""
-        low, high, best = 1, len(remaining), 1
-        while low <= high:
-            middle = (low + high) // 2
-            if (
-                draw.textlength(remaining[:middle].rstrip() + suffix, font=font)
-                <= width
-            ):
-                best, low = middle, middle + 1
+    current = ""
+    tokens = re.findall(
+        r"[A-Za-z0-9][A-Za-z0-9'’&:./_+-]*|[^\S\n]+|\n|.", str(text or "")[:10000]
+    )
+    for token in tokens:
+        if token == "\n":
+            result.append(current.rstrip())
+            current = ""
+            continue
+        pieces = list(token) if draw.textlength(token, font=font) > width else [token]
+        for piece in pieces:
+            if current and draw.textlength(current + piece, font=font) > width:
+                tail = ""
+                if piece in "，。；：、！？）】》」”" or current[-1] in "（【《「“":
+                    match = re.search(r"[A-Za-z0-9][A-Za-z0-9'’&:./_+-]*$|.$", current)
+                    tail = match.group() if match else ""
+                head = current[: -len(tail)] if tail else current
+                if head:
+                    result.append(head.rstrip())
+                    current = tail + piece.lstrip() if tail else piece.lstrip()
+                else:
+                    result.append(current.rstrip())
+                    current = piece.lstrip()
             else:
-                high = middle - 1
-        cut = best
-        if not last:
-            natural = [
-                index + 1
-                for index, char in enumerate(remaining[:best])
-                if char.isspace() or char in "，。；、/（("
-            ]
-            if natural and natural[-1] >= best * 0.65:
-                cut = natural[-1]
-        result.append(remaining[:cut].rstrip() + suffix)
-        remaining = remaining[cut:].lstrip()
-        if last:
-            break
+                current += piece if current else piece.lstrip()
+    if current:
+        result.append(current.rstrip())
+    while result and not result[-1]:
+        result.pop()
+    if len(result) > max_lines:
+        result = result[:max_lines]
+        tail = result[-1].rstrip()
+        while tail and draw.textlength(tail + "…", font=font) > width:
+            tail = tail[:-1]
+        result[-1] = tail + "…"
     return result
 
 
@@ -384,8 +402,14 @@ def _warp_star(canvas: Image.Image, colors: dict[str, str]) -> None:
     face = _gradient((size, size), "#fff495", colors["gold"])
     face.putalpha(mask)
     canvas.alpha_composite(face, position)
+    # A bevel around the rounded star gives the gold its own thickness.
+    bevel = _gradient((size, size), "#fffce1", "#dc9131")
+    bevel.putalpha(ImageChops.subtract(mask, mask.filter(ImageFilter.MinFilter(7))))
+    canvas.alpha_composite(bevel, position)
     shine = Image.new("RGBA", (size, size))
     d = ImageDraw.Draw(shine)
+    d.polygon(((18, 250), (292, 8), (392, 14), (42, 337)), fill=(255, 255, 239, 58))
+    d.ellipse((166, 46, 332, 129), fill=(255, 255, 239, 38))
     d.ellipse((227, 70, 256, 100), fill="#fffde0")
     d.ellipse((107, 227, 154, 239), fill="#fffde0")
     shine.putalpha(
@@ -398,22 +422,29 @@ def _cloud(
     canvas: Image.Image, x: int, y: int, width: int, colors: dict[str, str]
 ) -> None:
     tile = Image.new("RGBA", (width, max(64, width // 3)))
-    d = ImageDraw.Draw(tile)
+    mask = Image.new("L", tile.size)
+    d = ImageDraw.Draw(mask)
     height = tile.height
-    for offset, fill in ((9, colors["cloud_shadow"]), (0, colors["cloud"])):
-        d.rounded_rectangle(
-            (0, height * 0.36 + offset, width, height * 0.86 + offset),
-            radius=height // 3,
-            fill=fill,
-        )
-        for cx, cy, r in (
-            (0.18, 0.43, 0.26),
-            (0.37, 0.32, 0.32),
-            (0.61, 0.40, 0.29),
-            (0.80, 0.45, 0.24),
-        ):
-            cx, cy, r = cx * width, cy * height + offset, r * height
-            d.ellipse((cx - r, cy - r, cx + r, cy + r), fill=fill)
+    d.rounded_rectangle(
+        (0, height * 0.36, width, height * 0.86), radius=height // 3, fill=255
+    )
+    for cx, cy, r in (
+        (0.18, 0.43, 0.26),
+        (0.37, 0.32, 0.32),
+        (0.61, 0.40, 0.29),
+        (0.80, 0.45, 0.24),
+    ):
+        cx, cy, r = cx * width, cy * height, r * height
+        d.ellipse((cx - r, cy - r, cx + r, cy + r), fill=255)
+    shadow = Image.new("RGBA", tile.size, colors["cloud_shadow"])
+    shadow.putalpha(mask)
+    tile.alpha_composite(shadow, (0, 8))
+    face = _gradient(tile.size, colors["cloud"], colors["cloud_shadow"])
+    face.putalpha(mask)
+    tile.alpha_composite(face)
+    bevel = Image.new("RGBA", tile.size, colors["cloud"])
+    bevel.putalpha(ImageChops.subtract(mask, mask.filter(ImageFilter.MinFilter(5))))
+    tile.alpha_composite(bevel)
     canvas.alpha_composite(tile, (x, y))
 
 
@@ -447,6 +478,141 @@ def _glow(
     canvas.alpha_composite(layer)
 
 
+@lru_cache(maxsize=2)
+def _pearl_tile(dark: bool) -> Image.Image:
+    """A reusable pastel nacre surface, generated locally at a small resolution."""
+    palette = (
+        ("#809cc4", "#b3a6d2", "#edd1b1", "#76b6c4", "#809cc4")
+        if dark
+        else ("#fff0c8", "#f4bad7", "#c1e8ef", "#d1bfea", "#fff0c8")
+    )
+    stops = [ImageColor.getrgb(value) for value in palette]
+    pixels = []
+    for y in range(192):
+        v = y / 191
+        for x in range(192):
+            u = x / 191
+            phase = (u * 0.87 + v * 0.71 + math.sin(v * 5) * 0.09) % 1
+            index = phase * (len(stops) - 1)
+            i, mix = int(index), index % 1
+            reflection = math.exp(-(((u * 0.82 + v * 0.57 - 0.69) / 0.064) ** 2)) * 0.72
+            grain = ((x * 47 + y * 31 + x * y * 13) % 11 - 5) * 0.25
+            pixels.append(
+                tuple(
+                    round(
+                        min(
+                            255,
+                            max(
+                                0,
+                                (stops[i][c] * (1 - mix) + stops[i + 1][c] * mix)
+                                * (1 - reflection)
+                                + 255 * reflection
+                                + grain,
+                            ),
+                        )
+                    )
+                    for c in range(3)
+                )
+            )
+    tile = Image.new("RGB", (192, 192))
+    tile.putdata(pixels)
+    return tile.convert("RGBA")
+
+
+def _material_frame(canvas: Image.Image, dark: bool) -> None:
+    """Pearl laminate, a warm foil seam, and the beveled edge of a keepsake."""
+    w, h = canvas.size
+    frame_mask = Image.new("L", canvas.size)
+    d = ImageDraw.Draw(frame_mask)
+    d.rounded_rectangle((16, 14, w - 16, h - 14), radius=52, fill=255)
+    surface = _pearl_tile(dark).resize(canvas.size, Image.Resampling.BICUBIC)
+    surface.putalpha(frame_mask)
+    canvas.alpha_composite(surface)
+    d = ImageDraw.Draw(canvas)
+    d.rounded_rectangle(
+        (17, 15, w - 17, h - 15),
+        radius=51,
+        outline="#8295c0" if dark else "#cfb7cc",
+        width=2,
+    )
+    d.rounded_rectangle(
+        (22, 20, w - 22, h - 20),
+        radius=47,
+        outline="#d1ddf5" if dark else "#fffdf2",
+        width=2,
+    )
+    d.rounded_rectangle(
+        (34, 32, w - 34, h - 32),
+        radius=40,
+        outline="#cbb581" if dark else "#d9b76b",
+        width=2,
+    )
+
+
+def _raised_panel(
+    canvas: Image.Image, box: tuple[int, int, int, int], colors: dict[str, str]
+) -> None:
+    left, top, right, bottom = box
+    size = (right - left + 32, bottom - top + 32)
+    mask = Image.new("L", size)
+    ImageDraw.Draw(mask).rounded_rectangle(
+        (16, 16, size[0] - 16, size[1] - 16), radius=26, fill=255
+    )
+    shadow = Image.new("RGBA", size, colors["shadow"])
+    shadow.putalpha(
+        mask.filter(ImageFilter.GaussianBlur(8)).point(lambda a: a * 35 // 255)
+    )
+    canvas.alpha_composite(shadow, (left - 16, top - 10))
+    face = _gradient(size, colors["paper"], colors["soft"])
+    face.putalpha(mask)
+    canvas.alpha_composite(face, (left - 16, top - 16))
+    d = ImageDraw.Draw(canvas)
+    d.rounded_rectangle(box, radius=26, outline=colors["line"], width=2)
+    d.line((left + 27, top + 3, right - 27, top + 3), fill=colors["cloud"], width=2)
+
+
+def _card_layout(data: dict[str, Any]) -> dict[str, Any]:
+    """Measure all text before choosing the height, so the footer never overlaps."""
+    draw = ImageDraw.Draw(Image.new("RGB", (1, 1)))
+    name = _text(data.get("name"), 250)
+    name_size = 54
+    while name_size > 30 and draw.textlength(name, font=_font(name_size, True)) > 844:
+        name_size -= 2
+    name_lines = _lines(draw, name, _font(name_size, True), 844, 2)
+    english_y = max(904, 829 + len(name_lines) * (name_size + 7) + 8)
+    english = _text(data.get("english_name"), 250)
+    english_lines = (
+        []
+        if english.casefold() == name.casefold()
+        else _lines(draw, english, _font(22, latin=True), 830, 2)
+    )
+    source_y = max(952, english_y + len(english_lines) * 29 + 22)
+    source = _text(data.get("source"), 300).removeprefix("《").removesuffix("》")
+    source_lines = _lines(draw, source, _font(23), 830, 2)
+    profile_top = max(1028, source_y + 26 + len(source_lines) * 32 + 28)
+    description = str(data.get("description") or data.get("status_note") or "")
+    max_lines = min(
+        MAX_CARD_DESCRIPTION_LINES, (MAX_CARD_HEIGHT - profile_top - 448) // 38
+    )
+    paragraph = _lines(draw, description, _font(26), 832, max(1, max_lines))
+    excerpt = bool(paragraph and paragraph[-1].endswith("…"))
+    profile_height = max(268, 90 + len(paragraph) * 38 + (36 if excerpt else 0))
+    height = max(CARD_HEIGHT, ((profile_top + profile_height + 322 + 7) // 8) * 8)
+    return {
+        "height": min(height, MAX_CARD_HEIGHT),
+        "name_size": name_size,
+        "name_lines": name_lines,
+        "english_y": english_y,
+        "english_lines": english_lines,
+        "source_y": source_y,
+        "source_lines": source_lines,
+        "profile_top": profile_top,
+        "profile_bottom": min(height, MAX_CARD_HEIGHT) - 322,
+        "paragraph": paragraph,
+        "excerpt": excerpt,
+    }
+
+
 def render_ally_draw_card(data: dict[str, Any], output_path: Path | str) -> Path:
     """Draw a local Dream Land keepsake and atomically publish its PNG."""
     theme = (
@@ -456,10 +622,13 @@ def render_ally_draw_card(data: dict[str, Any], output_path: Path | str) -> Path
     )
     colors = _PALETTES[theme]
     dark = theme == "银河档案"
-    canvas = Image.new("RGBA", (CARD_WIDTH, CARD_HEIGHT), colors["outer"])
+    layout = _card_layout(data)
+    height = layout["height"]
+    canvas = Image.new("RGBA", (CARD_WIDTH, height), colors["outer"])
+    _material_frame(canvas, dark)
     paper_mask = Image.new("L", canvas.size)
     ImageDraw.Draw(paper_mask).rounded_rectangle(
-        (24, 20, 1000, 1436), radius=44, fill=255
+        (44, 42, 980, height - 42), radius=32, fill=255
     )
     paper = Image.new("RGBA", canvas.size, colors["paper"])
     paper.putalpha(paper_mask)
@@ -472,10 +641,24 @@ def render_ally_draw_card(data: dict[str, Any], output_path: Path | str) -> Path
     sky_mask = paper_mask.crop((0, 0, CARD_WIDTH, 820))
     sky.putalpha(sky_mask)
     canvas.alpha_composite(sky)
+    nacre = _pearl_tile(dark).resize((CARD_WIDTH, 820), Image.Resampling.BICUBIC)
+    fade = Image.new("L", (1, 820))
+    fade.putdata([round(255 * min(1, max(0, (820 - y) / 200))) for y in range(820)])
+    fade = ImageChops.multiply(fade.resize((CARD_WIDTH, 820)), sky_mask)
+    nacre.putalpha(fade.point(lambda a: a * (35 if dark else 65) // 255))
+    canvas.alpha_composite(nacre)
+    sheen = Image.new("RGBA", (CARD_WIDTH, 820))
+    ImageDraw.Draw(sheen).polygon(
+        ((48, 60), (238, 42), (976, 662), (976, 814)),
+        fill=(245, 250, 255, 28 if dark else 48),
+    )
+    sheen = sheen.filter(ImageFilter.GaussianBlur(18))
+    sheen.putalpha(ImageChops.multiply(sheen.getchannel("A"), fade))
+    canvas.alpha_composite(sheen)
     _glow(canvas, (480, 476), (245, 140), "#a59fee" if dark else "#f9cadd", 52)
     draw = ImageDraw.Draw(canvas)
     draw.rounded_rectangle(
-        (40, 36, 984, 1420), radius=34, outline=colors["line"], width=2
+        (48, 46, 976, height - 46), radius=29, outline=colors["line"], width=2
     )
     _star(canvas, (84, 78), 18, colors["gold"])
     _tracked(draw, "KIRBY  /  DAILY ALLY", 118, 68, 16, colors["muted"], 1.7)
@@ -508,7 +691,13 @@ def render_ally_draw_card(data: dict[str, Any], output_path: Path | str) -> Path
     )
     draw.text(
         (80, 220),
-        "把今天的相遇，收藏成一颗星。",
+        _lines(
+            draw,
+            f"收藏者 · {_text(data.get('nickname'), 150) or '旅行者'}",
+            _font(23),
+            664,
+            1,
+        )[0],
         font=_font(23),
         fill=colors["muted"],
         anchor="lt",
@@ -595,109 +784,148 @@ def render_ally_draw_card(data: dict[str, Any], output_path: Path | str) -> Path
     )
     _center(draw, badge, 770, badge_font, chip_ink)
 
-    name = _text(data.get("name"), 250)
-    name_size = 54
-    while name_size > 30 and draw.textlength(name, font=_font(name_size, True)) > 844:
-        name_size -= 2
+    name_size = layout["name_size"]
     name_font = _font(name_size, True)
-    name_lines = _lines(draw, name, name_font, 844, 2)
-    for index, line in enumerate(name_lines):
+    for index, line in enumerate(layout["name_lines"]):
         _center(draw, line, 829 + index * (name_size + 7), name_font, colors["ink"])
-    english_y = max(904, 829 + len(name_lines) * (name_size + 7) + 8)
-    english_lines = _lines(
-        draw, _text(data.get("english_name")), _font(22, latin=True), 830, 1
-    )
-    if english_lines:
+    for index, line in enumerate(layout["english_lines"]):
         _center(
-            draw, english_lines[0], english_y, _font(22, latin=True), colors["accent"]
+            draw,
+            line,
+            layout["english_y"] + index * 29,
+            _font(22, latin=True),
+            colors["accent"],
         )
-    source = _text(data.get("source"), 300)
-    if source:
-        source = source.removeprefix("《").removesuffix("》")
-        source_font = _font(23)
-        source_lines = _lines(draw, source, source_font, 790, 1)
-        _center(draw, "初次登场", 952, _font(16), colors["muted"])
-        _center(draw, f"《{source_lines[0]}》", 978, source_font, colors["ink"])
+    if layout["source_lines"]:
+        _center(draw, "初次登场", layout["source_y"], _font(16), colors["muted"])
+        for index, line in enumerate(layout["source_lines"]):
+            _center(
+                draw,
+                f"《{line}》" if len(layout["source_lines"]) == 1 else line,
+                layout["source_y"] + 26 + index * 32,
+                _font(23),
+                colors["ink"],
+            )
 
-    draw.rounded_rectangle((78, 1030, 946, 1204), radius=28, fill=colors["soft"])
-    _star(canvas, (114, 1068), 13, colors["accent"])
+    top, bottom = layout["profile_top"], layout["profile_bottom"]
+    _raised_panel(canvas, (66, top, 958, bottom), colors)
+    _star(canvas, (104, top + 36), 14, colors["accent"])
     draw.text(
-        (139, 1052),
+        (130, top + 22),
         "伙伴小档案",
-        font=_font(18, True),
+        font=_font(22, True),
         fill=colors["accent"],
         anchor="lt",
     )
-    description = _text(data.get("description"), 600)
-    paragraph = _lines(
-        draw, description or _text(data.get("status_note")), _font(24), 810, 3
+    draw.text(
+        (926, top + 27),
+        "ALLY PROFILE",
+        font=_font(14, latin=True),
+        fill=colors["muted"],
+        anchor="rt",
     )
-    y = 1092 + (3 - len(paragraph)) * 16
-    for line in paragraph:
-        draw.text((108, y), line, font=_font(24), fill=colors["ink"], anchor="lt")
-        y += 33
-    draw.ellipse((80, 1230, 136, 1286), fill=colors["chip"])
+    draw.line((96, top + 60, 928, top + 60), fill=colors["line"], width=1)
+    y = top + 80
+    for line in layout["paragraph"]:
+        draw.text((96, y), line, font=_font(26), fill=colors["ink"], anchor="lt")
+        y += 38
+    if layout["excerpt"]:
+        draw.text(
+            (96, bottom - 34),
+            "卡面节选 · 引用回复「查看简介」继续阅读",
+            font=_font(17),
+            fill=colors["accent"],
+            anchor="lt",
+        )
+
+    owner_y = bottom + 24
+    _raised_panel(canvas, (66, owner_y, 958, owner_y + 88), colors)
+    draw.ellipse((86, owner_y + 17, 138, owner_y + 69), fill=colors["chip"])
     owner = _text(data.get("nickname"), 150) or "旅行者"
     draw.text(
-        (108, 1243), owner[:1], font=_font(25, True), fill=colors["accent"], anchor="mt"
+        (112, owner_y + 28),
+        owner[:1],
+        font=_font(25, True),
+        fill=colors["accent"],
+        anchor="mt",
     )
     draw.text(
-        (154, 1229), "今日收藏者", font=_font(16), fill=colors["muted"], anchor="lt"
+        (156, owner_y + 16),
+        "今日收藏者",
+        font=_font(16),
+        fill=colors["muted"],
+        anchor="lt",
     )
     owner_lines = _lines(draw, owner, _font(26, True), 488, 1)
     draw.text(
-        (154, 1257),
+        (156, owner_y + 44),
         owner_lines[0],
         font=_font(26, True),
         fill=colors["ink"],
         anchor="lt",
     )
     draw.text(
-        (936, 1229), "今日剩余", font=_font(16), fill=colors["muted"], anchor="rt"
+        (928, owner_y + 16),
+        "今日剩余",
+        font=_font(16),
+        fill=colors["muted"],
+        anchor="rt",
     )
     draw.text(
-        (936, 1257),
+        (928, owner_y + 44),
         f"{_number(data.get('remaining'))} 次",
         font=_font(30, True),
         fill=colors["accent"],
         anchor="rt",
     )
-    draw.line((80, 1306, 944, 1306), fill=colors["line"], width=2)
+    progress_y = owner_y + 111
     total = _number(data.get("total"))
     collected = min(total, _number(data.get("collected")))
     if total and data.get("collected") is not None:
         draw.text(
-            (80, 1324),
+            (80, progress_y),
             "收藏进度",
             font=_font(18, True),
             fill=colors["muted"],
             anchor="lt",
         )
         draw.text(
-            (936, 1322),
+            (936, progress_y),
             f"{collected:,} / {total:,}",
             font=_font(22, True, True),
             fill=colors["accent"],
             anchor="rt",
         )
-        draw.rounded_rectangle((80, 1358, 944, 1368), radius=5, fill=colors["soft"])
+        draw.rounded_rectangle(
+            (80, progress_y + 36, 944, progress_y + 48), radius=6, fill=colors["soft"]
+        )
         if collected:
             end = 80 + max(10, round(864 * collected / total))
             draw.rounded_rectangle(
-                (80, 1358, end, 1368), radius=5, fill=colors["accent"]
+                (80, progress_y + 36, end, progress_y + 48),
+                radius=6,
+                fill=colors["accent"],
             )
-            _star(canvas, (end, 1362), 10, colors["gold"])
+            _star(canvas, (end, progress_y + 42), 10, colors["gold"])
     else:
-        _center(draw, _text(data.get("status_note")), 1338, _font(21), colors["muted"])
+        _center(
+            draw,
+            _text(data.get("status_note")),
+            progress_y + 12,
+            _font(21),
+            colors["muted"],
+        )
     hint = _text(data.get("wiki_hint"), 200)
     if hint:
-        for index, line in enumerate(_lines(draw, hint, _font(16), 850, 2)):
-            _center(draw, line, 1386 + index * 23, _font(16), colors["muted"])
+        for index, line in enumerate(_lines(draw, hint, _font(17), 850, 2)):
+            _center(
+                draw, line, progress_y + 80 + index * 25, _font(17), colors["muted"]
+            )
     else:
         _center(
             draw,
             "A LITTLE STAR, A NEW STORY.",
-            1392,
+            progress_y + 86,
             _font(14, latin=True),
             colors["muted"],
         )

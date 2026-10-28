@@ -214,7 +214,7 @@ class WikiTranslationIncompleteError(RuntimeError):
     PLUGIN_ID,
     "Whereis-Alice",
     "星之卡比盟友抽取、收藏图鉴与三百科查询插件",
-    "4.6.1",
+    "4.6.2",
     "https://github.com/Whereis-Alice/astrbot_plugin_kirby_catalog",
 )
 class KirbyCatalogPlugin(Star):
@@ -1501,6 +1501,7 @@ class KirbyCatalogPlugin(Star):
         ).strip()
         if mode not in {"精美卡片", "卡片＋文字"}:
             return await self._ally_chain(outcome.entry, text)
+        card_owner = " ".join(str(nickname or "").split()) or "旅行者"
         entry = outcome.entry
         try:
             image_bytes = await asyncio.to_thread(self.store.asset_bytes, entry, True)
@@ -1516,7 +1517,7 @@ class KirbyCatalogPlugin(Star):
                 self._config_value("ally_draw_card_description_enabled", True)
             ):
                 description = await asyncio.to_thread(
-                    self._ally_description_text, entry, respect_enabled=False
+                    self.store.description_for, entry
                 )
             wiki_hint = (
                 str(
@@ -1529,10 +1530,14 @@ class KirbyCatalogPlugin(Star):
             payload = await asyncio.to_thread(
                 build_ally_draw_card_data,
                 card_entry,
-                nickname=nickname,
+                nickname=card_owner,
                 date=outcome.draw_date or get_today(),
                 remaining=outcome.remaining,
                 description=description,
+                description_max_chars=self._bounded_int(
+                    self._config_value("ally_draw_card_description_max_chars", 1000),
+                    1000, 0, 2000,
+                ),
                 image_bytes=image_bytes,
                 repeated=outcome.repeated,
                 pity=outcome.pity,
@@ -1573,7 +1578,8 @@ class KirbyCatalogPlugin(Star):
                 text
                 if mode == "卡片＋文字"
                 else (
-                    "这是我的今日盟友" if is_bot else "这是你的今日盟友"
+                    f"{card_owner}：这是我的今日盟友" if is_bot
+                    else f"{card_owner}，这是你的今日盟友"
                 )
             )
             return [Comp.Plain(caption), image]
