@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import random
 import tempfile
 import unittest
 from io import BytesIO
@@ -10,12 +12,14 @@ from unittest.mock import patch
 
 from astrbot_plugin_kirby_catalog import ally_draw_card as card_module
 from astrbot_plugin_kirby_catalog.ally_draw_card import (
+    ALLY_DRAW_CARD_RANDOM_THEME,
     ALLY_DRAW_CARD_THEMES,
     CARD_HEIGHT,
     CARD_WIDTH,
     MAX_CARD_HEIGHT,
     build_ally_draw_card_data,
     render_ally_draw_card,
+    select_ally_draw_card_theme,
 )
 from PIL import Image, ImageDraw
 
@@ -24,6 +28,96 @@ def encoded_image(image: Image.Image, format_name: str = "PNG") -> bytes:
     stream = BytesIO()
     image.save(stream, format=format_name)
     return stream.getvalue()
+
+
+class AllyCardThemeSelectionTests(unittest.TestCase):
+    def test_fixed_theme_ignores_random_pool(self):
+        with patch.object(card_module.random.SystemRandom, "choice") as choice:
+            for theme in ALLY_DRAW_CARD_THEMES:
+                self.assertEqual(
+                    select_ally_draw_card_theme(theme, ["毛线物语"]), theme
+                )
+            for invalid in (None, "", "未知主题"):
+                self.assertEqual(select_ally_draw_card_theme(invalid), "星愿收藏")
+        choice.assert_not_called()
+
+    def test_random_pool_filters_invalid_values_and_duplicate_weights(self):
+        candidates = [" 梦泉琉璃 ", "毛线物语", "梦泉琉璃", "未知", None, [], 7]
+        with patch.object(
+            card_module.random.SystemRandom, "choice", return_value="毛线物语"
+        ) as choice:
+            result = select_ally_draw_card_theme(
+                ALLY_DRAW_CARD_RANDOM_THEME, candidates
+            )
+        self.assertEqual(result, "毛线物语")
+        choice.assert_called_once_with(["梦泉琉璃", "毛线物语"])
+        self.assertEqual(candidates[0], " 梦泉琉璃 ")
+
+    def test_empty_or_invalid_pool_uses_all_themes(self):
+        for candidates in (None, [], ["未知", None], "毛线物语", {"毛线物语": True}):
+            with (
+                self.subTest(candidates=candidates),
+                patch.object(
+                    card_module.random.SystemRandom, "choice", return_value="星海航记"
+                ) as choice,
+            ):
+                self.assertEqual(
+                    select_ally_draw_card_theme(
+                        ALLY_DRAW_CARD_RANDOM_THEME, candidates
+                    ),
+                    "星海航记",
+                )
+                choice.assert_called_once_with(list(ALLY_DRAW_CARD_THEMES))
+
+    def test_one_selected_theme_and_auto_aliases(self):
+        with patch.object(card_module.random.SystemRandom, "choice") as choice:
+            for mode in (ALLY_DRAW_CARD_RANDOM_THEME, "随机", "自动"):
+                self.assertEqual(
+                    select_ally_draw_card_theme(mode, ("毛线物语", "毛线物语")),
+                    "毛线物语",
+                )
+        choice.assert_not_called()
+
+    def test_auto_only_returns_selected_styles_without_changing_draw_random_state(self):
+        state = random.getstate()
+        selected = ["梦泉琉璃", "波普漫画"]
+        try:
+            for _ in range(20):
+                self.assertIn(
+                    select_ally_draw_card_theme(ALLY_DRAW_CARD_RANDOM_THEME, selected),
+                    selected,
+                )
+            self.assertEqual(random.getstate(), state)
+        finally:
+            random.setstate(state)
+
+    def test_dashboard_schema_exposes_the_same_selectable_themes(self):
+        schema = json.loads(
+            (Path(__file__).parents[1] / "_conf_schema.json").read_text(
+                encoding="utf-8"
+            )
+        )
+
+        def find(key, value):
+            if isinstance(value, dict):
+                if key in value:
+                    return value[key]
+                for child in value.values():
+                    found = find(key, child)
+                    if found is not None:
+                        return found
+            return None
+
+        theme = find("ally_draw_card_theme", schema)
+        pool = find("ally_draw_card_random_themes", schema)
+        self.assertEqual(
+            theme["options"], [*ALLY_DRAW_CARD_THEMES, ALLY_DRAW_CARD_RANDOM_THEME]
+        )
+        self.assertEqual(theme["default"], "星愿收藏")
+        self.assertEqual(pool["type"], "list")
+        self.assertEqual(pool["render_type"], "checkbox")
+        self.assertEqual(pool["options"], list(ALLY_DRAW_CARD_THEMES))
+        self.assertEqual(pool["default"], list(ALLY_DRAW_CARD_THEMES))
 
 
 class AllyDrawCardTests(unittest.TestCase):
@@ -221,9 +315,15 @@ class AllyDrawCardTests(unittest.TestCase):
             wiki_hint="不得出现的操作提示",
         )
         with tempfile.TemporaryDirectory() as directory:
-            one = render_ally_draw_card(first, Path(directory) / "one.png")
-            two = render_ally_draw_card(second, Path(directory) / "two.png")
-            self.assertEqual(one.read_bytes(), two.read_bytes())
+            for theme in ALLY_DRAW_CARD_THEMES:
+                with self.subTest(theme=theme):
+                    one = render_ally_draw_card(
+                        dict(first, theme=theme), Path(directory) / "one.png"
+                    )
+                    two = render_ally_draw_card(
+                        dict(second, theme=theme), Path(directory) / "two.png"
+                    )
+                    self.assertEqual(one.read_bytes(), two.read_bytes())
 
     def test_small_artwork_is_enlarged_without_cropping_or_changing_aspect_ratio(self):
         source = Image.new("RGBA", (121, 120), (240, 80, 120, 255))

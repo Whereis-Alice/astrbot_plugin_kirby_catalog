@@ -15,12 +15,42 @@ from PIL import Image, ImageChops, ImageColor, ImageDraw, ImageFilter, ImageFont
 
 from .wiki_content import inline_markup_plain
 
-ALLY_DRAW_CARD_THEMES = ("星愿收藏", "银河档案")
+ALLY_DRAW_CARD_THEMES = (
+    "星愿收藏",
+    "银河档案",
+    "梦泉琉璃",
+    "毛线物语",
+    "波普漫画",
+    "星海航记",
+)
+ALLY_DRAW_CARD_RANDOM_THEME = "随机主题（自动）"
 CARD_WIDTH = 1024
 CARD_HEIGHT = 1440
 MAX_CARD_HEIGHT = 3000
 MAX_CARD_DESCRIPTION_CHARS = 2000
 MAX_CARD_DESCRIPTION_LINES = 40
+
+
+def select_ally_draw_card_theme(theme: Any, candidates: Any = None) -> str:
+    """Resolve one card style without consuming the character draw's random state."""
+    selected = str(theme or "").strip()
+    if selected not in {ALLY_DRAW_CARD_RANDOM_THEME, "随机", "自动"}:
+        return (
+            selected if selected in ALLY_DRAW_CARD_THEMES else ALLY_DRAW_CARD_THEMES[0]
+        )
+    pool = []
+    if isinstance(candidates, (list, tuple)):
+        for candidate in candidates:
+            if (
+                isinstance(candidate, str)
+                and candidate.strip() in ALLY_DRAW_CARD_THEMES
+            ):
+                candidate = candidate.strip()
+                if candidate not in pool:
+                    pool.append(candidate)
+    pool = pool or list(ALLY_DRAW_CARD_THEMES)
+    return pool[0] if len(pool) == 1 else random.SystemRandom().choice(pool)
+
 
 _PALETTES = {
     "星愿收藏": {
@@ -793,6 +823,10 @@ def _character_scene(
 
 def _card_layout(data: dict[str, Any]) -> dict[str, Any]:
     """Size an intrinsic character card, independent of the person drawing it."""
+    if data.get("theme") in ALLY_DRAW_CARD_THEMES[2:]:
+        from .ally_card_designs import alternate_card_layout
+
+        return alternate_card_layout(data)
     draw = ImageDraw.Draw(Image.new("RGB", (1, 1)))
     name = _text(data.get("name"), 250) or "未命名盟友"
     size = 54
@@ -848,6 +882,10 @@ def render_ally_draw_card(data: dict[str, Any], output_path: Path | str) -> Path
         if data.get("theme") in ALLY_DRAW_CARD_THEMES
         else ALLY_DRAW_CARD_THEMES[0]
     )
+    if theme in ALLY_DRAW_CARD_THEMES[2:]:
+        from .ally_card_designs import render_alternate_card
+
+        return _save_card(render_alternate_card(data), output_path)
     colors, dark = _PALETTES[theme], theme == "银河档案"
     layout = _card_layout(data)
     height = layout["height"]
@@ -983,6 +1021,10 @@ def render_ally_draw_card(data: dict[str, Any], output_path: Path | str) -> Path
                 fill=colors["ink"],
                 anchor="lt",
             )
+    return _save_card(canvas, output_path)
+
+
+def _save_card(canvas: Image.Image, output_path: Path | str) -> Path:
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
     temporary = output.with_name(f"{output.stem}-tmp-{uuid.uuid4().hex}.png")

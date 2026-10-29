@@ -186,9 +186,51 @@ class DailyDrawCardOutputTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(chain[0].text, self.text)
         self.assertIsInstance(chain[-1], Comp.Image)
 
+    async def test_auto_theme_resolves_once_after_saving_without_an_extra_draw(self):
+        self.plugin.config = {
+            "draw_settings": {
+                "ally_draw_output_mode": "精美卡片",
+                "ally_draw_card_theme": "随机主题（自动）",
+                "ally_draw_card_random_themes": ["波普漫画"],
+                "draw_cooldown_seconds": 0,
+            }
+        }
+        self.plugin._chain_result_with_media = AsyncMock(
+            side_effect=lambda _event, chain, **kwargs: chain
+        )
+
+        def render_saved(data, output):
+            self.assertFalse(self.plugin._draw_lock.locked())
+            self.assertEqual(sum(self.plugin.store.draws.values()), 1)
+            self.assertEqual(data["theme"], "波普漫画")
+            self.assertEqual(data["catalog_id"], self.entry["id"])
+            return self.render(data, output)
+
+        with (
+            patch.object(
+                main_module,
+                "select_ally_draw_card_theme",
+                wraps=main_module.select_ally_draw_card_theme,
+            ) as selector,
+            patch.object(
+                main_module, "render_ally_draw_card", side_effect=render_saved
+            ),
+        ):
+            results = [
+                result async for result in self.plugin.draw_ally(FakeEvent("今日盟友"))
+            ]
+        selector.assert_called_once_with("随机主题（自动）", ["波普漫画"])
+        self.assertEqual(sum(self.plugin.store.draws.values()), 1)
+        self.assertEqual(len(self.plugin.store.group["user-1"]["unlocked"]), 1)
+        self.assertIn("今日剩余：2/3 次", results[0][0].text)
+        event = FakeEvent("素材", [Comp.Reply(id="auto-card", chain=results[0])])
+        self.assertEqual(self.plugin._quoted_target(event), self.entry["filename"])
+
     async def test_bot_command_and_tool_share_card_mode_and_bot_name(self):
         self.plugin.config = {
             "ally_draw_output_mode": "精美卡片",
+            "ally_draw_card_theme": "随机主题（自动）",
+            "ally_draw_card_random_themes": ["梦泉琉璃", "星海航记"],
             "bot_draw_nickname": "爱丽丝",
             "bot_draw_llm_vision_enabled": False,
         }
@@ -197,6 +239,11 @@ class DailyDrawCardOutputTests(unittest.IsolatedAsyncioTestCase):
             side_effect=lambda _event, chain, **kwargs: chain
         )
         with (
+            patch.object(
+                main_module,
+                "select_ally_draw_card_theme",
+                side_effect=["梦泉琉璃", "星海航记"],
+            ) as selector,
             patch.object(
                 main_module,
                 "build_ally_draw_card_data",
@@ -217,6 +264,13 @@ class DailyDrawCardOutputTests(unittest.IsolatedAsyncioTestCase):
             [call.kwargs["nickname"] for call in builder.call_args_list],
             ["爱丽丝", "爱丽丝"],
         )
+        self.assertEqual(
+            [call.kwargs["theme"] for call in builder.call_args_list],
+            ["梦泉琉璃", "星海航记"],
+        )
+        self.assertEqual(selector.call_count, 2)
+        for call in selector.call_args_list:
+            self.assertEqual(call.args, ("随机主题（自动）", ["梦泉琉璃", "星海航记"]))
         self.assertIn("爱丽丝今天的盟友是 瓦豆鲁迪", tool_result)
         self.assertIn("这是一段简体中文盟友简介。", tool_result)
         self.assertTrue(
