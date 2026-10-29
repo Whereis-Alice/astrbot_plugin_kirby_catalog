@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import random
 import re
 import uuid
 from functools import lru_cache
@@ -24,12 +25,12 @@ MAX_CARD_DESCRIPTION_LINES = 40
 _PALETTES = {
     "星愿收藏": {
         "outer": "#eedfe8",
-        "paper": "#fff9ee",
-        "ink": "#493957",
-        "muted": "#7f738a",
-        "accent": "#d66098",
-        "line": "#ecdae5",
-        "soft": "#f9eaf0",
+        "paper": "#ecd0e0",
+        "ink": "#43314f",
+        "muted": "#6f5979",
+        "accent": "#ac3c77",
+        "line": "#ba8cac",
+        "soft": "#d3cfe5",
         "gold": "#ffd65a",
         "glow": "#b8ddf6",
         "chip": "#ffe1ee",
@@ -42,12 +43,12 @@ _PALETTES = {
     },
     "银河档案": {
         "outer": "#0b1532",
-        "paper": "#192c57",
+        "paper": "#263354",
         "ink": "#fff4dd",
         "muted": "#b2c1dc",
         "accent": "#f2a6d0",
         "line": "#40517b",
-        "soft": "#263b66",
+        "soft": "#3e426b",
         "gold": "#ffda6a",
         "glow": "#6775ce",
         "chip": "#64426d",
@@ -476,6 +477,167 @@ def _material_frame(canvas: Image.Image, dark: bool) -> None:
         outline="#cbb581" if dark else "#d9b76b",
         width=2,
     )
+    # Closely spaced foil cuts catch the light along the narrow outer rim.
+    for inset in (26, 29):
+        d.rounded_rectangle(
+            (inset, inset - 2, w - inset, h - inset + 2),
+            radius=48 - (inset - 22),
+            outline="#b5cbd6" if dark else "#f7deb4",
+            width=1,
+        )
+
+
+@lru_cache(maxsize=2)
+def _pigment_tile(dark: bool) -> Image.Image:
+    """Soft overlapping ink washes, kept small before scaling to the card."""
+    pigments = (
+        ("#4a356d", "#20375b", "#385f76", "#564777", "#273352")
+        if dark
+        else ("#eeb6cd", "#d9c3e8", "#b5dbe2", "#e9cbbb", "#d6c4df")
+    )
+    colors = [ImageColor.getrgb(value) for value in pigments]
+    centers = ((0.04, 0.05), (0.95, 0.08), (0.08, 0.80), (0.98, 0.72), (0.5, 1.0))
+    pixels = []
+    for y in range(192):
+        v = y / 191
+        for x in range(128):
+            u = x / 127
+            weights = [
+                math.exp(-((u - cx) ** 2 * 3.8 + (v - cy) ** 2 * 6))
+                for cx, cy in centers
+            ]
+            weight = sum(weights)
+            sheen = math.sin(u * 8 + v * 6 + math.sin(v * 9)) * (3 if dark else 5)
+            pixels.append(
+                tuple(
+                    max(
+                        0,
+                        min(
+                            255,
+                            round(
+                                sum(c[k] * w for c, w in zip(colors, weights)) / weight
+                                + sheen
+                            ),
+                        ),
+                    )
+                    for k in range(3)
+                )
+            )
+    tile = Image.new("RGB", (128, 192))
+    tile.putdata(pixels)
+    return tile.convert("RGBA")
+
+
+@lru_cache(maxsize=1)
+def _paper_grain() -> Image.Image:
+    """Fixed fine fibers: the same character must keep the same image fingerprint."""
+    rng = random.Random(7319)
+    tile = Image.frombytes("L", (128, 128), rng.randbytes(128 * 128))
+    tile = tile.point(lambda value: 125 + value * 7 // 256)
+    draw = ImageDraw.Draw(tile)
+    for index in range(160):
+        x, y = rng.randrange(128), rng.randrange(128)
+        draw.line((x, y, x + 1 + index % 4, y + index % 2), fill=125 + index % 7)
+    return tile
+
+
+def _apply_grain(surface: Image.Image) -> Image.Image:
+    grain = Image.new("L", surface.size, 128)
+    tile = _paper_grain()
+    for y in range(0, surface.height, tile.height):
+        for x in range(0, surface.width, tile.width):
+            grain.paste(tile, (x, y))
+    return ImageChops.add(
+        surface.convert("RGB"), grain.convert("RGB"), offset=-128
+    ).convert("RGBA")
+
+
+@lru_cache(maxsize=2)
+def _emboss_tile(dark: bool) -> Image.Image:
+    """An original staggered pattern of pressed stars and tiny diamond stitches."""
+    tile = Image.new("RGBA", (180, 180))
+    draw = ImageDraw.Draw(tile)
+    shadow = (8, 17, 40, 50) if dark else (111, 65, 112, 36)
+    light = (189, 208, 238, 48) if dark else (255, 246, 217, 115)
+    for x, y, radius in ((38, 34, 16), (128, 124, 16)):
+        points = _rounded_points(
+            [
+                (
+                    x
+                    + math.cos(math.radians(-90 + i * 36))
+                    * radius
+                    * (1 if i % 2 == 0 else 0.48),
+                    y
+                    + math.sin(math.radians(-90 + i * 36))
+                    * radius
+                    * (1 if i % 2 == 0 else 0.48),
+                )
+                for i in range(10)
+            ]
+        )
+        draw.line(
+            [(px, py + 1.5) for px, py in points + points[:1]], fill=light, width=2
+        )
+        draw.line(points + points[:1], fill=shadow, width=1)
+    for x, y in ((128, 34), (38, 124)):
+        draw.line(
+            ((x, y - 5), (x + 4, y), (x, y + 5), (x - 4, y), (x, y - 5)),
+            fill=light,
+            width=1,
+        )
+    return tile
+
+
+def _dream_surface(size: tuple[int, int], dark: bool) -> Image.Image:
+    """Tinted pearlescent stock with a woven star pattern and sweeping foil threads."""
+    width, height = size
+    surface = _pigment_tile(dark).resize(size, Image.Resampling.BICUBIC)
+    pattern = _emboss_tile(dark)
+    for y in range(0, height, pattern.height):
+        for x in range(0, width, pattern.width):
+            surface.alpha_composite(pattern, (x, y))
+    lines = Image.new("RGBA", size)
+    draw = ImageDraw.Draw(lines)
+    # Curving parallel threads run through the sky, title and archive stock.
+    for band, origin in enumerate((-0.22, 0.44, 0.93)):
+        for index in range(8):
+            points = [
+                (
+                    x,
+                    origin * height
+                    + 98 * math.sin(x / width * 4.2 + band)
+                    + x * 0.28
+                    + index * 9,
+                )
+                for x in range(-20, width + 21, 8)
+            ]
+            draw.line(
+                points,
+                fill=(202, 217, 243, 35) if dark else (255, 246, 214, 96),
+                width=1,
+            )
+    surface.alpha_composite(lines)
+    return _apply_grain(surface)
+
+
+def _foil_star(canvas: Image.Image, center: tuple[int, int], radius: int) -> None:
+    """A rounded gold-foil star with an engraved edge and a small specular glint."""
+    size = radius * 2 + 20
+    mask_canvas = Image.new("RGBA", (size, size))
+    _star(mask_canvas, (size // 2, size // 2), radius, "white", angle=-78)
+    mask = mask_canvas.getchannel("A")
+    face = _gradient(mask.size, "#fff0ab", "#bd8542")
+    face.putalpha(mask)
+    bevel = _gradient(mask.size, "#fffadc", "#9e6b3d")
+    bevel.putalpha(ImageChops.subtract(mask, mask.filter(ImageFilter.MinFilter(5))))
+    face.alpha_composite(bevel)
+    position = (center[0] - size // 2, center[1] - size // 2)
+    shadow = Image.new("RGBA", mask.size, "#724866")
+    shadow.putalpha(
+        mask.filter(ImageFilter.GaussianBlur(3)).point(lambda a: a * 70 // 255)
+    )
+    canvas.alpha_composite(shadow, (position[0], position[1] + 3))
+    canvas.alpha_composite(face, position)
 
 
 def _raised_panel(
@@ -487,17 +649,36 @@ def _raised_panel(
     ImageDraw.Draw(mask).rounded_rectangle(
         (16, 16, size[0] - 16, size[1] - 16), radius=26, fill=255
     )
+    # Take the actual card surface beneath the text, so the inlay shares its
+    # pigments and motifs rather than covering them with a white rectangle.
+    face = canvas.crop((left - 16, top - 16, right + 16, bottom + 16))
+    tint = Image.new("RGBA", face.size, colors["paper"])
+    tint.putalpha(156)
+    face.alpha_composite(tint)
     shadow = Image.new("RGBA", size, colors["shadow"])
     shadow.putalpha(
         mask.filter(ImageFilter.GaussianBlur(8)).point(lambda a: a * 35 // 255)
     )
     canvas.alpha_composite(shadow, (left - 16, top - 10))
-    face = _gradient(size, colors["paper"], colors["soft"])
+    face = _apply_grain(face)
     face.putalpha(mask)
     canvas.alpha_composite(face, (left - 16, top - 16))
     d = ImageDraw.Draw(canvas)
-    d.rounded_rectangle(box, radius=26, outline=colors["line"], width=2)
-    d.line((left + 27, top + 3, right - 27, top + 3), fill=colors["cloud"], width=2)
+    dark = colors["paper"] == _PALETTES["银河档案"]["paper"]
+    d.rounded_rectangle(
+        box, radius=26, outline="#9c95aa" if dark else "#bd92ac", width=2
+    )
+    d.rounded_rectangle(
+        (left + 5, top + 5, right - 5, bottom - 5),
+        radius=22,
+        outline="#56617b" if dark else "#f4dbc6",
+        width=1,
+    )
+    d.line(
+        (left + 27, top + 3, right - 27, top + 3),
+        fill="#bec7d7" if dark else "#f9e7c7",
+        width=1,
+    )
 
 
 def _fit_artwork(art: Image.Image, bounds: tuple[int, int]) -> Image.Image:
@@ -521,35 +702,43 @@ def _character_scene(
 ) -> Image.Image:
     """An original Dream Land window: starlit sky, drifting clouds and star trails."""
     width, height = size
-    scene = _gradient(
-        size, "#24234e" if dark else "#f9e7ef", "#425989" if dark else "#bfe5f4"
-    )
+    scene = _dream_surface(size, dark)
     _glow(
         scene,
         (width // 3, height // 3),
         (220, 270),
-        "#8366d8" if dark else "#fff8d9",
+        "#997bde" if dark else "#ffe9b9",
         105,
     )
     _glow(
         scene,
         (width * 4 // 5, height * 2 // 3),
         (270, 180),
-        "#81bddd" if dark else "#e9c9e9",
+        "#66acc8" if dark else "#efafd2",
         80,
     )
-    pearl = _pearl_tile(dark).resize(size, Image.Resampling.BICUBIC)
-    pearl.putalpha(30 if dark else 24)
-    scene.alpha_composite(pearl)
+    ribbons = Image.new("RGBA", size)
+    ribbon_draw = ImageDraw.Draw(ribbons)
+    for index, hue in enumerate(
+        ((167, 132, 221, 54), (105, 193, 209, 55), (234, 181, 193, 36))
+        if dark
+        else ((255, 225, 159, 105), (234, 177, 218, 82), (179, 222, 225, 110))
+    ):
+        points = [
+            (x, height * 0.36 + math.sin(x / width * 4.5 - 0.8) * 140 + index * 72)
+            for x in range(-40, width + 41, 8)
+        ]
+        ribbon_draw.line(points, fill=hue, width=110)
+    scene.alpha_composite(ribbons.filter(ImageFilter.GaussianBlur(28)))
     d = ImageDraw.Draw(scene)
     # Two broad cloud banks form a landscape, rather than a pedestal for art.
     d.ellipse(
         (-190, height - 110, width * 3 // 4, height + 200),
-        fill="#344675" if dark else "#d4ecf6",
+        fill="#3d5378" if dark else "#b6d6e0",
     )
     d.ellipse(
         (width // 3, height - 75, width + 160, height + 180),
-        fill="#283b66" if dark else "#eff8f7",
+        fill="#2f4469" if dark else "#d1dde5",
     )
     d.arc(
         (-95, 80, width + 180, height - 60),
@@ -578,7 +767,7 @@ def _character_scene(
         (87, height - 177, 16),
         (width - 66, height - 95, 20),
     ):
-        _star(scene, (x, y), radius, colors["gold"], angle=-76)
+        _foil_star(scene, (x, y), radius)
     _cloud(scene, 16, height - 135, 204, colors)
     _cloud(scene, width - 237, height - 96, 220, colors)
     if dark:
@@ -589,7 +778,7 @@ def _character_scene(
             outline="#90a5c2",
             width=1,
         )
-        _star(scene, (cx, cy), 47, "#ffe49a", angle=-75)
+        _foil_star(scene, (cx, cy), 47)
         d.ellipse((cx - 18, cy - 7, cx - 1, cy + 4), fill="#89b78a")
         d.ellipse((cx + 5, cy + 9, cx + 23, cy + 20), fill="#89b78a")
         d.arc((cx - 78, cy - 30, cx + 78, cy + 39), 12, 165, fill="#c3d4d8", width=2)
@@ -599,7 +788,7 @@ def _character_scene(
         fill=(255, 255, 249, 28),
     )
     scene.alpha_composite(film.filter(ImageFilter.GaussianBlur(20)))
-    return scene
+    return _apply_grain(scene)
 
 
 def _card_layout(data: dict[str, Any]) -> dict[str, Any]:
@@ -668,7 +857,7 @@ def render_ally_draw_card(data: dict[str, Any], output_path: Path | str) -> Path
     ImageDraw.Draw(paper_mask).rounded_rectangle(
         (44, 42, 980, height - 42), radius=32, fill=255
     )
-    paper = _gradient(canvas.size, colors["paper"], colors["soft"])
+    paper = _dream_surface(canvas.size, dark)
     paper.putalpha(paper_mask)
     canvas.alpha_composite(paper)
     draw = ImageDraw.Draw(canvas)
@@ -756,6 +945,14 @@ def render_ally_draw_card(data: dict[str, Any], output_path: Path | str) -> Path
 
     source_top = layout["source_top"]
     if layout["source_lines"]:
+        for left, right in ((116, 420), (604, 908)):
+            draw.line(
+                (left, source_top + 15, right, source_top + 15),
+                fill="#8993b1" if dark else "#be94aa",
+                width=1,
+            )
+        _foil_star(canvas, (98, source_top + 15), 7)
+        _foil_star(canvas, (926, source_top + 15), 7)
         _center(draw, "首次登场", source_top + 5, _font(16), colors["muted"])
         for index, line in enumerate(layout["source_lines"]):
             _center(
