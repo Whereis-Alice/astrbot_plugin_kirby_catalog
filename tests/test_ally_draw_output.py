@@ -62,7 +62,9 @@ class DailyDrawCardOutputTests(unittest.IsolatedAsyncioTestCase):
             main_module, "render_ally_draw_card", side_effect=self.render
         ):
             chain = await self.plugin._daily_ally_chain(self.outcome, "狐狸", self.text)
-        self.assertEqual(chain[0].text, "狐狸，这是你的今日盟友")
+        self.assertEqual(chain[0].text.splitlines()[0], "狐狸，这是你的今日盟友")
+        self.assertIn("今日剩余：2 次", chain[0].text)
+        self.assertIn("回复「素材」", chain[0].text)
         self.assertEqual(len(chain), 2)
         quoted = Comp.Reply(id="card-message", chain=chain)
         event = FakeEvent("卡比百科", [quoted])
@@ -79,7 +81,8 @@ class DailyDrawCardOutputTests(unittest.IsolatedAsyncioTestCase):
             chain = await self.plugin._daily_ally_chain(
                 self.outcome, "收藏者", self.text
             )
-        self.assertEqual(chain[0].text, self.text)
+        self.assertTrue(chain[0].text.startswith(self.text + "\n"))
+        self.assertEqual(chain[0].text.count(self.text), 1)
         self.assertIsInstance(chain[-1], Comp.Image)
 
     async def test_payload_honours_theme_description_hint_and_draw_state(self):
@@ -112,7 +115,7 @@ class DailyDrawCardOutputTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["nickname"], "真实收藏者")
         self.assertEqual(payload["remaining"], 0)
         self.assertEqual(payload["description"], "")
-        self.assertEqual(payload["wiki_hint"], "引用本条消息回复「素材」获取角色素材。")
+        self.assertEqual(payload["wiki_hint"], "")
         for state in ("repeated", "pity", "existing_today", "all_unlocked"):
             self.assertTrue(payload[state])
         self.assertEqual(builder.call_args.args[0]["name_en"], "Waddle Dee")
@@ -199,7 +202,7 @@ class DailyDrawCardOutputTests(unittest.IsolatedAsyncioTestCase):
             ]
             tool_result = await self.plugin.draw_bot_ally_tool(FakeEvent("Bot今日盟友"))
         self.assertEqual(len(results[0]), 2)
-        self.assertEqual(results[0][0].text, "爱丽丝：这是我的今日盟友")
+        self.assertEqual(results[0][0].text.splitlines()[0], "爱丽丝：这是我的今日盟友")
         self.assertEqual(
             [call.kwargs["nickname"] for call in builder.call_args_list],
             ["爱丽丝", "爱丽丝"],
@@ -377,6 +380,39 @@ class DailyDrawCardOutputTests(unittest.IsolatedAsyncioTestCase):
         self.assertLess(
             len(self.plugin._ally_description_text(self.entry)), len(description)
         )
+
+    async def test_draw_metadata_and_configured_hint_are_sent_in_caption(self):
+        self.plugin.config = {
+            "ally_draw_output_mode": "精美卡片",
+            "ally_wiki_hint_text": "引用卡比百科继续阅读。",
+        }
+        outcome = AllyDrawOutcome(
+            self.entry, remaining=4, repeated=False, pity=True, collected=36, total=1353
+        )
+        with patch.object(
+            main_module, "render_ally_draw_card", side_effect=self.render
+        ):
+            chain = await self.plugin._daily_ally_chain(outcome, "狐狸", self.text)
+        caption = chain[0].text
+        self.assertIn("保底邂逅", caption)
+        self.assertIn("今日剩余：4 次", caption)
+        self.assertIn("收藏进度：36 / 1,353", caption)
+        self.assertIn("回复「素材」", caption)
+        self.assertIn("引用卡比百科继续阅读。", caption)
+        self.assertEqual(self.plugin.store.draws, {})
+
+    def test_full_custom_text_keeps_existing_remaining_and_wiki_hint_once(self):
+        original = "自定义狐狸文案\n今日剩余次数：2\n引用卡比百科继续阅读。"
+        caption = self.plugin._daily_ally_card_caption(
+            self.outcome,
+            "狐狸",
+            original,
+            mode="卡片＋文字",
+            wiki_hint="引用卡比百科继续阅读。",
+        )
+        self.assertTrue(caption.startswith(original + "\n"))
+        self.assertEqual(caption.count("今日剩余"), 1)
+        self.assertEqual(caption.count("引用卡比百科继续阅读。"), 1)
 
     async def test_quote_material_keeps_an_animated_original(self):
         path = Path(self.temporary.name) / "animated.gif"

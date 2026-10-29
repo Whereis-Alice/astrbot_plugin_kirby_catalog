@@ -214,7 +214,7 @@ class WikiTranslationIncompleteError(RuntimeError):
     PLUGIN_ID,
     "Whereis-Alice",
     "星之卡比盟友抽取、收藏图鉴与三百科查询插件",
-    "4.6.2",
+    "4.7.0",
     "https://github.com/Whereis-Alice/astrbot_plugin_kirby_catalog",
 )
 class KirbyCatalogPlugin(Star):
@@ -1492,6 +1492,40 @@ class KirbyCatalogPlugin(Star):
             chain[0] = Comp.Plain(f"{text}\n图片暂时不可用，请管理员检查素材。")
         return chain
 
+    @staticmethod
+    def _daily_ally_card_caption(
+        outcome: AllyDrawOutcome, nickname: str, text: str, *,
+        mode: str, is_bot: bool = False, wiki_hint: str = "",
+    ) -> str:
+        """Keep personal draw state and reply instructions outside the character card."""
+        base = text if mode == "卡片＋文字" else (
+            f"{nickname}：这是我的今日盟友" if is_bot
+            else f"{nickname}，这是你的今日盟友"
+        )
+        if outcome.existing_today:
+            status = "今日已相遇"
+        elif outcome.all_unlocked:
+            status = "图鉴已集齐"
+        elif outcome.pity:
+            status = "保底邂逅"
+        elif outcome.repeated:
+            status = "再度同行"
+        else:
+            status = "初次相遇"
+        details = [status]
+        if not any(label in base for label in ("今日剩余", "剩余次数", "今日余次")):
+            details.append(f"今日剩余：{outcome.remaining} 次")
+        if outcome.collected is not None and outcome.total:
+            collected = min(outcome.total, max(0, outcome.collected))
+            details.append(f"收藏进度：{collected:,} / {outcome.total:,}")
+        lines = [base, " · ".join(details)]
+        material_hint = "引用本条消息回复「素材」获取角色素材；回复「查看简介」阅读资料。"
+        if material_hint not in base:
+            lines.append(material_hint)
+        if wiki_hint and wiki_hint not in base:
+            lines.append(wiki_hint)
+        return "\n".join(lines)
+
     async def _daily_ally_chain(
         self, outcome: AllyDrawOutcome, nickname: str, text: str, *, is_bot: bool = False
     ) -> list[Any]:
@@ -1548,9 +1582,7 @@ class KirbyCatalogPlugin(Star):
                 theme=str(
                     self._config_value("ally_draw_card_theme", "星愿收藏") or "星愿收藏"
                 ),
-                wiki_hint="\n".join(value for value in (
-                    "引用本条消息回复「素材」获取角色素材。", wiki_hint
-                ) if value),
+                wiki_hint=wiki_hint,
             )
             cache_dir = await asyncio.to_thread(self._media_cache_dir)
             rendered = await asyncio.to_thread(
@@ -1574,13 +1606,9 @@ class KirbyCatalogPlugin(Star):
             )
             # The reference registry resolves quoted cards without repeating
             # their name or catalogue number in the human caption.
-            caption = (
-                text
-                if mode == "卡片＋文字"
-                else (
-                    f"{card_owner}：这是我的今日盟友" if is_bot
-                    else f"{card_owner}，这是你的今日盟友"
-                )
+            caption = self._daily_ally_card_caption(
+                outcome, card_owner, text, mode=mode,
+                is_bot=is_bot, wiki_hint=wiki_hint,
             )
             return [Comp.Plain(caption), image]
         except Exception as exc:

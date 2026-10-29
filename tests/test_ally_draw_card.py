@@ -206,3 +206,73 @@ class AllyDrawCardTests(unittest.TestCase):
             self.assertEqual(sizes[0], CARD_HEIGHT)
             self.assertGreater(sizes[1], sizes[0])
             self.assertGreaterEqual(sizes[2], sizes[1])
+
+    def test_pure_card_pixels_are_independent_of_collector_date_and_draw_state(self):
+        first = self.card_data(description="卡比是星之卡比系列的主角。")
+        second = dict(
+            first,
+            nickname="不同收藏者",
+            date="2099.12.31",
+            remaining=99,
+            collected=999,
+            total=2000,
+            status="保底邂逅",
+            status_note="不得出现的抽取状态",
+            wiki_hint="不得出现的操作提示",
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            one = render_ally_draw_card(first, Path(directory) / "one.png")
+            two = render_ally_draw_card(second, Path(directory) / "two.png")
+            self.assertEqual(one.read_bytes(), two.read_bytes())
+
+    def test_small_artwork_is_enlarged_without_cropping_or_changing_aspect_ratio(self):
+        source = Image.new("RGBA", (121, 120), (240, 80, 120, 255))
+        fitted = card_module._fit_artwork(source, (816, 720))
+        self.assertEqual(fitted.size, (726, 720))
+        self.assertEqual(fitted.getpixel((0, 0)), source.getpixel((0, 0)))
+        for dimensions in ((90, 240), (240, 90)):
+            with self.subTest(dimensions=dimensions):
+                art = Image.new("RGBA", dimensions, (50, 100, 200, 255))
+                fitted = card_module._fit_artwork(art, (816, 720))
+                self.assertLessEqual(fitted.width, 816)
+                self.assertLessEqual(fitted.height, 720)
+                self.assertAlmostEqual(
+                    fitted.width / fitted.height,
+                    dimensions[0] / dimensions[1],
+                    delta=0.01,
+                )
+
+    def test_card_text_contains_only_character_information(self):
+        data = self.card_data(
+            description="卡比是星之卡比系列的主角。", wiki_hint="引用回复素材"
+        )
+        seen = []
+        original = ImageDraw.ImageDraw.text
+
+        def capture(draw, xy, text, *args, **kwargs):
+            seen.append(str(text))
+            return original(draw, xy, text, *args, **kwargs)
+
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch.object(ImageDraw.ImageDraw, "text", capture),
+        ):
+            render_ally_draw_card(data, Path(directory) / "character.png")
+        visible = "\n".join(seen)
+        self.assertIn("简介", visible)
+        self.assertIn("卡比", visible)
+        for text in (
+            "今日盟友",
+            "KIRBY",
+            "DAILY ALLY",
+            "ALLY PROFILE",
+            "收藏者",
+            "旅行者",
+            "2026",
+            "今日剩余",
+            "收藏进度",
+            "引用",
+            "伙伴小档案",
+            "初次相遇",
+        ):
+            self.assertNotIn(text, visible)
