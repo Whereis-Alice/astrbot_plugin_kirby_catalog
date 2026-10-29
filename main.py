@@ -183,6 +183,7 @@ class AllyDrawOutcome:
     collected: int | None = None
     total: int | None = None
     draw_date: str = ""
+    daily_limit: int | None = None
 
 
 class WikiTranslationIncompleteError(RuntimeError):
@@ -214,7 +215,7 @@ class WikiTranslationIncompleteError(RuntimeError):
     PLUGIN_ID,
     "Whereis-Alice",
     "星之卡比盟友抽取、收藏图鉴与三百科查询插件",
-    "4.7.1",
+    "4.7.2",
     "https://github.com/Whereis-Alice/astrbot_plugin_kirby_catalog",
 )
 class KirbyCatalogPlugin(Star):
@@ -722,6 +723,12 @@ class KirbyCatalogPlugin(Star):
         if card_target:
             return card_target
         text = self._quoted_text(event)
+        match = re.search(
+            r"(?:你|我)今天的盟友是[ \t]+([^\n]+?)（(?:NEW|重复)）[ \t]*(?:\n|$)",
+            text,
+        )
+        if match:
+            return match.group(1).strip()
         match = re.search(
             r"(?:#|(?:编号|序号)\s*[:：]?)\s*(\d+)", text, re.IGNORECASE
         )
@@ -1493,37 +1500,69 @@ class KirbyCatalogPlugin(Star):
         return chain
 
     @staticmethod
-    def _daily_ally_card_caption(
-        outcome: AllyDrawOutcome, nickname: str, text: str, *,
-        mode: str, is_bot: bool = False, wiki_hint: str = "",
-    ) -> str:
-        """Keep personal draw state and reply instructions outside the character card."""
-        base = text if mode == "卡片＋文字" else (
-            f"{nickname}：这是我的今日盟友" if is_bot
-            else f"{nickname}，这是你的今日盟友"
+    def _daily_ally_card_name(entry: Dict[str, Any]) -> str:
+        """Prefer a saved Chinese name, including administrator edits, then English."""
+        names = [
+            " ".join(str(entry.get(key) or "").split())
+            for key in ("name", "name_zh", "display_name", "name_en", "page_title")
+        ]
+        for name in names[:3]:
+            if re.search(r"[\u3400-\u9fff]", name):
+                # Remove only a known bilingual suffix; keep variant labels
+                # such as EX or DX that are part of the character's identity.
+                for english in names[3:]:
+                    if english and not re.search(r"[\u3400-\u9fff]", english):
+                        name = re.sub(
+                            r"[（(]\s*" + re.escape(english) + r"\s*[）)]",
+                            "", name, flags=re.IGNORECASE,
+                        )
+                return name.strip()
+        return next(
+            (name for name in (names[3], names[4], names[0], names[1], names[2]) if name),
+            "未命名盟友",
         )
-        if outcome.existing_today:
-            status = "今日已相遇"
-        elif outcome.all_unlocked:
-            status = "图鉴已集齐"
-        elif outcome.pity:
-            status = "保底邂逅"
-        elif outcome.repeated:
-            status = "再度同行"
+
+    def _daily_ally_card_caption(
+        self, outcome: AllyDrawOutcome, nickname: str, text: str, *,
+        mode: str, is_bot: bool = False, wiki_hint: str = "",
+        entry: Dict[str, Any] | None = None,
+    ) -> str:
+        """Compose one caption and one consolidated quoted-command hint."""
+        name = self._daily_ally_card_name(entry or outcome.entry)
+        status = (
+            "重复" if (outcome.repeated or outcome.existing_today or outcome.all_unlocked)
+            else "NEW"
+        )
+        if mode == "卡片＋文字":
+            # This exact configured hint was already inserted by the detail
+            # formatter. Replace it with the single command list below.
+            base = text.replace(wiki_hint, "").strip() if wiki_hint else text.strip()
         else:
-            status = "初次相遇"
-        details = [status]
-        if not any(label in base for label in ("今日剩余", "剩余次数", "今日余次")):
-            details.append(f"今日剩余：{outcome.remaining} 次")
+            subject = (
+                f"{nickname}：我今天的盟友是" if is_bot
+                else f"{nickname}，你今天的盟友是"
+            )
+            base = f"{subject} {name}（{status}）"
+        daily_limit = outcome.daily_limit
+        if daily_limit is None:
+            daily_limit = max(1, int(self._config_value("daily_draw_limit", 3)))
+        details = []
+        if mode != "卡片＋文字" or not any(
+            label in base for label in ("今日剩余", "剩余次数", "今日余次")
+        ):
+            details.append(f"今日剩余：{outcome.remaining}/{daily_limit} 次")
         if outcome.collected is not None and outcome.total:
             collected = min(outcome.total, max(0, outcome.collected))
-            details.append(f"收藏进度：{collected:,} / {outcome.total:,}")
-        lines = [base, " · ".join(details)]
-        material_hint = "引用本条消息回复「素材」获取角色素材；回复「查看简介」阅读资料。"
-        if material_hint not in base:
-            lines.append(material_hint)
-        if wiki_hint and wiki_hint not in base:
-            lines.append(wiki_hint)
+            details.append(f"进度：{collected:,} / {outcome.total:,}")
+        lines = [base]
+        if details:
+            lines.append(" · ".join(details))
+        commands = "素材、查看简介或卡比百科" if self._bool_value(
+            self._config_value("ally_wiki_hint_enabled", True)
+        ) else "素材或查看简介"
+        hint = f"可引用本条消息回复：{commands}"
+        if hint not in base:
+            lines.append(hint)
         return "\n".join(lines)
 
     async def _daily_ally_chain(
@@ -1604,11 +1643,11 @@ class KirbyCatalogPlugin(Star):
                 if rendered.startswith(("http://", "https://"))
                 else Comp.Image.fromFileSystem(rendered)
             )
-            # The reference registry resolves quoted cards without repeating
-            # their name or catalogue number in the human caption.
+            # Quoted cards are resolved through the reference registry; the
+            # caption can use the localized name without a catalogue number.
             caption = self._daily_ally_card_caption(
                 outcome, card_owner, text, mode=mode,
-                is_bot=is_bot, wiki_hint=wiki_hint,
+                is_bot=is_bot, wiki_hint=wiki_hint, entry=card_entry,
             )
             return [Comp.Plain(caption), image]
         except Exception as exc:
@@ -8052,6 +8091,7 @@ class KirbyCatalogPlugin(Star):
                                 collected=collected,
                                 total=total,
                                 draw_date=today,
+                                daily_limit=limit,
                             ),
                             None,
                         )
@@ -8101,6 +8141,7 @@ class KirbyCatalogPlugin(Star):
                 collected=collected,
                 total=total,
                 draw_date=today,
+                daily_limit=limit,
             ),
             None,
         )

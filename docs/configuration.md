@@ -43,7 +43,7 @@
 | `ally_description_view_mode` | `查看简介` 使用普通消息、合并转发或简介卡片 |
 | `ally_description_card_template` | 简介卡片模板：梦之泉、卡比粉彩、瓦豆鲁迪或星际档案 |
 | `ally_wiki_hint_enabled` | 是否显示引用查询百科的提示，默认开启 |
-| `ally_wiki_hint_text` | 自定义百科提示内容 |
+| `ally_wiki_hint_text` | 原文字消息的自定义百科提示内容；今日盟友两种卡牌模式统一使用单行引用命令列表 |
 | `ally_detail_template` | 编排基础文案、简介和百科提示 |
 | `bot_draw_enabled` | 启用 `Bot今日盟友` 和 Bot 抽取 LLM 工具；工具会主动发群消息和素材图 |
 | `bot_draw_nickname` | Bot 独立身份的显示名称 |
@@ -56,7 +56,7 @@
 
 `ally_detail_template` 支持 `{base}`、`{description}`、`{description_block}`、`{wiki_hint}` 和 `{wiki_hint_block}`。`description_block` 会自动生成换行、`简介：` 标题和正文；`wiki_hint_block` 会自动在提示前换行。模板字段错误时插件会记录警告并回退到默认编排。
 
-今日盟友卡片在本机以 Pillow 生成，只展示角色名称、图鉴编号、立绘、首次登场和简介。“精美卡片”配文以“狐狸，这是你的今日盟友”等昵称提示开头，抽取状态、剩余次数、收藏进度与引用操作说明放在文字中；“卡片＋文字”保留完整自定义文案，再补充这些信息。卡面简介由 `ally_draw_card_description_enabled` 和 `ally_draw_card_description_max_chars` 独立控制；百科提示遵守现有提示开关。小立绘按比例放大，原素材文件不变。
+今日盟友卡片在本机以 Pillow 生成，只展示角色名称、图鉴编号、立绘、首次登场和简介。“精美卡片”使用三行配文：昵称与中文名称（无中文时用英文）、NEW／重复；剩余次数／当日额度与进度；合并后的引用命令列表。额度包含管理员增加的机会。“卡片＋文字”保留主体自定义文案与已有余次格式，将自动附带的百科提示替换为同一行命令列表。卡面简介由 `ally_draw_card_description_enabled` 和 `ally_draw_card_description_max_chars` 独立控制；`ally_wiki_hint_enabled` 控制命令列表是否包含“卡比百科”。小立绘按比例放大，原素材文件不变。
 
 卡片方式同样适用于 `Bot今日盟友` 和 Bot 抽取 LLM 工具。图片准备与绘制在后台线程执行，抽取结果先保存再渲染；生成失败时使用原文字和素材图，不会再次抽取或重复扣次数。`随机盟友`、`查盟友` 继续使用各自现有输出方式。
 
