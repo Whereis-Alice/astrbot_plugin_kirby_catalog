@@ -258,7 +258,7 @@ class DailyDrawCardOutputTests(unittest.IsolatedAsyncioTestCase):
             tool_result = await self.plugin.draw_bot_ally_tool(FakeEvent("Bot今日盟友"))
         self.assertEqual(len(results[0]), 2)
         self.assertEqual(
-            results[0][0].text.splitlines()[0], "爱丽丝：我今天的盟友是 瓦豆鲁迪（NEW）"
+            results[0][0].text.splitlines()[0], "我今天的盟友是 瓦豆鲁迪（NEW）"
         )
         self.assertEqual(
             [call.kwargs["nickname"] for call in builder.call_args_list],
@@ -602,6 +602,8 @@ class DailyDrawCardOutputTests(unittest.IsolatedAsyncioTestCase):
             ("狐狸，你今天的盟友是 瓦豆鲁迪（NEW）", "瓦豆鲁迪"),
             ("狐狸，你今天的盟友是 Waddle Dee（重复）", "Waddle Dee"),
             ("爱丽丝：我今天的盟友是 瓦豆鲁迪（NEW）", "瓦豆鲁迪"),
+            ("我今天的盟友是 瓦豆鲁迪（NEW）", "瓦豆鲁迪"),
+            ("我今天的盟友是 Waddle Dee（重复）", "Waddle Dee"),
         ):
             event = FakeEvent(
                 "素材",

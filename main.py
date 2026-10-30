@@ -217,7 +217,7 @@ class WikiTranslationIncompleteError(RuntimeError):
     PLUGIN_ID,
     "Whereis-Alice",
     "星之卡比盟友抽取、收藏图鉴与三百科查询插件",
-    "4.8.0",
+    "4.8.1",
     "https://github.com/Whereis-Alice/astrbot_plugin_kirby_catalog",
 )
 class KirbyCatalogPlugin(Star):
@@ -1541,7 +1541,7 @@ class KirbyCatalogPlugin(Star):
             base = text.replace(wiki_hint, "").strip() if wiki_hint else text.strip()
         else:
             subject = (
-                f"{nickname}：我今天的盟友是" if is_bot
+                "我今天的盟友是" if is_bot
                 else f"{nickname}，你今天的盟友是"
             )
             base = f"{subject} {name}（{status}）"
