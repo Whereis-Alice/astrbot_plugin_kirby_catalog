@@ -55,8 +55,8 @@ def yugioh_ally_card_data(data: dict[str, Any]) -> CardData:
         descriptor_parts=("简介",) if description else (),
         description=description,
         rail_left=english if english.casefold() != name.casefold() else "",
-        rail_right=f"#{_number(data.get('catalog_id')):04d}",
         footer_left=f"首次登场 · {source}" if source else "",
+        footer_right=f"#{_number(data.get('catalog_id')):04d}",
     )
 
 

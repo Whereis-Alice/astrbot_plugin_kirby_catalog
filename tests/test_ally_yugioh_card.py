@@ -105,9 +105,10 @@ class YugiohAllyCardTests(unittest.TestCase):
         payload = self.payload()
         model = yugioh_ally_card_data(payload)
         self.assertEqual(
-            (model.title, model.rail_left, model.rail_right),
+            (model.title, model.rail_left, model.footer_right),
             ("魔法洛亚", "Magolor", "#0854"),
         )
+        self.assertEqual(model.rail_right, "")
         self.assertIn("星之卡比 Wii", model.footer_left)
         self.assertEqual(model.description, payload["description"])
         self.assertEqual(model.descriptor_parts, ("简介",))
