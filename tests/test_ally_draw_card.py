@@ -16,7 +16,9 @@ from astrbot_plugin_kirby_catalog.ally_draw_card import (
     ALLY_DRAW_CARD_THEMES,
     CARD_HEIGHT,
     CARD_WIDTH,
+    KIRBY_DRAW_CARD_THEMES,
     MAX_CARD_HEIGHT,
+    YUGIOH_DRAW_CARD_THEME,
     build_ally_draw_card_data,
     render_ally_draw_card,
     select_ally_draw_card_theme,
@@ -67,11 +69,16 @@ class AllyCardThemeSelectionTests(unittest.TestCase):
                     ),
                     "星海航记",
                 )
-                choice.assert_called_once_with(list(ALLY_DRAW_CARD_THEMES))
+                choice.assert_called_once_with(list(KIRBY_DRAW_CARD_THEMES))
 
     def test_one_selected_theme_and_auto_aliases(self):
         with patch.object(card_module.random.SystemRandom, "choice") as choice:
-            for mode in (ALLY_DRAW_CARD_RANDOM_THEME, "随机", "自动"):
+            for mode in (
+                ALLY_DRAW_CARD_RANDOM_THEME,
+                "随机主题（自动）",
+                "随机",
+                "自动",
+            ):
                 self.assertEqual(
                     select_ally_draw_card_theme(mode, ("毛线物语", "毛线物语")),
                     "毛线物语",
@@ -111,13 +118,18 @@ class AllyCardThemeSelectionTests(unittest.TestCase):
         theme = find("ally_draw_card_theme", schema)
         pool = find("ally_draw_card_random_themes", schema)
         self.assertEqual(
-            theme["options"], [*ALLY_DRAW_CARD_THEMES, ALLY_DRAW_CARD_RANDOM_THEME]
+            theme["options"],
+            [
+                ALLY_DRAW_CARD_RANDOM_THEME,
+                YUGIOH_DRAW_CARD_THEME,
+                *KIRBY_DRAW_CARD_THEMES,
+            ],
         )
-        self.assertEqual(theme["default"], "星愿收藏")
+        self.assertEqual(theme["default"], ALLY_DRAW_CARD_RANDOM_THEME)
         self.assertEqual(pool["type"], "list")
         self.assertEqual(pool["render_type"], "checkbox")
-        self.assertEqual(pool["options"], list(ALLY_DRAW_CARD_THEMES))
-        self.assertEqual(pool["default"], list(ALLY_DRAW_CARD_THEMES))
+        self.assertEqual(pool["options"], list(KIRBY_DRAW_CARD_THEMES))
+        self.assertEqual(pool["default"], list(KIRBY_DRAW_CARD_THEMES))
 
 
 class AllyDrawCardTests(unittest.TestCase):
@@ -188,7 +200,7 @@ class AllyDrawCardTests(unittest.TestCase):
             "source": "星之卡比特别纪念作品与远方银河的故事" * 40,
         }
         with tempfile.TemporaryDirectory() as directory:
-            for theme in ALLY_DRAW_CARD_THEMES:
+            for theme in KIRBY_DRAW_CARD_THEMES:
                 with self.subTest(theme=theme):
                     data = build_ally_draw_card_data(
                         entry,
@@ -315,7 +327,7 @@ class AllyDrawCardTests(unittest.TestCase):
             wiki_hint="不得出现的操作提示",
         )
         with tempfile.TemporaryDirectory() as directory:
-            for theme in ALLY_DRAW_CARD_THEMES:
+            for theme in KIRBY_DRAW_CARD_THEMES:
                 with self.subTest(theme=theme):
                     one = render_ally_draw_card(
                         dict(first, theme=theme), Path(directory) / "one.png"

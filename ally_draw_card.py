@@ -15,7 +15,7 @@ from PIL import Image, ImageChops, ImageColor, ImageDraw, ImageFilter, ImageFont
 
 from .wiki_content import inline_markup_plain
 
-ALLY_DRAW_CARD_THEMES = (
+KIRBY_DRAW_CARD_THEMES = (
     "星愿收藏",
     "银河档案",
     "梦泉琉璃",
@@ -23,7 +23,10 @@ ALLY_DRAW_CARD_THEMES = (
     "波普漫画",
     "星海航记",
 )
-ALLY_DRAW_CARD_RANDOM_THEME = "随机主题（自动）"
+ALLY_DRAW_CARD_RANDOM_THEME = "卡比卡面随机"
+YUGIOH_DRAW_CARD_THEME = "游戏王卡面随机"
+YUGIOH_DRAW_CARD_EDITIONS = ("C", "R", "SR", "SSR", "SHINY")
+ALLY_DRAW_CARD_THEMES = (*KIRBY_DRAW_CARD_THEMES, YUGIOH_DRAW_CARD_THEME)
 CARD_WIDTH = 1024
 CARD_HEIGHT = 1440
 MAX_CARD_HEIGHT = 3000
@@ -34,7 +37,12 @@ MAX_CARD_DESCRIPTION_LINES = 40
 def select_ally_draw_card_theme(theme: Any, candidates: Any = None) -> str:
     """Resolve one card style without consuming the character draw's random state."""
     selected = str(theme or "").strip()
-    if selected not in {ALLY_DRAW_CARD_RANDOM_THEME, "随机", "自动"}:
+    if selected not in {
+        ALLY_DRAW_CARD_RANDOM_THEME,
+        "随机主题（自动）",
+        "随机",
+        "自动",
+    }:
         return (
             selected if selected in ALLY_DRAW_CARD_THEMES else ALLY_DRAW_CARD_THEMES[0]
         )
@@ -43,12 +51,12 @@ def select_ally_draw_card_theme(theme: Any, candidates: Any = None) -> str:
         for candidate in candidates:
             if (
                 isinstance(candidate, str)
-                and candidate.strip() in ALLY_DRAW_CARD_THEMES
+                and candidate.strip() in KIRBY_DRAW_CARD_THEMES
             ):
                 candidate = candidate.strip()
                 if candidate not in pool:
                     pool.append(candidate)
-    pool = pool or list(ALLY_DRAW_CARD_THEMES)
+    pool = pool or list(KIRBY_DRAW_CARD_THEMES)
     return pool[0] if len(pool) == 1 else random.SystemRandom().choice(pool)
 
 
@@ -187,11 +195,15 @@ def build_ally_draw_card_data(
     english_match = re.search(r"[（(]([^（）()]*[A-Za-z][^（）()]*)[）)]", display_name)
     english = _text(
         entry.get("name_en")
-        or (english_match.group(1) if english_match else entry.get("page_title")),
+        or entry.get("page_title")
+        or (english_match.group(1) if english_match else ""),
         250,
     )
     name = display_name
-    if english_match:
+    if (
+        english_match
+        and english_match.group(1).strip().casefold() == english.casefold()
+    ):
         name = (name[: english_match.start()] + name[english_match.end() :]).strip()
     source = _text(
         entry.get("source")
@@ -211,7 +223,7 @@ def build_ally_draw_card_data(
         status, note = "再度同行", "熟悉的身影，也有新的故事。"
     else:
         status, note = "初次相遇", "把今天的惊喜，留在这一页。"
-    return {
+    data = {
         "name": name or display_name,
         "english_name": english,
         "catalog_id": _number(entry.get("id") or entry.get("catalog_id")),
@@ -235,6 +247,13 @@ def build_ally_draw_card_data(
         "collected": _number(collected) if collected is not None else None,
         "total": _number(total) if total is not None else None,
     }
+    if data["theme"] == YUGIOH_DRAW_CARD_THEME:
+        # Print stock and stars are visual choices, independent of the draw
+        # PRNG, character identity, collection state and each other.
+        rng = random.SystemRandom()
+        data["yugioh_edition"] = rng.choice(YUGIOH_DRAW_CARD_EDITIONS)
+        data["yugioh_stars"] = rng.randint(1, 12)
+    return data
 
 
 @lru_cache(maxsize=48)
@@ -823,7 +842,9 @@ def _character_scene(
 
 def _card_layout(data: dict[str, Any]) -> dict[str, Any]:
     """Size an intrinsic character card, independent of the person drawing it."""
-    if data.get("theme") in ALLY_DRAW_CARD_THEMES[2:]:
+    if data.get("theme") == YUGIOH_DRAW_CARD_THEME:
+        return {"height": 1680, "paragraph": [], "excerpt": False}
+    if data.get("theme") in KIRBY_DRAW_CARD_THEMES[2:]:
         from .ally_card_designs import alternate_card_layout
 
         return alternate_card_layout(data)
@@ -882,7 +903,11 @@ def render_ally_draw_card(data: dict[str, Any], output_path: Path | str) -> Path
         if data.get("theme") in ALLY_DRAW_CARD_THEMES
         else ALLY_DRAW_CARD_THEMES[0]
     )
-    if theme in ALLY_DRAW_CARD_THEMES[2:]:
+    if theme == YUGIOH_DRAW_CARD_THEME:
+        from .ally_yugioh_card import render_yugioh_ally_card
+
+        return _save_card(render_yugioh_ally_card(data), output_path)
+    if theme in KIRBY_DRAW_CARD_THEMES[2:]:
         from .ally_card_designs import render_alternate_card
 
         return _save_card(render_alternate_card(data), output_path)

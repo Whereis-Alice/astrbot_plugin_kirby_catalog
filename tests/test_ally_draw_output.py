@@ -277,6 +277,51 @@ class DailyDrawCardOutputTests(unittest.IsolatedAsyncioTestCase):
             self.plugin._chain_result_with_media.call_args.kwargs["send_immediately"]
         )
 
+    async def test_yugioh_mode_preserves_draw_count_bot_caption_and_quote_lookup(self):
+        self.plugin.config = {
+            "ally_draw_output_mode": "精美卡片",
+            "ally_draw_card_theme": "游戏王卡面随机",
+            "ally_draw_card_random_themes": ["毛线物语"],
+            "draw_cooldown_seconds": 0,
+            "bot_draw_nickname": "爱丽丝",
+            "bot_draw_llm_vision_enabled": False,
+        }
+        self.plugin._chain_result_with_media = AsyncMock(
+            side_effect=lambda _event, chain, **kwargs: chain
+        )
+        seen = []
+
+        def render_saved(data, output):
+            self.assertEqual(sum(self.plugin.store.draws.values()), 1)
+            self.assertEqual(data["theme"], "游戏王卡面随机")
+            self.assertIn(data["yugioh_edition"], ("C", "R", "SR", "SSR", "SHINY"))
+            self.assertTrue(1 <= data["yugioh_stars"] <= 12)
+            seen.append(data)
+            return self.render(data, output)
+
+        with patch.object(
+            main_module, "render_ally_draw_card", side_effect=render_saved
+        ):
+            results = [
+                result async for result in self.plugin.draw_ally(FakeEvent("今日盟友"))
+            ]
+            self.plugin._draw_bot_ally = AsyncMock(return_value=(self.outcome, None))
+            bot = [
+                result
+                async for result in self.plugin.draw_bot_ally(FakeEvent("Bot今日盟友"))
+            ]
+            await self.plugin.draw_bot_ally_tool(FakeEvent("Bot今日盟友"))
+        self.assertEqual(len(seen), 3)
+        self.assertEqual(sum(self.plugin.store.draws.values()), 1)
+        self.assertEqual(
+            bot[0][0].text.splitlines()[0], "我今天的盟友是 瓦豆鲁迪（NEW）"
+        )
+        quoted = FakeEvent("素材", [Comp.Reply(id="yugioh-card", chain=results[0])])
+        self.assertEqual(self.plugin._quoted_target(quoted), self.entry["filename"])
+        self.assertEqual(
+            self.plugin._quoted_wiki_query(quoted, "wikirby"), "Waddle Dee"
+        )
+
     async def test_card_uses_draw_date_and_saved_collection_snapshot(self):
         self.plugin.config = {"ally_draw_output_mode": "精美卡片"}
         outcome = AllyDrawOutcome(

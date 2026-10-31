@@ -27,6 +27,7 @@ from mcp.types import CallToolResult, ImageContent, TextContent
 
 from .ally_card_refs import AllyCardReferences
 from .ally_draw_card import (
+    ALLY_DRAW_CARD_RANDOM_THEME,
     build_ally_draw_card_data, render_ally_draw_card, select_ally_draw_card_theme,
 )
 from .catalog_core import (
@@ -217,7 +218,7 @@ class WikiTranslationIncompleteError(RuntimeError):
     PLUGIN_ID,
     "Whereis-Alice",
     "星之卡比盟友抽取、收藏图鉴与三百科查询插件",
-    "4.8.1",
+    "4.9.0",
     "https://github.com/Whereis-Alice/astrbot_plugin_kirby_catalog",
 )
 class KirbyCatalogPlugin(Star):
@@ -1621,7 +1622,7 @@ class KirbyCatalogPlugin(Star):
                 collected=outcome.collected,
                 total=outcome.total,
                 theme=select_ally_draw_card_theme(
-                    self._config_value("ally_draw_card_theme", "星愿收藏"),
+                    self._config_value("ally_draw_card_theme", ALLY_DRAW_CARD_RANDOM_THEME),
                     self._config_value("ally_draw_card_random_themes", []),
                 ),
                 wiki_hint=wiki_hint,
