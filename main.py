@@ -268,7 +268,7 @@ class WikiTranslationIncompleteError(RuntimeError):
     PLUGIN_ID,
     "Whereis-Alice",
     "星之卡比盟友抽取、收藏图鉴与三百科查询插件",
-    "4.13.2",
+    "4.13.3",
     "https://github.com/Whereis-Alice/astrbot_plugin_kirby_catalog",
 )
 class KirbyCatalogPlugin(Star):
@@ -8775,10 +8775,9 @@ class KirbyCatalogPlugin(Star):
             yield result
 
     @filter.regex(r"^(?:今日盟友|抽盟友|抽取盟友)$")
-    @filter.custom_filter(AstrBotCommandFilter)
     @filter.event_message_type(EventMessageType.ALL)
     async def draw_ally(self, event: AstrMessageEvent):
-        """按 AstrBot 会话的唤醒配置处理盟友抽取，避免重复抽取。"""
+        """支持纯文本抽取及 AstrBot 配置的唤醒方式，保持单一抽取入口。"""
         async for result in self._draw_ally_impl(event):
             yield result
 

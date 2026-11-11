@@ -10,7 +10,7 @@ from astrbot.core.platform.message_type import MessageType
 from astrbot.core.star.star_handler import EventType, star_handlers_registry
 from astrbot_plugin_kirby_catalog import main
 
-from .test_main import FakeEvent
+from .test_main import FakeEvent, make_plugin
 
 COMMANDS = {
     "draw_ally": "今日盟友",
@@ -138,15 +138,42 @@ class CommandRoutingTests(unittest.IsolatedAsyncioTestCase):
                     if not options:
                         self.assertTrue(event.stopped)
 
-    async def test_plain_messages_do_not_bypass_wake_but_bot_quotes_and_mentions_work(self):
+    async def test_plain_draw_is_supported_while_other_commands_require_wake(self):
         for name, command in COMMANDS.items():
             with self.subTest(command=command):
                 event, selected = await self.route(command, ["#"])
-                self.assertEqual(selected, set())
-                self.assertTrue(event.stopped)
+                if name == "draw_ally":
+                    self.assertEqual(selected, {name})
+                    self.assertFalse(event.stopped)
+                else:
+                    self.assertEqual(selected, set())
+                    self.assertTrue(event.stopped)
                 for options in ({"mention": True}, {"quote": True}):
                     _, selected = await self.route(command, ["#"], **options)
                     self.assertEqual(selected, {name})
+
+    async def test_pure_draw_aliases_activate_once_without_prefix_or_mention(self):
+        for prefixes in (["#"], ["/"], ["莉耶芙 "]):
+            for text in ("今日盟友", "抽盟友", "抽取盟友"):
+                with self.subTest(prefixes=prefixes, text=text):
+                    event, selected = await self.route(text, prefixes)
+                    self.assertEqual(selected, {"draw_ally"})
+                    self.assertEqual(len(event.get_extra("activated_handlers")), 1)
+                    self.assertFalse(event.is_at_or_wake_command)
+                    self.assertTrue(event.is_wake)
+                    self.assertFalse(event.stopped)
+
+    async def test_pure_draw_still_checks_whitelist_before_reading_user_data(self):
+        plugin = make_plugin({"id": 12, "filename": "Waddle_Dee.png"})
+        plugin.config = {"daily_ally_group_whitelist": ["another-group"]}
+        plugin._collection_group_id = MagicMock(return_value="group-1")
+        plugin._data_context = MagicMock(side_effect=AssertionError("Unlisted draw read user data"))
+        event, selected = await self.route("今日盟友", ["#"])
+        self.assertEqual(selected, {"draw_ally"})
+        self.assertEqual([item async for item in plugin.draw_ally(event)], [])
+        self.assertTrue(event.stopped)
+        plugin._data_context.assert_not_called()
+        self.assertEqual(plugin.store.draws, {})
 
     async def test_multiple_prefixes_and_empty_prefix_follow_astrbot_rules(self):
         for text, prefixes in (
