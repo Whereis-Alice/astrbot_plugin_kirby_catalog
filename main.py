@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+import aiohttp
 from astrbot.api import logger
 from astrbot.api import message_components as Comp
 from astrbot.api.event import AstrMessageEvent, MessageChain, filter
@@ -28,11 +29,13 @@ from mcp.types import CallToolResult, ImageContent, TextContent
 from .ally_card_refs import AllyCardReferences
 from .ally_draw_card import (
     ALLY_DRAW_CARD_RANDOM_THEME,
-    build_ally_draw_card_data, render_ally_draw_card, select_ally_draw_card_theme,
+    build_ally_draw_card_data,
+    render_ally_draw_card,
+    select_ally_draw_card_theme,
 )
 from .catalog_core import (
-    CatalogStore,
     TERMINOLOGY_OVERRIDES_FILENAME,
+    CatalogStore,
     extract_image_bytes_from_value,
     get_today,
     plain_text_from_component,
@@ -59,6 +62,30 @@ from .media_delivery import (
     prepare_image_for_delivery,
     stage_local_image,
 )
+from .qq_official import (
+    Action as QQAction,
+)
+from .qq_official import (
+    Presentation as QQPresentation,
+)
+from .qq_official import (
+    QQOfficialDelivery,
+)
+from .qq_official import (
+    bot_key as qq_bot_key,
+)
+from .qq_official import (
+    character_actions as qq_character_actions,
+)
+from .qq_official import (
+    draw_presentation as qq_draw_presentation,
+)
+from .qq_official import (
+    is_official as is_qq_official,
+)
+from .qq_official import (
+    private_scope as qq_private_scope,
+)
 from .shinkaku_reference import DEFAULT_COLUMNS as _REFERENCE_DEFAULT_COLUMNS
 from .shinkaku_reference import (
     DEFAULT_COMPACT_COLUMNS as _REFERENCE_DEFAULT_COMPACT_COLUMNS,
@@ -73,9 +100,9 @@ from .terminology import (
     TerminologyPlaceholderError,
 )
 from .webui import KirbyCatalogWebUI
-from .wiki_index import WikiIndexStore, parse_wiki_number
 from .wiki_content import inline_markup_plain
 from .wiki_document import build_wiki_document, cleanup_wiki_documents
+from .wiki_index import WikiIndexStore, parse_wiki_number
 from .wiki_translation import (
     TextUnit,
     pack_units,
@@ -218,7 +245,7 @@ class WikiTranslationIncompleteError(RuntimeError):
     PLUGIN_ID,
     "Whereis-Alice",
     "星之卡比盟友抽取、收藏图鉴与三百科查询插件",
-    "4.9.1",
+    "4.10.0",
     "https://github.com/Whereis-Alice/astrbot_plugin_kirby_catalog",
 )
 class KirbyCatalogPlugin(Star):
@@ -488,6 +515,7 @@ class KirbyCatalogPlugin(Star):
                 "fandom_settings",
                 "shinkaku_settings",
                 "terminology_settings",
+                "qq_official_settings",
             ):
                 section = self.config.get(section_name, {})
                 if hasattr(section, "get") and key in section:
@@ -502,6 +530,9 @@ class KirbyCatalogPlugin(Star):
         )
         if group_id:
             return group_id
+        private_id = qq_private_scope(event)
+        if private_id:
+            return private_id
 
         # Active Agent cron jobs use CronMessageEvent. It keeps the selected
         # delivery session but does not populate message_obj.group_id.
@@ -814,6 +845,8 @@ class KirbyCatalogPlugin(Star):
             1,
             1440,
         )
+        if getattr(self, "_qq_delivery", None) is not None and self._bool_value(self._config_value("qq_official_enabled", True)):
+            retention_minutes = max(21, retention_minutes)
         cleanup_staged_media_if_due(
             path,
             retention_seconds=retention_minutes * 60,
@@ -1428,6 +1461,7 @@ class KirbyCatalogPlugin(Star):
         media_profile: str = "ally",
         timing: Optional[Dict[str, Any]] = None,
         send_immediately: bool = False,
+        qq_view: QQPresentation | None = None,
     ) -> Any | None:
         started_at = time.monotonic()
         refs = self._card_reference_store()
@@ -1448,6 +1482,11 @@ class KirbyCatalogPlugin(Star):
             timing["prepare_seconds"] = time.monotonic() - started_at
 
         send_started_at = time.monotonic()
+        if await self._try_qq_official_send(event, components, qq_view, card_key=card_key):
+            if timing is not None:
+                timing["send_seconds"] = time.monotonic() - send_started_at
+                timing["delivery_mode"] = "qq_official_markdown"
+            return None
         if await self._try_direct_forward_send(
             event, components, media_profile=media_profile
         ):
@@ -1480,6 +1519,72 @@ class KirbyCatalogPlugin(Star):
                 timing["delivery_mode"] = "context_send"
             return None
         return event.chain_result(components)
+
+    def _qq_official_delivery(self) -> QQOfficialDelivery | None:
+        root = getattr(self.store, "root", None)
+        if root is None:
+            return None
+        delivery = getattr(self, "_qq_delivery", None)
+        if delivery is None:
+            delivery = QQOfficialDelivery(Path(root))
+            self._qq_delivery = delivery
+        return delivery
+
+    def _qq_send_options(self) -> dict[str, Any]:
+        return {
+            "markdown_mode": str(self._config_value("qq_official_markdown_mode", "原生 Markdown")),
+            "markdown_template": str(self._config_value("qq_official_markdown_template_id", "") or "").strip(),
+            "template_key": str(self._config_value("qq_official_markdown_template_key", "content") or "content").strip(),
+            "buttons_enabled": self._bool_value(self._config_value("qq_official_buttons_enabled", True)),
+            "keyboard_template": str(self._config_value("qq_official_keyboard_template_id", "") or "").strip(),
+        }
+
+    async def _qq_text_results(self, event: AstrMessageEvent, text: str) -> AsyncIterator[Any]:
+        if is_qq_official(event):
+            result = await self._chain_result_with_media(event, [Comp.Plain(text)])
+        else:
+            result = event.plain_result(text)
+        if result is not None:
+            yield result
+
+    async def _try_qq_official_send(
+        self, event: AstrMessageEvent, components: list[Any], view: QQPresentation | None,
+        *, card_key: str = "",
+    ) -> bool:
+        if not is_qq_official(event) or not self._bool_value(self._config_value("qq_official_enabled", True)):
+            return False
+        delivery = self._qq_official_delivery()
+        if delivery is None:
+            return False
+        receipts = await delivery.send(event, components, view, **self._qq_send_options())
+        if receipts is None:
+            return False
+        refs = self._card_reference_store()
+        if card_key and refs is not None:
+            for message_id in receipts:
+                if message_id:
+                    try:
+                        await asyncio.to_thread(refs.bind_message, card_key, self._card_reference_scope(event), message_id)
+                    except OSError as exc:
+                        logger.warning("[%s] QQ 卡片引用记录保存失败: %s", PLUGIN_ID, exc)
+        return True
+
+    def _qq_draw_view(self, outcome: AllyDrawOutcome, nickname: str, chain: list[Any], *, is_bot: bool = False) -> QQPresentation:
+        limit = outcome.daily_limit
+        if limit is None:
+            limit = max(1, int(self._config_value("daily_draw_limit", 3)))
+        view = qq_draw_presentation(
+            outcome, nickname, self._daily_ally_card_name(outcome.entry), is_bot=is_bot,
+            limit=limit, wiki=self._bool_value(self._config_value("ally_wiki_hint_enabled", True)),
+        )
+        mode = str(self._config_value("ally_draw_output_mode", "文字＋素材"))
+        has_card = any(
+            isinstance(item, Comp.Image) and "kirby-ally-card-" in str(item.file)
+            for item in chain
+        )
+        if mode == "卡片＋文字" or not has_card:
+            return QQPresentation(view.heading, actions=view.actions)
+        return view
 
     async def _ally_chain(
         self, entry: Dict[str, Any], text: str, download: bool = True
@@ -1569,12 +1674,20 @@ class KirbyCatalogPlugin(Star):
         return "\n".join(lines)
 
     async def _daily_ally_chain(
-        self, outcome: AllyDrawOutcome, nickname: str, text: str, *, is_bot: bool = False
+        self, outcome: AllyDrawOutcome, nickname: str, text: str, *, is_bot: bool = False,
+        event: AstrMessageEvent | None = None,
     ) -> list[Any]:
         """Render the completed draw without changing its saved result or count."""
         mode = str(
             self._config_value("ally_draw_output_mode", "文字＋素材") or ""
         ).strip()
+        if (
+            event is not None and is_qq_official(event)
+            and self._bool_value(self._config_value("qq_official_enabled", True))
+            and self._bool_value(self._config_value("qq_official_draw_card", True))
+            and mode not in {"精美卡片", "卡片＋文字"}
+        ):
+            mode = "精美卡片"
         if mode not in {"精美卡片", "卡片＋文字"}:
             return await self._ally_chain(outcome.entry, text)
         card_owner = " ".join(str(nickname or "").split()) or "旅行者"
@@ -6175,9 +6288,8 @@ class KirbyCatalogPlugin(Star):
 
             page = resolved["page"]
             if names_only:
-                yield event.plain_result(
-                    await self._wikirby_names_text(query, resolved)
-                )
+                async for result in self._qq_text_results(event, await self._wikirby_names_text(query, resolved)):
+                    yield result
                 return
 
             output_mode = self._resolved_wiki_output_mode(
@@ -6747,12 +6859,12 @@ class KirbyCatalogPlugin(Star):
                 )
                 return
             if mode == "names":
-                yield event.plain_result(await self._fandom_names_text(query, resolved))
+                async for result in self._qq_text_results(event, await self._fandom_names_text(query, resolved)):
+                    yield result
                 return
             if mode == "sections":
-                yield event.plain_result(
-                    await self._fandom_sections_text(query, resolved)
-                )
+                async for result in self._qq_text_results(event, await self._fandom_sections_text(query, resolved)):
+                    yield result
                 return
 
             page = resolved["page"]
@@ -6779,7 +6891,8 @@ class KirbyCatalogPlugin(Star):
             )
             if section and not detail_text and not rich_sections:
                 sections_text = await self._fandom_sections_text(query, resolved)
-                yield event.plain_result(f"{text}\n\n{sections_text}")
+                async for result in self._qq_text_results(event, f"{text}\n\n{sections_text}"):
+                    yield result
                 return
 
             show_image = self._bool_value(self._config_value("fandom_show_image", True))
@@ -7652,7 +7765,8 @@ class KirbyCatalogPlugin(Star):
         started_at = time.monotonic()
         try:
             if mode == "terms":
-                yield event.plain_result(await self._shinkaku_terms_text(query))
+                async for result in self._qq_text_results(event, await self._shinkaku_terms_text(query)):
+                    yield result
                 return
             resolved = await client.resolve(
                 query, aliases=self._shinkaku_query_aliases(query)
@@ -7672,9 +7786,8 @@ class KirbyCatalogPlugin(Star):
                 )
                 return
             if mode == "sections":
-                yield event.plain_result(
-                    await self._shinkaku_sections_text(query, resolved)
-                )
+                async for result in self._qq_text_results(event, await self._shinkaku_sections_text(query, resolved)):
+                    yield result
                 return
 
             page = resolved["page"]
@@ -7701,7 +7814,8 @@ class KirbyCatalogPlugin(Star):
             )
             if section and not detail_text and not rich_sections:
                 sections_text = await self._shinkaku_sections_text(query, resolved)
-                yield event.plain_result(f"{text}\n\n{sections_text}")
+                async for result in self._qq_text_results(event, f"{text}\n\n{sections_text}"):
+                    yield result
                 return
             show_image = self._bool_value(
                 self._config_value("shinkaku_show_image", True)
@@ -8183,12 +8297,20 @@ class KirbyCatalogPlugin(Star):
             entry, self._draw_message(entry, nickname, outcome.remaining, flags)
         )
         asset_started_at = time.monotonic()
-        chain = await self._daily_ally_chain(outcome, nickname, text)
+        chain = await self._daily_ally_chain(outcome, nickname, text, event=event)
         asset_seconds = time.monotonic() - asset_started_at
         delivery_timing: Dict[str, Any] = {}
-        result = await self._chain_result_with_media(
-            event, chain, timing=delivery_timing
-        )
+        try:
+            result = await self._chain_result_with_media(
+                event, chain, timing=delivery_timing,
+                qq_view=self._qq_draw_view(outcome, nickname, chain) if is_qq_official(event) else None,
+            )
+        except (RuntimeError, aiohttp.ClientError, OSError, ValueError) as exc:
+            if not is_qq_official(event):
+                raise
+            logger.warning("[%s] QQ 抽取结果已保存，发送未确认: %s", PLUGIN_ID, type(exc).__name__)
+            yield event.plain_result(f"盟友结果已保存，发送未能确认。可发送「查盟友 #{entry['id']}」查看资料，暂不用重复抽取。")
+            return
         logger.info(
             "[%s] 今日盟友性能: entry=#%s %s, select=%.3fs, asset=%.3fs, "
             "prepare=%.3fs, send=%.3fs, mode=%s, total=%.3fs",
@@ -8206,7 +8328,7 @@ class KirbyCatalogPlugin(Star):
             yield result
 
     @filter.regex(r"^/?(?:今日盟友|抽盟友|抽取盟友)$")
-    @filter.event_message_type(EventMessageType.GROUP_MESSAGE)
+    @filter.event_message_type(EventMessageType.ALL)
     async def draw_ally(self, event: AstrMessageEvent):
         """统一处理带斜杠和纯文本的盟友抽取，避免双 Handler 重复抽取。"""
         async for result in self._draw_ally_impl(event):
@@ -8294,6 +8416,8 @@ class KirbyCatalogPlugin(Star):
         )
         if configured_identity:
             return configured_identity
+        if is_qq_official(event):
+            return f"bot_qq_{qq_bot_key(event)}"
 
         message_obj = getattr(event, "message_obj", None)
         raw_event = getattr(message_obj, "raw_message", None)
@@ -8378,7 +8502,7 @@ class KirbyCatalogPlugin(Star):
         )
 
     @filter.regex(r"(?i)^/?(?:bot今日盟友|机器人今日盟友|bot抽盟友)$")
-    @filter.event_message_type(EventMessageType.GROUP_MESSAGE)
+    @filter.event_message_type(EventMessageType.ALL)
     async def draw_bot_ally(self, event: AstrMessageEvent):
         """让 Bot 使用独立身份抽取并展示当天盟友。"""
         outcome, error = await self._draw_bot_ally(event)
@@ -8391,8 +8515,17 @@ class KirbyCatalogPlugin(Star):
         nickname = str(
             self._config_value("bot_draw_nickname", "星之卡比图鉴") or "星之卡比图鉴"
         ).strip()
-        chain = await self._daily_ally_chain(outcome, nickname, text, is_bot=True)
-        result = await self._chain_result_with_media(event, chain)
+        chain = await self._daily_ally_chain(outcome, nickname, text, is_bot=True, event=event)
+        try:
+            result = await self._chain_result_with_media(
+                event, chain, qq_view=self._qq_draw_view(outcome, nickname, chain, is_bot=True) if is_qq_official(event) else None,
+            )
+        except (RuntimeError, aiohttp.ClientError, OSError, ValueError) as exc:
+            if not is_qq_official(event):
+                raise
+            logger.warning("[%s] QQ Bot 抽取结果已保存，发送未确认: %s", PLUGIN_ID, type(exc).__name__)
+            yield event.plain_result(f"Bot 的盟友结果已保存，发送未能确认。可发送「查盟友 #{outcome.entry['id']}」查看资料，暂不用重复抽取。")
+            return
         if result is not None:
             yield result
 
@@ -8415,16 +8548,17 @@ class KirbyCatalogPlugin(Star):
         nickname = str(
             self._config_value("bot_draw_nickname", "星之卡比图鉴") or "星之卡比图鉴"
         ).strip()
-        chain = await self._daily_ally_chain(outcome, nickname, text, is_bot=True)
+        chain = await self._daily_ally_chain(outcome, nickname, text, is_bot=True, event=event)
         try:
             await self._chain_result_with_media(
-                event, chain, send_immediately=True
+                event, chain, send_immediately=True,
+                qq_view=self._qq_draw_view(outcome, nickname, chain, is_bot=True) if is_qq_official(event) else None,
             )
         except Exception as exc:
-            logger.exception("[%s] Bot LLM 抽盟友群消息发送失败: %s", PLUGIN_ID, exc)
+            logger.warning("[%s] Bot LLM 抽盟友消息发送未确认: %s", PLUGIN_ID, type(exc).__name__)
             return (
-                f"爱丽丝抽到了 #{outcome.entry['id']} "
-                f"{self._display_name(outcome.entry)}，但群消息发送失败，请稍后重试。"
+                f"Bot 已抽到 #{outcome.entry['id']} {self._display_name(outcome.entry)}，"
+                "结果已保存，发送未能确认。请查询这个编号，不要重复调用抽取工具。"
             )
         return await self._bot_draw_tool_result(text, chain)
 
@@ -8691,7 +8825,7 @@ class KirbyCatalogPlugin(Star):
         )
 
     @filter.command("随机盟友", alias={"随机查看盟友"})
-    @filter.event_message_type(EventMessageType.GROUP_MESSAGE)
+    @filter.event_message_type(EventMessageType.ALL)
     async def random_ally(self, event: AstrMessageEvent):
         """随机展示一位盟友，不写入用户抽取或解锁记录。"""
         pool = self.store.get_draw_pool()
@@ -8705,12 +8839,14 @@ class KirbyCatalogPlugin(Star):
         )
         text = self._ally_detail_message(entry, text)
         chain = await self._ally_chain(entry, text)
-        result = await self._chain_result_with_media(event, chain)
+        result = await self._chain_result_with_media(
+            event, chain, qq_view=QQPresentation("🎲 随机盟友", actions=qq_character_actions(entry)),
+        )
         if result is not None:
             yield result
 
     @filter.command("查盟友", alias={"我的盟友"})
-    @filter.event_message_type(EventMessageType.GROUP_MESSAGE)
+    @filter.event_message_type(EventMessageType.ALL)
     async def query_ally(self, event: AstrMessageEvent):
         """精准查看图鉴条目，或查看自己/指定成员今天的盟友。"""
         group_id = self._group_id(event)
@@ -8744,7 +8880,9 @@ class KirbyCatalogPlugin(Star):
                 )
                 text = self._ally_detail_message(entry, text)
                 chain = await self._ally_chain(entry, text)
-                result = await self._chain_result_with_media(event, chain)
+                result = await self._chain_result_with_media(
+                    event, chain, qq_view=QQPresentation("⭐ 盟友资料", actions=qq_character_actions(entry)),
+                )
                 if result is not None:
                     yield result
                 return
@@ -8794,15 +8932,17 @@ class KirbyCatalogPlugin(Star):
         )
         text = self._ally_detail_message(entry, text)
         chain = await self._ally_chain(entry, text)
-        result = await self._chain_result_with_media(event, chain)
+        result = await self._chain_result_with_media(
+            event, chain, qq_view=QQPresentation("⭐ 今日盟友资料", actions=qq_character_actions(entry)),
+        )
         if result is not None:
             yield result
 
-    @filter.regex(r"^/?素材$")
-    @filter.event_message_type(EventMessageType.GROUP_MESSAGE)
+    @filter.regex(r"^/?素材(?:\s+.+)?$")
+    @filter.event_message_type(EventMessageType.ALL)
     async def view_ally_asset(self, event: AstrMessageEvent) -> AsyncIterator[Any]:
         """引用盟友卡片回复“素材”，发送对应条目的素材图片。"""
-        target = self._quoted_target(event)
+        target = self._command_remainder(event, {"素材"}) or self._quoted_target(event)
         if not target:
             return
         entry, error = self._entry_or_error(target)
@@ -8813,12 +8953,15 @@ class KirbyCatalogPlugin(Star):
         chain = await self._ally_chain(
             entry, f"{self._display_name(entry)} 的素材，图鉴编号 #{entry['id']}"
         )
-        result = await self._chain_result_with_media(event, chain)
+        result = await self._chain_result_with_media(
+            event, chain,
+            qq_view=QQPresentation("🖼 角色素材", actions=qq_character_actions(entry)),
+        )
         if result is not None:
             yield result
 
     @filter.regex(r"^/?(?:查看简介|查看盟友简介)(?:\s+.+)?$")
-    @filter.event_message_type(EventMessageType.GROUP_MESSAGE)
+    @filter.event_message_type(EventMessageType.ALL)
     async def view_ally_description(self, event: AstrMessageEvent):
         """查看引用盟友或指定图鉴条目的简介。"""
         command_names = {"查看简介", "查看盟友简介"}
@@ -8843,11 +8986,13 @@ class KirbyCatalogPlugin(Star):
             )
             return
         text = f"#{entry['id']} {self._display_name(entry)}\n简介：\n{description}"
+        qq_view = QQPresentation("📖 角色简介", actions=qq_character_actions(entry))
         output_mode = self._ally_description_view_mode()
         if output_mode == "forward":
             result = await self._chain_result_with_media(
                 event,
                 self._wiki_response_components(text, None, "forward", None),
+                qq_view=qq_view,
             )
             if result is not None:
                 yield result
@@ -8858,18 +9003,23 @@ class KirbyCatalogPlugin(Star):
             )
             if card_component is not None:
                 result = await self._chain_result_with_media(
-                    event, [card_component], media_profile="wiki_card"
+                    event, [card_component], media_profile="wiki_card", qq_view=qq_view,
                 )
                 if result is not None:
                     yield result
                 return
-        yield event.plain_result(text)
+        if is_qq_official(event):
+            result = await self._chain_result_with_media(event, [Comp.Plain(text)], qq_view=qq_view)
+            if result is not None:
+                yield result
+        else:
+            yield event.plain_result(text)
 
     @filter.regex(
         r"(?i)^/?(?:卡比百科(?:名称|名|译名|文本|卡片|文档)?|"
         r"wikirby(?:文本|卡片|文档)?)(?:\s+.+)?$"
     )
-    @filter.event_message_type(EventMessageType.GROUP_MESSAGE)
+    @filter.event_message_type(EventMessageType.ALL)
     async def wikirby_query_plain(self, event: AstrMessageEvent):
         """统一处理带斜杠和纯文本的 WiKirby 查询，避免双 Handler 重复回复。"""
         async for result in self._wikirby_query_impl(event):
@@ -8881,7 +9031,7 @@ class KirbyCatalogPlugin(Star):
         r"卡比社区百科(?:名称|章节|文本|卡片|文档)?|"
         r"kirbyfandom(?:文本|卡片|文档)?)(?:\s+.+)?$"
     )
-    @filter.event_message_type(EventMessageType.GROUP_MESSAGE)
+    @filter.event_message_type(EventMessageType.ALL)
     async def fandom_query_plain(self, event: AstrMessageEvent):
         """统一处理 Kirby Fandom 的页面、名称和章节查询。"""
         async for result in self._fandom_query_impl(event):
@@ -8894,14 +9044,14 @@ class KirbyCatalogPlugin(Star):
         r"真格攻略(?:名称表|速查图?|目录图?|名称|名|章节|文本|卡片|文档)?|"
         r"真格Wiki(?:名称表|速查图?|目录图?|名称|名|章节|文本|卡片|文档)?)(?:\s+.+)?$"
     )
-    @filter.event_message_type(EventMessageType.GROUP_MESSAGE)
+    @filter.event_message_type(EventMessageType.ALL)
     async def shinkaku_query_plain(self, event: AstrMessageEvent):
         """统一处理真格攻略 Wiki 的页面、日英用语和章节查询。"""
         async for result in self._shinkaku_query_impl(event):
             yield result
 
     @filter.command("星之卡比图鉴", alias={"群盟友图鉴"})
-    @filter.event_message_type(EventMessageType.GROUP_MESSAGE)
+    @filter.event_message_type(EventMessageType.ALL)
     async def group_gallery(self, event: AstrMessageEvent):
         """查看本群带编号、带名字的盟友图鉴。"""
         group_id = self._group_id(event)
@@ -8948,10 +9098,13 @@ class KirbyCatalogPlugin(Star):
             yield event.plain_result("图鉴生成失败，请稍后再试。")
 
     @filter.command("我的盟友图鉴", alias={"盟友图鉴"})
-    @filter.event_message_type(EventMessageType.GROUP_MESSAGE)
+    @filter.event_message_type(EventMessageType.ALL)
     async def personal_gallery(self, event: AstrMessageEvent):
         """查看自己的盟友收藏图鉴。"""
         group_id = self._group_id(event)
+        if not group_id:
+            yield event.plain_result("请在群聊或 QQ 官方 Bot 单聊中使用此功能。")
+            return
         user_id = self._sender_id(event)
         config = self.store.load_group(group_id)
         user = config.get(user_id)
@@ -9000,7 +9153,7 @@ class KirbyCatalogPlugin(Star):
         "看爱丽丝盟友图鉴",
         alias={"爱丽丝盟友图鉴", "看爱丽丝图鉴", "Bot盟友图鉴"},
     )
-    @filter.event_message_type(EventMessageType.GROUP_MESSAGE)
+    @filter.event_message_type(EventMessageType.ALL)
     async def view_alice_gallery(self, event: AstrMessageEvent):
         """查看爱丽丝在本群已解锁的盟友收藏。"""
         title, components, error = await self._bot_gallery_components(event)
@@ -9012,10 +9165,13 @@ class KirbyCatalogPlugin(Star):
             yield result
 
     @filter.command("我的图鉴进度", alias={"图鉴进度", "我的盟友图鉴进度"})
-    @filter.event_message_type(EventMessageType.GROUP_MESSAGE)
+    @filter.event_message_type(EventMessageType.ALL)
     async def personal_progress(self, event: AstrMessageEvent):
         """查看自己的有效图鉴数量、完成率和剩余数量。"""
         group_id = self._group_id(event)
+        if not group_id:
+            yield event.plain_result("请在群聊或 QQ 官方 Bot 单聊中使用此功能。")
+            return
         user_id = self._sender_id(event)
         user = self.store.load_group(group_id).get(user_id, {})
         progress = self.store.user_progress(user)
@@ -9029,12 +9185,47 @@ class KirbyCatalogPlugin(Star):
         filled = min(20, round(unlocked / total * 20))
         bar = "█" * filled + "░" * (20 - filled)
         status = "已经完成全图鉴！" if remaining == 0 else f"还差 {remaining} 个盟友"
-        yield event.plain_result(
+        text = (
             f"{self._sender_name(event)} 的图鉴进度\n"
             f"{bar} {percent:.1f}%\n"
             f"已解锁：{unlocked}/{total}\n"
             f"{status}"
         )
+        if is_qq_official(event):
+            result = await self._chain_result_with_media(
+                event, [Comp.Plain(text)],
+                qq_view=QQPresentation("🌟 收藏进度", actions=(
+                    QQAction("今日盟友", "今日盟友", True, True),
+                    QQAction("我的图鉴", "我的盟友图鉴", owner_only=True),
+                )),
+            )
+            if result is not None:
+                yield result
+        else:
+            yield event.plain_result(text)
+
+    @filter.regex(r"^/?卡比翻页\s+([0-9a-f]{16})\s+([0-9]{1,4})$")
+    @filter.event_message_type(EventMessageType.ALL)
+    async def qq_reading_page(self, event: AstrMessageEvent):
+        """Read a saved QQ page; never draw or change collection state."""
+        if not is_qq_official(event) or not self._bool_value(self._config_value("qq_official_enabled", True)):
+            return
+        delivery = self._qq_official_delivery()
+        if delivery is None:
+            return
+        parts = self._command_remainder(event, {"卡比翻页"}).split()
+        if len(parts) != 2:
+            return
+        token, page_text = parts
+        try:
+            page = int(page_text)
+            delivery.resolve_page(event, token, page)
+            await delivery.send(event, [], token=token, page=page, **self._qq_send_options())
+        except ValueError as exc:
+            yield event.plain_result(str(exc))
+        except (RuntimeError, aiohttp.ClientError, OSError) as exc:
+            logger.warning("[%s] QQ 阅读页发送未确认: %s", PLUGIN_ID, type(exc).__name__)
+            yield event.plain_result("阅读页发送未能确认，请稍后再翻页。")
 
     @filter.command("猜盟友")
     @filter.event_message_type(EventMessageType.GROUP_MESSAGE)
@@ -9167,9 +9358,31 @@ class KirbyCatalogPlugin(Star):
         yield event.plain_result("\n".join(lines))
 
     @filter.command("星之卡比图鉴帮助", alias={"盟友帮助"})
-    @filter.event_message_type(EventMessageType.GROUP_MESSAGE)
+    @filter.event_message_type(EventMessageType.ALL)
     async def help_command(self, event: AstrMessageEvent):
         """查看星之卡比图鉴的使用说明。"""
+        if is_qq_official(event) and self._bool_value(self._config_value("qq_official_enabled", True)):
+            text = (
+                "今日盟友：每天抽取，收藏你的卡比伙伴。\n"
+                "我的盟友图鉴 / 我的图鉴进度：回顾收藏。\n"
+                "Bot今日盟友 / Bot盟友图鉴：查看 Bot 的独立收藏。\n"
+                "角色消息下方可查看素材、内置简介或卡比百科。\n"
+                "也可发送：查盟友 <编号或名字>、素材 <编号>、查看简介 <编号>。\n"
+                "卡比百科 / 卡比F / 卡比真格 <页面名>：查询三个百科。\n"
+                "长资料和多张图鉴通过上一页 / 下一页继续阅读。"
+            )
+            result = await self._chain_result_with_media(
+                event, [Comp.Plain(text)], qq_view=QQPresentation("⭐ 星之卡比图鉴", actions=(
+                    QQAction("今日盟友", "今日盟友", True, True),
+                    QQAction("我的图鉴", "我的盟友图鉴", owner_only=True),
+                    QQAction("收藏进度", "我的图鉴进度", owner_only=True),
+                    QQAction("随机盟友", "随机盟友"),
+                    QQAction("Bot今日盟友", "Bot今日盟友"),
+                )),
+            )
+            if result is not None:
+                yield result
+            return
         yield event.plain_result(
             "星之卡比图鉴\n"
             "今日盟友：每天抽取盟友\n"

@@ -4,9 +4,9 @@
 
 # 星之卡比图鉴
 
-[![AstrBot](https://img.shields.io/badge/AstrBot-%3E%3D4.22.2%2C%3C5-4c8bf5)](https://github.com/AstrBotDevs/AstrBot) [![Platform](https://img.shields.io/badge/platform-aiocqhttp-f59e0b)](https://github.com/AstrBotDevs/AstrBot) [![License](https://img.shields.io/badge/license-MIT-2ea44f)](LICENSE)
+[![AstrBot](https://img.shields.io/badge/AstrBot-%3E%3D4.22.2%2C%3C5-4c8bf5)](https://github.com/AstrBotDevs/AstrBot) [![Platform](https://img.shields.io/badge/platform-OneBot%20%7C%20QQ%20Official-f59e0b)](https://github.com/AstrBotDevs/AstrBot) [![License](https://img.shields.io/badge/license-MIT-2ea44f)](LICENSE)
 
-面向 AstrBot 群聊的星之卡比盟友抽取、收藏图鉴和百科查询插件。
+支持 AstrBot OneBot 群聊，以及 QQ 官方 Bot 群聊与单聊的星之卡比盟友抽取、收藏图鉴和百科查询插件。
 
 插件以“年代编号 + 规范名称 + 本地素材”为核心管理盟友，适合数百张以上、仍会持续扩充的素材库。普通角色、卡比能力、特殊形态、EX 版本和其他经过核验的变体都可以作为独立盟友计入图鉴、个人进度与排行榜。1353 项规范图鉴均附有中英文名称、首次登场作品和简体中文简介；插件同时支持每日抽取、猜盟友、引用修改资料，以及 WiKirby、Kirby Wiki | Fandom 与真格攻略 Wiki 三种查询来源。真格 Wiki 还提供覆盖全部 301 页的中日文名称速查图和连续目录编号。
 
@@ -17,6 +17,7 @@
 | 模块 | 能力 |
 | --- | --- |
 | 盟友抽取 | 每日限次抽取、Bot 独立抽取、简体中文简介、可选文字提示＋纯角色卡、卡比与游戏王两套随机卡面、随简介加长的卡比卡面、冷却时间、连续未出新保底、纯文本 `今日盟友` 触发 |
+| QQ 官方 Bot | 原生／模板 Markdown、卡牌内嵌图片、再抽／图鉴／素材／简介／百科按钮、多图与长资料翻页、单聊独立收藏、权限不足自动回退 |
 | 收藏图鉴 | 按首次登场作品排序的固定编号、独立能力与形态、个人与群图鉴、按需分页、生成缓存、有效进度和群内排行榜 |
 | 素材管理 | 引用盟友卡片回复“素材”获取角色素材；管理员可引用 Bot 消息改名、换图或编辑简介，也可手动添加素材，历史记录同步更新 |
 | WebUI 管理台 | 在 AstrBot Dashboard 集中管理素材资料、名称库、全部群成员图鉴、今日次数、回收站和操作记录；一屏满铺仪表盘、四款皮肤、内联图标、零外部请求 |
@@ -51,13 +52,23 @@
 
 优先显示中文名称，无中文时使用英文；已收集的盟友标为“重复”，每日额度包含管理员增加的机会。引用卡牌消息回复“素材”获取角色素材，回复“查看简介”阅读资料。默认仍为“文字＋素材”，也可选“卡片＋文字”。详见[卡面与配置说明](docs/daily-ally-card.md)。
 
+## QQ 官方 Bot 富文本预览
+
+QQ 官方 Bot 默认将抽卡升级为“昵称＋盟友名 → 纯角色卡 → 次数与收藏进度 → 操作按钮”。卡面继续使用上面的卡比或游戏王套系；资料来自内置图鉴。下图根据实际发送结构绘制，**是排版示意，非 QQ 客户端截图**；昵称、余次和进度为示例，最终外观由 QQ 客户端决定。
+
+![QQ 官方 Bot 抽卡与简介排版示意](docs/images/qq-official-preview.jpg)
+
+在“QQ 官方 Bot 富文本与按钮”中开启增强输出即可，使用 AstrBot 已配置的 `qq_official` 或 `qq_official_webhook` 平台认证，无需另外填写密钥或配置图床。群聊／单聊原生 Markdown 已开放；**自定义按钮权限独立**，没有按钮权限时自动显示可手动发送的角色指令，也可填入已审核的按钮模板 ID。频道需相应邀测权限。
+
+“再抽一次”使用原抽取流程，按正常规则扣一次额度；素材、简介、百科、图鉴与翻页不计入抽取。QQ 单聊按 Bot 与用户分别保存次数和收藏，与群聊分开。详情、长百科和多张图鉴通过上一页／下一页阅读，按钮限原查询者在原会话使用；阅读会话保留 20 分钟。详见 [QQ 官方 Bot 配置与权限说明](docs/qq-official.md)。
+
 ## 快速开始
 
 ### 环境要求
 
 - AstrBot `>=4.22.2,<5`
 - 完整 WebUI 管理台需要 AstrBot `v4.26.8+`
-- `aiocqhttp` 平台适配器，以及一个 OneBot v11 协议端（NapCat、LLBot 或 SnowLuma，见 [协议端兼容性](docs/protocol-clients.md)）
+- `aiocqhttp` ＋ OneBot v11 协议端（NapCat、LLBot 或 SnowLuma，见 [协议端兼容性](docs/protocol-clients.md)），或 AstrBot QQ 官方 Bot 平台 `qq_official` / `qq_official_webhook`
 - Python 依赖：Pillow、Beautiful Soup 4
 
 ### 安装

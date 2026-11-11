@@ -862,6 +862,55 @@
       }
     }
   },
+  "qq_official_settings": {
+    "description": "QQ 官方 Bot 富文本与按钮",
+    "type": "object",
+    "items": {
+      "qq_official_enabled": {
+        "description": "启用 QQ 官方 Bot 增强输出",
+        "type": "bool",
+        "default": true,
+        "hint": "适用于 qq_official / qq_official_webhook。群聊、单聊原生 Markdown 已开放；频道需相应权限。明确被平台拒绝时自动回退，不影响已保存的抽取结果。"
+      },
+      "qq_official_draw_card": {
+        "description": "QQ 官方 Bot 抽取默认使用卡牌",
+        "type": "bool",
+        "default": true,
+        "hint": "开启后，QQ 官方 Bot 的文字＋素材模式会升级为精美卡牌，并沿用原有卡面主题与两套随机池。卡片＋文字仍保留自定义完整文案；关闭后遵循原输出方式。"
+      },
+      "qq_official_markdown_mode": {
+        "description": "Markdown 发送方式",
+        "type": "string",
+        "default": "原生 Markdown",
+        "options": ["原生 Markdown", "模板 Markdown"],
+        "hint": "群聊和单聊推荐原生 Markdown；模板模式需填写已通过审核的模板 ID，并提供可放入完整内容的参数。模板 ID 留空时使用原生 Markdown。"
+      },
+      "qq_official_markdown_template_id": {
+        "description": "Markdown 模板 ID",
+        "type": "string",
+        "default": "",
+        "hint": "仅模板 Markdown 模式使用。模板应以一个参数承载完整内容；无需填写 AppID、AppSecret 或 OpenAPI Key，插件复用 AstrBot 的 QQ 官方平台认证。"
+      },
+      "qq_official_markdown_template_key": {
+        "description": "Markdown 模板内容参数名",
+        "type": "string",
+        "default": "content",
+        "hint": "与模板内 {{.content}} 的参数名一致；自定义参数名时在此填写。"
+      },
+      "qq_official_buttons_enabled": {
+        "description": "附加操作按钮",
+        "type": "bool",
+        "default": true,
+        "hint": "抽卡提供再抽一次、我的图鉴、素材、简介和百科；长内容提供翻页。自定义按钮权限与 Markdown 权限独立，未开通会自动回退为可手动发送的简短指令。"
+      },
+      "qq_official_keyboard_template_id": {
+        "description": "可选按钮模板 ID",
+        "type": "string",
+        "default": "",
+        "hint": "无自定义按钮权限但有已审核按钮模板时可填写。静态模板不能代入角色编号或翻页令牌，插件会同时显示当前角色和翻页指令；留空使用动态指令按钮。"
+      }
+    }
+  },
   "data_settings": {
     "description": "数据兼容设置",
     "type": "object",
