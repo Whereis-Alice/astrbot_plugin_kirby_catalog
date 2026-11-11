@@ -40,7 +40,13 @@ from .catalog_core import (
     get_today,
     plain_text_from_component,
 )
-from .identity_capture import parse_member_names, save_member_names
+from .identity_capture import (
+    FreshIdentityCapture,
+    capture_report_lines,
+    read_capture_report,
+    save_capture_report,
+    save_fresh_record,
+)
 from .identity_links import IdentityLinks
 from .identity_links import member_key as identity_member_key
 from .kirby_fandom import (
@@ -251,7 +257,7 @@ class WikiTranslationIncompleteError(RuntimeError):
     PLUGIN_ID,
     "Whereis-Alice",
     "星之卡比盟友抽取、收藏图鉴与三百科查询插件",
-    "4.12.0",
+    "4.12.1",
     "https://github.com/Whereis-Alice/astrbot_plugin_kirby_catalog",
 )
 class KirbyCatalogPlugin(Star):
@@ -627,7 +633,7 @@ class KirbyCatalogPlugin(Star):
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.event_message_type(EventMessageType.ALL)
     async def capture_ally_identity_names(self, event: AstrMessageEvent):
-        """旧 OneBot 管理员一次采集有收藏成员的资料昵称与群名片。"""
+        """旧 OneBot 管理员逐条请求资料跳过缓存，保存采集明细。"""
         if not event.is_admin():
             yield event.plain_result("此操作仅限 AstrBot 管理员。")
             return
@@ -661,31 +667,100 @@ class KirbyCatalogPlugin(Star):
             yield event.plain_result("已有迁移资料采集任务正在运行，请等待完成。")
             return
         async with lock:
-            yield event.plain_result(f"正在采集 {len(groups)} 个旧群的 QQ 资料昵称与群名片。")
-            totals = {"captured": 0, "updated": 0, "missing": 0}
-            failed = []
-            completed = 0
-            for index, group in enumerate(groups, 1):
-                try:
-                    payload = await asyncio.wait_for(bot.call_action("get_group_member_list", group_id=int(group)), timeout=20)
-                    names = parse_member_names(payload)
-                    async with self._draw_lock:
-                        stats = save_member_names(self.store, group, names)
-                    for key in totals:
-                        totals[key] += stats[key]
-                    completed += 1
-                except Exception as exc:  # noqa: BLE001 - external OneBot API boundary
-                    logger.warning("[%s] 旧群 %s 迁移资料采集失败: %s", PLUGIN_ID, group, type(exc).__name__)
-                    failed.append(group)
-                if index % 10 == 0 and index < len(groups):
-                    yield event.plain_result(f"迁移资料采集进度：{index}/{len(groups)} 个群。")
-            text = (f"迁移资料采集完成：成功 {completed}/{len(groups)} 个群，"
-                    f"采集 {totals['captured']} 位有收藏成员，更新 {totals['updated']} 条；"
-                    f"{totals['missing']} 位未获取到有效资料（可能已离群）。\n"
-                    "收藏、今日盟友和抽取次数保持不变。将插件数据目录搬到新服务器，关联新旧群并开启自动迁移即可。")
-            if failed:
-                text += "\n采集失败的群：" + "、".join(failed[:8]) + ("等" if len(failed) > 8 else "") + "；请检查旧 OneBot 是否仍在群内后重试。"
-            yield event.plain_result(text)
+            targets = {group: {user: record for user, record in self.store.load_group(group).items() if user.isdigit()} for group in groups}
+            total = sum(len(users) for users in targets.values())
+            rows = [{"group_id": group, "user_id": user, "old_nickname": str(old.get("nickname") or ""), "status": "pending"} for group, users in targets.items() for user, old in users.items()]
+            positions = {(row["group_id"], row["user_id"]): index for index, row in enumerate(rows)}
+            report = {"id": uuid.uuid4().hex, "status": "running", "started_at": time.time(), "groups": groups, "records": rows, "target_records": total}
+            save_capture_report(self.store, report)
+            client = FreshIdentityCapture(bot)
+            tasks: list[asyncio.Task] = []
+            written, changed, done = 0, 0, 0
+            last_progress = time.monotonic()
+            try:
+                yield event.plain_result(f"正在逐条查询 {len(groups)} 个群的 {total} 条旧账号记录，请求 QQ 资料与群名片接口跳过缓存。")
+                for group, users in targets.items():
+                    tasks = [asyncio.create_task(client.record(group, user, old)) for user, old in users.items()]
+                    for future in asyncio.as_completed(tasks):
+                        row = await future
+                        async with self._draw_lock:
+                            updated, names_changed = save_fresh_record(self.store, row)
+                        written += int(updated)
+                        changed += int(names_changed and updated)
+                        row["written"] = updated
+                        row["names_changed"] = names_changed and updated
+                        report["records"][positions[(row["group_id"], row["user_id"])]] = row
+                        done += 1
+                        if done % 25 == 0 or time.monotonic() - last_progress >= 15:
+                            report["api_calls"] = dict(client.calls)
+                            save_capture_report(self.store, report)
+                            yield event.plain_result(f"逐条迁移资料查询进度：{done}/{total} 条。")
+                            last_progress = time.monotonic()
+                    report["api_calls"] = dict(client.calls)
+                    save_capture_report(self.store, report)
+                report.update(status="complete", finished_at=time.time(), written=written, names_changed=changed, api_calls=dict(client.calls))
+            finally:
+                for task in tasks:
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+                await client.close()
+                if report["status"] == "running":
+                    report.update(status="interrupted", finished_at=time.time(), written=written, names_changed=changed, api_calls=dict(client.calls))
+                save_capture_report(self.store, report)
+            full = sum(row["status"] == "full" for row in report["records"])
+            partial = sum(row["status"] == "profile_only" for row in report["records"])
+            failed = sum(row["status"] == "failed" for row in report["records"])
+            removed = sum(row["status"] == "record_removed" for row in report["records"])
+            unique = len({row["user_id"] for row in report["records"]})
+            calls = client.calls
+            yield event.plain_result(
+                f"迁移资料逐条查询完成：{len(groups)} 个群、{total} 条账号记录（{unique} 个不同 QQ）。\n"
+                f"昵称及群名片齐全 {full} 条；仅取得资料昵称 {partial} 条；未取得资料昵称 {failed} 条；旧记录已删除 {removed} 条。\n"
+                f"实际调用：群资料接口 {calls['get_group_member_info']} 次、QQ资料接口 {calls['get_stranger_info']} 次，均请求 no_cache=true。\n"
+                f"写入 {written} 条，其中名称新增或变化 {changed} 条。收藏、今日盟友和抽取次数保持不变。\n"
+                "详细结果已保存；发送「迁移采集报告」查看未完成项，「迁移采集报告 全部」查看全部。"
+            )
+            # Do not broadcast other groups' QQ IDs in the current group.
+            scope = "" if self._private_identity_event(event) else self._group_id(event)
+            if any(row["status"] != "full" and (not scope or row["group_id"] == scope) for row in report["records"]):
+                for page in self._capture_report_pages(capture_report_lines(report, group=scope)):
+                    yield event.plain_result(page)
+            if scope and len(groups) > 1:
+                yield event.plain_result("其他群的明细请私聊 Bot 发送「迁移采集报告」查看。")
+
+    @staticmethod
+    def _capture_report_pages(lines: list[str]) -> list[str]:
+        pages, current = [], ""
+        for line in lines:
+            if current and len(current) + len(line) + 2 > 1400:
+                pages.append(current)
+                current = ""
+            current += ("\n\n" if current else "") + line
+        if current:
+            pages.append(current)
+        return pages
+
+    @filter.command("迁移采集报告", alias={"盟友采集报告"})
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.event_message_type(EventMessageType.ALL)
+    async def show_identity_capture_report(self, event: AstrMessageEvent):
+        """查看采集结果：群中仅显示本群，私聊管理员可查看全部。"""
+        if not event.is_admin():
+            yield event.plain_result("此操作仅限 AstrBot 管理员。")
+            return
+        try:
+            report = read_capture_report(self.store)
+        except ValueError as exc:
+            yield event.plain_result(str(exc))
+            return
+        scope = "" if self._private_identity_event(event) else self._collection_group_id(event)
+        if not scope and not self._private_identity_event(event):
+            yield event.plain_result("请在群聊或管理员私聊中查看报告。")
+            return
+        all_records = self._command_remainder(event, {"迁移采集报告", "盟友采集报告"}) == "全部"
+        for page in self._capture_report_pages(capture_report_lines(report, group=scope, all_records=all_records)):
+            yield event.plain_result(page)
 
     @staticmethod
     def _private_identity_event(event: AstrMessageEvent) -> bool:
