@@ -636,3 +636,7 @@ class MigrationFeedbackTests(StoreFixture, unittest.IsolatedAsyncioTestCase):
         view = self.plugin._chain_result_with_media.call_args.kwargs["qq_view"]
         self.assertTrue(view.replace_caption)
         self.assertIn("没有提供", view.summary)
+        from astrbot_plugin_kirby_catalog.qq_official import QQOfficialDelivery
+        body = QQOfficialDelivery._markdown(view, [image], {0: ("qqbot-media://image/v1/test", 200, 310)}, 1, 1)
+        self.assertIn("> 今日剩余4/5 次\n\n", body)
+        self.assertIn("没有提供", body.split("> 今日剩余4/5 次\n\n", 1)[1])

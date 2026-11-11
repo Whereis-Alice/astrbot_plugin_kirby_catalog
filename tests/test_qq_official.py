@@ -151,7 +151,12 @@ class RichDeliveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("qqbot-media://image/v1/example", payload["markdown"]["content"])
         self.assertNotIn("旧配文", payload["markdown"]["content"])
         self.assertIn("狐狸", payload["markdown"]["content"])
-        self.assertTrue(payload["markdown"]["content"].startswith("狐狸，你今天的盟友是"))
+        self.assertEqual(
+            payload["markdown"]["content"],
+            "> 狐狸，你今天的盟友是\n\n> 瓦豆鲁迪（NEW）\n\n"
+            "![盟友卡牌 #200px #310px](qqbot-media://image/v1/example)\n\n"
+            "> 今日剩余4/5 次",
+        )
         self.assertNotIn("##", payload["markdown"]["content"])
         self.assertEqual(
             calls[-1][0:2], ("DELETE", "/v2/media-images/{image_id}/delete")
@@ -267,9 +272,11 @@ class RichDeliveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(receipts, ["attached", "plain"])
         self.assertEqual(attached.await_count, 1)
         self.assertIn(
-            "狐狸，你今天的盟友是 瓦豆鲁迪", post.call_args.args[1]["content"]
+            "狐狸，你今天的盟友是\n\n瓦豆鲁迪（NEW）", post.call_args.args[1]["content"]
         )
         self.assertIn("4/5 次", post.call_args.args[1]["content"])
+        self.assertNotIn(">", post.call_args.args[1]["content"])
+        self.assertNotIn("**", post.call_args.args[1]["content"])
 
     async def test_upload_unavailable_uses_one_attachment_even_when_markdown_denied(
         self,
@@ -467,6 +474,9 @@ class RichDeliveryTests(unittest.IsolatedAsyncioTestCase):
         ):
             await self.delivery.send(self.event, components)
             self.assertEqual(post.await_count, 1)
+            self.assertNotIn(
+                "星之卡比图鉴", post.call_args.args[1]["markdown"]["content"]
+            )
             token = next(iter(self.delivery.readings))
             reading = self.delivery.readings[token]
             rebuilt = "".join(
@@ -639,7 +649,8 @@ class RoutingAndReadingTests(unittest.IsolatedAsyncioTestCase):
         view = qq.draw_presentation(
             outcome, "爱丽丝", "瓦豆鲁迪", is_bot=True, limit=5, wiki=False
         )
-        self.assertTrue(view.intro.startswith("我今天的盟友是"))
+        self.assertEqual(view.intro, "> 我今天的盟友是\n\n> 瓦豆鲁迪（重复）")
+        self.assertEqual(view.summary, "> 今日剩余0/5 次")
         self.assertNotIn("爱丽丝", view.intro)
         self.assertIn("重复", view.intro)
         self.assertFalse(any(item.command == "Bot今日盟友" for item in view.actions))
@@ -679,6 +690,89 @@ class PluginOfficialFlowTests(unittest.IsolatedAsyncioTestCase):
             "qq_official_draw_card": False,
         }
         self.plugin._chain_result_with_media = AsyncMock(return_value=None)
+
+    async def test_official_description_uses_compact_metadata_and_complete_paragraphs(
+        self,
+    ):
+        description = (
+            "简介中的 [角色](链接) 和 *原文* 应保留。" * 20 + "\n\n第二段完整资料。"
+        )
+        self.plugin.store.entry = {**ENTRY, "source": "星之卡比 Wii"}
+        self.plugin.store.description = description
+        for mode in ("普通消息", "合并转发", "简介卡片"):
+            with self.subTest(mode=mode):
+                self.plugin.config = {
+                    "ally_description_view_mode": mode,
+                    "ally_description_max_chars": 0,
+                }
+                self.assertEqual(
+                    [
+                        item
+                        async for item in self.plugin.view_ally_description(
+                            OfficialEvent("查看简介 #12")
+                        )
+                    ],
+                    [],
+                )
+                call = self.plugin._chain_result_with_media.call_args
+                components, view = call.args[1], call.kwargs["qq_view"]
+                self.assertEqual(components[0].text, description)
+                body = qq.QQOfficialDelivery._markdown(view, components, {}, 1, 1)
+                self.assertTrue(
+                    body.startswith("**瓦豆鲁迪**\n\n> Waddle Dee · 图鉴 \\#12")
+                )
+                self.assertIn("> 首次登场：星之卡比 Wii", body)
+                self.assertNotIn("##", body)
+                self.assertNotIn("📖 角色简介", body)
+                restored = qq.plain_markdown(body.split(view.intro + "\n\n", 1)[1])
+                self.assertEqual(
+                    "".join(restored.split()), "".join(description.split())
+                )
+                self.assertGreater(restored.count("\n\n"), description.count("\n\n"))
+                self.assertIn("查看简介 #12", [item.command for item in view.actions])
+                self.assertFalse(self.plugin.store.draws)
+                self.assertFalse(self.plugin.store.groups)
+        self.plugin.config = {
+            "qq_official_enabled": False,
+            "ally_description_view_mode": "合并转发",
+        }
+        [
+            item
+            async for item in self.plugin.view_ally_description(
+                OfficialEvent("查看简介 #12")
+            )
+        ]
+        self.assertIsInstance(
+            self.plugin._chain_result_with_media.call_args.args[1][0], Comp.Nodes
+        )
+
+    async def test_official_profile_plain_fallback_keeps_metadata_and_literal_source(
+        self,
+    ):
+        description = "“角色对白！”\n— 发言者\n\n原文有 *星号*、[链接] 和 > 符号。"
+        self.plugin.store.description = description
+        delivery = qq.QQOfficialDelivery(self.plugin.store.root)
+        post = AsyncMock(
+            side_effect=[qq.APIError(403), qq.APIError(403), {"id": "plain"}]
+        )
+        [
+            item
+            async for item in self.plugin.view_ally_description(
+                OfficialEvent("查看简介 #12")
+            )
+        ]
+        call = self.plugin._chain_result_with_media.call_args
+        view = call.kwargs["qq_view"]
+        with patch.object(delivery, "_post", post):
+            self.assertEqual(
+                await delivery.send(OfficialEvent(), call.args[1], view), ["plain"]
+            )
+        self.assertEqual(post.call_args.args[1]["msg_type"], 0)
+        self.assertIn(
+            "瓦豆鲁迪\n\nWaddle Dee · 图鉴 #12\n\n" + description,
+            post.call_args.args[1]["content"],
+        )
+        self.assertNotIn("**瓦豆鲁迪**", post.call_args.args[1]["content"])
 
     async def test_private_draw_records_and_counts_do_not_mix(self):
         first, other = OfficialEvent(group=""), OfficialEvent(group="", user="other")

@@ -71,7 +71,11 @@ def identity_key(event: Any) -> str:
     api = getattr(getattr(event, "bot", None), "api", None)
     token = getattr(getattr(api, "_http", None), "_token", None)
     app_id = str(getattr(token, "app_id", "") or "")
-    return hashlib.sha256(f"qq-app:{app_id}".encode()).hexdigest()[:24] if app_id else bot_key(event)
+    return (
+        hashlib.sha256(f"qq-app:{app_id}".encode()).hexdigest()[:24]
+        if app_id
+        else bot_key(event)
+    )
 
 
 def private_scope(event: Any) -> str:
@@ -103,11 +107,12 @@ class Action:
 
 @dataclass(frozen=True)
 class Presentation:
-    heading: str = "星之卡比图鉴"
+    heading: str = ""
     intro: str = ""
     summary: str = ""
     actions: tuple[Action, ...] = ()
     replace_caption: bool = False
+    paragraphs: bool = False
 
 
 def character_actions(
@@ -134,11 +139,10 @@ def draw_presentation(
 ) -> Presentation:
     repeated = outcome.repeated or outcome.existing_today or outcome.all_unlocked
     status = "重复" if repeated else "NEW"
+    nickname = " ".join(str(nickname).split())
+    name = " ".join(str(name).split())
     subject = "我今天的盟友是" if is_bot else f"{nickname}，你今天的盟友是"
-    summary = f"**今日剩余** {outcome.remaining}/{limit} 次"
-    if outcome.collected is not None and outcome.total:
-        count = min(outcome.total, max(0, outcome.collected))
-        summary += f"　·　**收藏进度** {count:,} / {outcome.total:,}"
+    summary = f"> 今日剩余{outcome.remaining}/{limit} 次"
     actions = []
     if outcome.remaining > 0:
         actions.append(
@@ -159,11 +163,67 @@ def draw_presentation(
     actions.extend(character_actions(outcome.entry, wiki=wiki))
     return Presentation(
         heading="",
-        intro=f"{escape(subject)} **{escape(name)}**（{status}）",
+        intro=f"> {escape(subject)}\n\n> {escape(name)}（{status}）",
         summary=summary,
         actions=tuple(actions),
         replace_caption=True,
     )
+
+
+def description_presentation(
+    entry: dict[str, Any], name: str, profile: dict[str, Any]
+) -> Presentation:
+    """A compact identity block above the original, selectable profile text."""
+    name = " ".join(str(name).split())
+    english = " ".join(str(profile.get("name_en") or "").split())
+    number = int(entry.get("id") or entry.get("catalog_id") or 0)
+    identity = f"图鉴 #{number}"
+    if english and english.casefold() not in name.casefold():
+        identity = f"{english} · {identity}"
+    intro = f"**{escape(name)}**\n\n> {escape(identity)}"
+    work = " ".join(
+        str(
+            profile.get("debut_work_zh")
+            or profile.get("display_work")
+            or entry.get("source")
+            or ""
+        ).split()
+    )
+    if work:
+        intro += f"\n> 首次登场：{escape(work)}"
+    return Presentation(intro=intro, actions=character_actions(entry), paragraphs=True)
+
+
+def paragraph_markdown(text: str) -> str:
+    """Keep source paragraphs; break dense prose only at sentence boundaries."""
+    blocks = []
+    for paragraph in re.split(r"\n+", str(text).strip()):
+        # Existing dialogue is a quote; keep its attribution in the same block.
+        if paragraph.startswith(("“", "「", "『", '"')):
+            blocks.append("> " + escape(paragraph))
+            continue
+        if paragraph.startswith("—") and blocks and blocks[-1].startswith("> "):
+            blocks[-1] += "\n> " + escape(paragraph)
+            continue
+        start = 0
+        for match in re.finditer(r"[。！？!?][”’」』）)]*|\.(?=\s+[A-Z])", paragraph):
+            if match.end() - start >= 180:
+                blocks.append(
+                    escape(paragraph[start : match.end()].strip()).replace("\n", "  \n")
+                )
+                start = match.end()
+        tail = paragraph[start:].strip()
+        if tail:
+            blocks.append(escape(tail).replace("\n", "  \n"))
+    return "\n\n".join(blocks)
+
+
+def plain_markdown(text: str) -> str:
+    """Undo generated quotes/emphasis and our escaping for plain fallback."""
+    text = re.sub(r"(?m)^> ?", "", text)
+    text = re.sub(r"(?<!\\)\*\*", "", text)
+    text = re.sub(r"\\([\\`*_{}\[\]()#!~+.\-])", r"\1", text)
+    return html.unescape(text)
 
 
 def keyboard(
@@ -642,7 +702,7 @@ class QQOfficialDelivery:
         page: int,
         total: int,
     ) -> str:
-        lines = [f"## {escape(view.heading)}"] if view.heading else []
+        lines = []
         if view.intro:
             lines.append(view.intro)
         if total > 1:
@@ -650,7 +710,11 @@ class QQOfficialDelivery:
         for index, component in enumerate(components):
             if isinstance(component, Comp.Plain):
                 if not view.replace_caption:
-                    lines.append(escape(component.text).replace("\n", "  \n"))
+                    lines.append(
+                        paragraph_markdown(component.text)
+                        if view.paragraphs
+                        else escape(component.text).replace("\n", "  \n")
+                    )
             elif index in images:
                 url, width, height = images[index]
                 printed_width = min(width, 480)
@@ -659,7 +723,9 @@ class QQOfficialDelivery:
                     f"![盟友卡牌 #{printed_width}px #{printed_height}px]({url})"
                 )
         if view.summary:
-            lines.extend(["***", view.summary])
+            if not view.replace_caption:
+                lines.append("***")
+            lines.append(view.summary)
         return "\n\n".join(lines)
 
     async def _attachment(self, event: Any, image: Any, text: str) -> str:
@@ -838,10 +904,15 @@ class QQOfficialDelivery:
                             receipts.append(
                                 await self._attachment(event, component, "")
                             )
-                    plain = (
-                        raw_text
-                        if not view.replace_caption
-                        else re.sub(r"[*\\]", "", view.intro + "\n" + view.summary)
+                    plain = "\n\n".join(
+                        filter(
+                            None,
+                            (
+                                plain_markdown(view.intro),
+                                "" if view.replace_caption else raw_text,
+                                plain_markdown(view.summary),
+                            ),
+                        )
                     )
                     if len(pages) > 1:
                         plain = f"第 {page}/{len(pages)} 页\n" + plain
