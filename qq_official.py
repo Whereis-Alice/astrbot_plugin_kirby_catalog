@@ -66,6 +66,14 @@ def bot_key(event: Any) -> str:
     return hashlib.sha256(f"{platform_key(event)}:{app_id}".encode()).hexdigest()[:24]
 
 
+def identity_key(event: Any) -> str:
+    """Portable collection identity for the same QQ app on another server."""
+    api = getattr(getattr(event, "bot", None), "api", None)
+    token = getattr(getattr(api, "_http", None), "_token", None)
+    app_id = str(getattr(token, "app_id", "") or "")
+    return hashlib.sha256(f"qq-app:{app_id}".encode()).hexdigest()[:24] if app_id else bot_key(event)
+
+
 def private_scope(event: Any) -> str:
     if not is_official(event):
         return ""

@@ -42,6 +42,7 @@ NON_GROUP_CONFIG_FILENAMES = frozenset(
     {
         "draw_limits.json",
         "draw_bonuses.json",
+        "identity_links.json",
         DESCRIPTION_OVERRIDES_FILENAME,
         TERMINOLOGY_OVERRIDES_FILENAME,
         WIKI_INDEX_OVERRIDES_FILENAME,
@@ -299,6 +300,10 @@ class CatalogStore:
         self.assets_dir.mkdir(parents=True, exist_ok=True)
         self.gallery_dir.mkdir(parents=True, exist_ok=True)
         self.trash_dir.mkdir(parents=True, exist_ok=True)
+        # Recover a multi-file identity merge before loading any persisted data.
+        from .identity_links import IdentityLinks
+
+        self.identity_links = IdentityLinks(self)
         self._load_tombstones()
         self._load_audit_entries()
         self._load_catalog()
@@ -1118,16 +1123,19 @@ class CatalogStore:
         group_id = _safe_data_id(group_id, "群号")
         path = self.config_dir / f"{group_id}.json"
         with self._lock:
+            self.identity_links.ensure_ready()
             return normalise_group_config(_read_json(path, {}))
 
     def save_group(self, group_id: str, config: Dict[str, Dict[str, Any]]) -> None:
         group_id = _safe_data_id(group_id, "群号")
         path = self.config_dir / f"{group_id}.json"
         with self._lock:
+            self.identity_links.ensure_ready()
             _atomic_write_json(path, normalise_group_config(config))
 
     def group_ids(self) -> List[str]:
         with self._lock:
+            self.identity_links.ensure_ready()
             ids = {
                 path.stem
                 for path in self.config_dir.glob("*.json")
@@ -1301,6 +1309,7 @@ class CatalogStore:
     def draw_count(
         self, group_id: str, user_id: str, today: Optional[str] = None
     ) -> int:
+        self.identity_links.ensure_ready()
         today = today or get_today()
         return self._daily_counter_value(
             self._draw_limits, str(group_id), str(user_id), today
@@ -1341,6 +1350,7 @@ class CatalogStore:
     def draw_bonus(
         self, group_id: str, user_id: str, today: Optional[str] = None
     ) -> int:
+        self.identity_links.ensure_ready()
         today = today or get_today()
         return self._daily_counter_value(
             self._draw_bonuses, str(group_id), str(user_id), today

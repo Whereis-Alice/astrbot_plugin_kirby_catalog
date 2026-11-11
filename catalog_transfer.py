@@ -46,6 +46,7 @@ from .catalog_core import (
     _read_json,
     normalise_group_config,
 )
+from .identity_links import IDENTITY_LINKS_FILENAME, merge_backup, validate_state
 from .terminology import CSV_FIELDS as TERMINOLOGY_CSV_FIELDS
 from .terminology import KirbyTerminologyStore, TerminologyError
 from .wiki_index import WikiIndexStore
@@ -127,6 +128,8 @@ GROUP_FIELDS: Tuple[str, ...] = (
     "group_id",
     "user_id",
     "nickname",
+    "profile_nickname",
+    "group_card",
     "current_ally",
     "current_date",
     "no_new_count",
@@ -779,11 +782,15 @@ class CatalogTransferService:
             for user_id, payload in sorted(config.items()):
                 current = payload.get("current") or {}
                 unlocked = payload.get("unlocked") or []
+                names = payload.get("identity_names")
+                names = names if isinstance(names, dict) else {}
                 rows.append(
                     {
                         "group_id": gid,
                         "user_id": user_id,
                         "nickname": _text(payload.get("nickname")) or "用户",
+                        "profile_nickname": _text(names.get("profile")),
+                        "group_card": _text(names.get("group_card")),
                         "current_ally": _text(current.get("ally_filename")),
                         "current_date": _text(current.get("date")),
                         "no_new_count": _int(payload.get("no_new_count"), 0),
@@ -915,7 +922,13 @@ class CatalogTransferService:
                     json.dumps(dict(manifest), ensure_ascii=False, indent=2) + "\n",
                 )
                 for arcname, path in members:
-                    archive.write(path, arcname)
+                    if arcname == "config/" + IDENTITY_LINKS_FILENAME:
+                        # A backup retains links, never unused claim codes.
+                        archive.writestr(arcname, json.dumps(validate_state(
+                            json.loads(path.read_text(encoding="utf-8")), include_codes=False,
+                        ), ensure_ascii=False))
+                    else:
+                        archive.write(path, arcname)
         except OSError as exc:
             target.unlink(missing_ok=True)
             raise ValueError(f"生成压缩包失败：{exc}") from exc
@@ -1470,6 +1483,9 @@ class CatalogTransferService:
                 },
                 "unlocked": _unlocked_from_row(row.get("unlocked")),
             }
+            if _text(row.get("profile_nickname")):
+                bucket[user_id]["identity_names"] = {"profile": _text(row["profile_nickname"]),
+                    "group_card": _text(row.get("group_card")), "source": "import"}
         for group_id, bucket in sorted(incoming.items()):
             existing = normalise_group_config(store.load_group(group_id))
             normalised = normalise_group_config(bucket)
@@ -1805,6 +1821,8 @@ class CatalogTransferService:
     def _merge_config(name: str, target: Path, payload: Any) -> Any:
         """合并导入时按键合并配置文件，而不是整份覆盖。"""
         current = _read_json(target, None)
+        if name == IDENTITY_LINKS_FILENAME:
+            return merge_backup(current, payload)
         if name in {"draw_limits.json", "draw_bonuses.json"}:
             merged = dict(current) if isinstance(current, Mapping) else {}
             if isinstance(payload, Mapping):
@@ -1834,6 +1852,13 @@ class CatalogTransferService:
         counts: Dict[str, int] = {}
         replace = mode == "replace"
         touched = False
+        # Check identity conflicts before writing any companion group files.
+        with zipfile.ZipFile(path) as archive:
+            for raw_name, safe, _size in members:
+                if safe == "config/" + IDENTITY_LINKS_FILENAME:
+                    incoming = validate_state(json.loads(archive.read(raw_name).decode("utf-8-sig")), include_codes=False)
+                    if not replace:
+                        merge_backup(_read_json(store.config_dir / IDENTITY_LINKS_FILENAME, None), incoming)
         with zipfile.ZipFile(path) as archive:
             for raw_name, safe, _size in members:
                 if safe in ARCHIVE_METADATA_NAMES:
@@ -1863,6 +1888,8 @@ class CatalogTransferService:
                     continue
                 exists = target.is_file()
                 try:
+                    if Path(safe).name == IDENTITY_LINKS_FILENAME:
+                        payload = validate_state(payload, include_codes=False)
                     if kind == "group":
                         group_id = Path(safe).stem
                         final = normalise_group_config(payload)

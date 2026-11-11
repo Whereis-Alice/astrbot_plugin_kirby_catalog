@@ -40,6 +40,8 @@ from .catalog_core import (
     get_today,
     plain_text_from_component,
 )
+from .identity_links import IdentityLinks
+from .identity_links import member_key as identity_member_key
 from .kirby_fandom import (
     DEFAULT_FANDOM_API_URL,
     KirbyFandomClient,
@@ -79,6 +81,9 @@ from .qq_official import (
 )
 from .qq_official import (
     draw_presentation as qq_draw_presentation,
+)
+from .qq_official import (
+    identity_key as qq_identity_key,
 )
 from .qq_official import (
     is_official as is_qq_official,
@@ -558,6 +563,198 @@ class KirbyCatalogPlugin(Star):
             return event.get_sender_name() or "用户"
         except Exception:
             return "用户"
+
+    def _identity_links(self) -> IdentityLinks | None:
+        return getattr(self.store, "identity_links", None)
+
+    def _identity_scope(self, event: AstrMessageEvent) -> str:
+        if qq_private_scope(event):
+            key = identity_member_key(qq_identity_key(event), "private", self._sender_id(event))[:32]
+            return "qqdm_" + key
+        return self._group_id(event)
+
+    def _collection_group_id(self, event: AstrMessageEvent) -> str:
+        """Group visibility changes only after an administrator links the group."""
+        group = self._group_id(event)
+        links = self._identity_links()
+        if group and links and is_qq_official(event):
+            return links.group(qq_identity_key(event), group)
+        return group
+
+    def _data_context(self, event: AstrMessageEvent, user_id: str | None = None) -> tuple[str, str]:
+        group, user = self._group_id(event), user_id or self._sender_id(event)
+        links = self._identity_links()
+        if group and user and links and is_qq_official(event):
+            return links.resolve(qq_identity_key(event), self._identity_scope(event), user, fallback_scope=group)
+        return group, user
+
+    def _data_name(self, event: AstrMessageEvent) -> str:
+        name = self._sender_name(event)
+        if is_qq_official(event) and name in {"用户", self._sender_id(event)}:
+            group, user = self._data_context(event)
+            return str(self.store.load_group(group).get(user, {}).get("nickname") or name)
+        return name
+
+    @staticmethod
+    def _identity_names(event: AstrMessageEvent) -> dict[str, str]:
+        """Keep profile nickname separate from the OneBot group card."""
+        try:
+            platform = event.get_platform_name()
+        except AttributeError:
+            platform = ""
+        raw = getattr(getattr(event, "message_obj", None), "raw_message", None)
+        if platform == "aiocqhttp" and hasattr(raw, "get"):
+            sender = raw.get("sender", {})
+            if isinstance(sender, dict) and sender.get("nickname"):
+                return {"profile": str(sender["nickname"]).strip(),
+                        "group_card": str(sender.get("card") or "").strip(),
+                        "source": "onebot_sender", "date": get_today()}
+        return {}
+
+    @staticmethod
+    def _official_profile_name(event: AstrMessageEvent) -> str:
+        raw = getattr(getattr(event, "message_obj", None), "raw_message", None)
+        author = raw.get("author", {}) if isinstance(raw, dict) else getattr(raw, "author", None)
+        name = author.get("username", "") if isinstance(author, dict) else getattr(author, "username", "")
+        if not name:
+            data = getattr(raw, "raw_data", {})
+            if isinstance(data, dict) and isinstance(data.get("author"), dict):
+                name = data["author"].get("username", "")
+        return str(name or "").strip()
+
+    @staticmethod
+    def _private_identity_event(event: AstrMessageEvent) -> bool:
+        obj = getattr(event, "message_obj", None)
+        if str(getattr(obj, "group_id", "") or ""):
+            return False
+        try:
+            return event.is_private_chat()
+        except AttributeError:
+            session = getattr(event, "session", None)
+            kind = getattr(session, "message_type", None)
+            return str(getattr(kind, "value", kind) or "") == "FriendMessage"
+
+    @filter.command("盟友绑定码")
+    @filter.event_message_type(EventMessageType.ALL)
+    async def issue_ally_link(self, event: AstrMessageEvent):
+        """在旧 OneBot 私聊为自己的旧群收藏签发一次性绑定码。"""
+        if not self._private_identity_event(event):
+            yield event.plain_result("绑定码只在私聊签发。请私聊旧 OneBot：盟友绑定码 旧群号 目标身份码。")
+            return
+        try:
+            platform = event.get_platform_name()
+        except AttributeError:
+            platform = ""
+        if platform != "aiocqhttp":
+            yield event.plain_result("请在旧 OneBot 私聊领取；旧 Bot 已下线时，请管理员代为签发。")
+            return
+        links = self._identity_links()
+        if links is None:
+            return
+        parts = self._command_remainder(event, {"盟友绑定码"}).split()
+        if len(parts) != 2:
+            yield event.plain_result("先在目标官方群或单聊发送「盟友身份」，再私聊旧 OneBot：盟友绑定码 旧群号 目标身份码。")
+            return
+        try:
+            async with self._draw_lock:
+                code = links.issue("user", parts[0], self._sender_id(event), recipient=parts[1])
+        except (ValueError, OSError) as exc:
+            yield event.plain_result(str(exc))
+            return
+        yield event.plain_result(f"你的绑定码：{code}\n20 分钟内，在 QQ 官方 Bot 的目标群或单聊发送：绑定盟友 {code}\n此码可认领你的收藏，请勿转发。")
+
+    @filter.command("管理员盟友绑定码")
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.event_message_type(EventMessageType.ALL)
+    async def admin_issue_ally_link(self, event: AstrMessageEvent):
+        """旧 Bot 下线后，管理员私聊为核验过的旧 QQ 账号签发码。"""
+        async for result in self._admin_issue_link(event, "user"):
+            yield result
+
+    @filter.command("盟友群绑定码")
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.event_message_type(EventMessageType.ALL)
+    async def admin_issue_group_link(self, event: AstrMessageEvent):
+        """管理员私聊签发旧群绑定码，可同时指定旧 Bot 收藏 ID。"""
+        async for result in self._admin_issue_link(event, "group"):
+            yield result
+
+    async def _admin_issue_link(self, event: AstrMessageEvent, kind: str):
+        if not event.is_admin():
+            yield event.plain_result("此操作仅限 AstrBot 管理员。")
+            return
+        if not self._private_identity_event(event):
+            yield event.plain_result("请在私聊中签发绑定码，避免公开泄露。")
+            return
+        names = {"管理员盟友绑定码"} if kind == "user" else {"盟友群绑定码"}
+        parts = self._command_remainder(event, names).split()
+        if (kind == "user" and len(parts) != 3) or (kind == "group" and not 1 <= len(parts) <= 2):
+            yield event.plain_result("用法：管理员盟友绑定码 旧群号 旧QQ号 目标身份码" if kind == "user" else "用法：盟友群绑定码 旧群号 [旧Bot收藏ID，例如 bot_123456]")
+            return
+        links = self._identity_links()
+        if links is None:
+            return
+        try:
+            async with self._draw_lock:
+                code = links.issue(kind, parts[0], parts[1] if kind == "user" else "", parts[1] if kind == "group" and len(parts) == 2 else "", recipient=parts[2] if kind == "user" else "")
+        except (ValueError, OSError) as exc:
+            yield event.plain_result(str(exc))
+            return
+        command = "绑定盟友" if kind == "user" else "绑定盟友群"
+        yield event.plain_result(f"绑定码：{code}\n20 分钟有效，使用一次后失效。\n在目标官方群{'或单聊' if kind == 'user' else '，由 AstrBot 管理员'}发送：{command} {code}\n请只交给核验过的账号本人或群管理员。")
+
+    @filter.command("绑定盟友")
+    @filter.event_message_type(EventMessageType.ALL)
+    async def bind_ally_identity(self, event: AstrMessageEvent):
+        """绑定当前 QQ 官方身份，并合并已经抽取的收藏和次数。"""
+        async for result in self._bind_identity(event, "user"):
+            yield result
+
+    @filter.command("绑定盟友群")
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.event_message_type(EventMessageType.ALL)
+    async def bind_ally_group(self, event: AstrMessageEvent):
+        """管理员将官方群关联到旧群，延续群图鉴和排行榜。"""
+        async for result in self._bind_identity(event, "group"):
+            yield result
+
+    async def _bind_identity(self, event: AstrMessageEvent, kind: str):
+        if kind == "group" and not event.is_admin():
+            yield event.plain_result("此操作仅限 AstrBot 管理员。")
+            return
+        if not is_qq_official(event) or (kind == "group" and not getattr(event.message_obj, "group_id", "")):
+            yield event.plain_result("请在 QQ 官方 Bot 的目标群使用。" if kind == "group" else "请在 QQ 官方 Bot 的目标群或单聊使用。")
+            return
+        links = self._identity_links()
+        if links is None:
+            return
+        try:
+            async with self._draw_lock:
+                group, _user = links.bind(kind, qq_identity_key(event), self._identity_scope(event), self._sender_id(event), self._command_remainder(event, {"绑定盟友群" if kind == "group" else "绑定盟友"}), current_bot=self._bot_identity(event), source_scope=self._group_id(event))
+                self._cooldowns.clear()
+        except (ValueError, OSError) as exc:
+            logger.warning("[%s] 身份绑定失败: %s", PLUGIN_ID, type(exc).__name__)
+            yield event.plain_result(f"绑定未完成：{exc}")
+            return
+        yield event.plain_result(f"已关联旧群 {group} 的{'群图鉴与排行榜' if kind == 'group' else '个人收藏'}。已有收藏已去重合并，已用次数合计；之后两端共用同一份记录。")
+
+    @filter.command("盟友身份")
+    @filter.event_message_type(EventMessageType.ALL)
+    async def ally_identity_status(self, event: AstrMessageEvent):
+        """查看当前数据地址，平台标识仅在私聊显示。"""
+        group, user = self._data_context(event)
+        if not group:
+            yield event.plain_result("请在群聊或 QQ 官方 Bot 单聊查看绑定状态。")
+            return
+        raw_group, raw_user = self._group_id(event), self._sender_id(event)
+        links = self._identity_links()
+        bound = bool(links and is_qq_official(event) and links.has_user(qq_identity_key(event), self._identity_scope(event), raw_user))
+        text = "当前个人身份已关联旧数据。" if bound else "当前个人身份尚未绑定旧账号。"
+        if is_qq_official(event):
+            text += f"\n目标身份码：{identity_member_key(qq_identity_key(event), self._identity_scope(event), raw_user)[:24]}"
+        if self._private_identity_event(event):
+            text += f"\n当前会话：{raw_group}\n当前用户：{raw_user}\n收藏地址：{group} / {user}"
+        yield event.plain_result(text + "\n私聊旧 OneBot：盟友绑定码 旧群号 目标身份码\n回到本会话：绑定盟友 绑定码")
 
     @staticmethod
     def _command_remainder(event: AstrMessageEvent, names: Iterable[str]) -> str:
@@ -8171,16 +8368,23 @@ class KirbyCatalogPlugin(Star):
         cooldown: float = 0,
         include_bonus: bool = True,
         reuse_today: bool = False,
+        identity_resolver: Callable[[], tuple[str, str, str]] | None = None,
+        identity_names: dict[str, str] | None = None,
     ) -> tuple[AllyDrawOutcome | None, str | None]:
-        now = time.monotonic()
-        last_draw = self._cooldowns.get(group_id, {}).get(user_id, 0.0)
-        if now - last_draw < cooldown:
-            return None, (
-                f"{nickname}，抽卡太快啦，请稍等 "
-                f"{cooldown - (now - last_draw):.1f} 秒。"
-            )
-
         async with self._draw_lock:
+            if identity_resolver is not None:
+                try:
+                    group_id, user_id, nickname = identity_resolver()
+                except (OSError, ValueError) as exc:
+                    logger.warning("[%s] 抽卡前身份迁移失败: %s", PLUGIN_ID, type(exc).__name__)
+                    return None, "身份迁移暂未完成，本次未扣次数，请管理员检查数据后重试。"
+            now = time.monotonic()
+            last_draw = self._cooldowns.get(group_id, {}).get(user_id, 0.0)
+            if now - last_draw < cooldown:
+                return None, (
+                    f"{nickname}，抽卡太快啦，请稍等 "
+                    f"{cooldown - (now - last_draw):.1f} 秒。"
+                )
             # The store is kept current by startup, WebUI, and admin mutations.
             # A full filesystem and group-data scan here made every draw wait.
             today = get_today()
@@ -8214,6 +8418,10 @@ class KirbyCatalogPlugin(Star):
                             None,
                         )
             if count >= limit:
+                if identity_names:
+                    user["identity_names"] = identity_names
+                    config[user_id] = user
+                    self.store.save_group(group_id, config)
                 return None, (
                     f"{nickname}，你今天已经抽了 {count} 次，"
                     f"今日可用次数为 {limit} 次，明天再来吧。"
@@ -8242,6 +8450,8 @@ class KirbyCatalogPlugin(Star):
             user["current"] = {"ally_filename": entry["filename"], "date": today}
             self.store.unlock(user, entry["filename"], today)
             user["nickname"] = nickname or user.get("nickname", "用户")
+            if identity_names:
+                user["identity_names"] = identity_names
             config[user_id] = user
             self.store.save_group(group_id, config)
             self.store.increment_draw(group_id, user_id, today)
@@ -8266,17 +8476,26 @@ class KirbyCatalogPlugin(Star):
 
     async def _draw_ally_impl(self, event: AstrMessageEvent):
         """每天抽取盟友，重复时使用连续未出新保底。"""
-        group_id = self._group_id(event)
+        group_id, user_id = self._data_context(event)
         if not group_id:
             yield event.plain_result("该功能仅支持群聊。")
             return
-        user_id = self._sender_id(event)
-        nickname = self._sender_name(event)
+        nickname = self._data_name(event)
         if not user_id:
             yield event.plain_result("无法获取用户信息，请稍后再试。")
             return
 
         started_at = time.monotonic()
+        def resolve_identity() -> tuple[str, str, str]:
+            nonlocal group_id, user_id, nickname
+            links = self._identity_links()
+            if links and is_qq_official(event) and self._bool_value(self._config_value("qq_official_auto_migrate_by_name", False)):
+                links.auto_bind_by_name(qq_identity_key(event), self._identity_scope(event), self._sender_id(event),
+                                        self._official_profile_name(event), source_scope=self._group_id(event))
+            group_id, user_id = self._data_context(event)
+            nickname = self._data_name(event)
+            return group_id, user_id, nickname
+
         outcome, error = await self._draw_for_identity(
             group_id=group_id,
             user_id=user_id,
@@ -8285,6 +8504,8 @@ class KirbyCatalogPlugin(Star):
             cooldown=max(
                 0.0, float(self._config_value("draw_cooldown_seconds", 3))
             ),
+            identity_resolver=resolve_identity,
+            identity_names=self._identity_names(event),
         )
         if error or outcome is None:
             yield event.plain_result(error or "盟友抽取失败，请稍后再试。")
@@ -8417,7 +8638,9 @@ class KirbyCatalogPlugin(Star):
         if configured_identity:
             return configured_identity
         if is_qq_official(event):
-            return f"bot_qq_{qq_bot_key(event)}"
+            fallback = f"bot_qq_{qq_bot_key(event)}"
+            links = self._identity_links()
+            return links.bot_user(qq_identity_key(event), self._group_id(event), fallback) if links else fallback
 
         message_obj = getattr(event, "message_obj", None)
         raw_event = getattr(message_obj, "raw_message", None)
@@ -8478,7 +8701,7 @@ class KirbyCatalogPlugin(Star):
     ) -> Tuple[AllyDrawOutcome | None, str | None]:
         if not self._bool_value(self._config_value("bot_draw_enabled", True)):
             return None, "Bot 抽盟友功能当前已关闭。"
-        group_id = self._group_id(event)
+        group_id = self._collection_group_id(event)
         if not group_id:
             return None, "Bot 抽盟友只支持群聊。"
         bot_identity = self._bot_identity(event)
@@ -8499,6 +8722,7 @@ class KirbyCatalogPlugin(Star):
             nickname=nickname,
             base_limit=max(1, int(self._config_value("daily_draw_limit", 3))),
             include_bonus=True,
+            identity_resolver=lambda: (self._collection_group_id(event), self._bot_identity(event), nickname),
         )
 
     @filter.regex(r"(?i)^/?(?:bot今日盟友|机器人今日盟友|bot抽盟友)$")
@@ -8566,7 +8790,7 @@ class KirbyCatalogPlugin(Star):
         self, event: AstrMessageEvent
     ) -> Tuple[Optional[str], Optional[List[Any]], Optional[str]]:
         """Render only the current Bot identity's catalog for the current group."""
-        group_id = self._group_id(event)
+        group_id = self._collection_group_id(event)
         if not group_id:
             return None, None, "爱丽丝的盟友图鉴只支持群聊。"
         bot_identity = self._bot_identity(event)
@@ -8749,12 +8973,13 @@ class KirbyCatalogPlugin(Star):
     @filter.event_message_type(EventMessageType.GROUP_MESSAGE)
     async def reset_group_draw_counts(self, event: AstrMessageEvent):
         """管理员清空当前群当天的已用次数和额外抽取机会。"""
-        group_id = self._group_id(event)
+        group_id = self._collection_group_id(event)
         if not group_id:
             yield event.plain_result("该功能仅支持群聊。")
             return
         today = get_today()
         async with self._draw_lock:
+            group_id = self._collection_group_id(event)
             result = self.store.reset_group_draws(group_id, today)
             self._cooldowns.pop(group_id, None)
         if result["users"]:
@@ -8771,7 +8996,7 @@ class KirbyCatalogPlugin(Star):
     @filter.event_message_type(EventMessageType.GROUP_MESSAGE)
     async def add_member_draw_count(self, event: AstrMessageEvent):
         """管理员为指定群友增加当天可用的抽取机会。"""
-        group_id = self._group_id(event)
+        group_id = self._collection_group_id(event)
         if not group_id:
             yield event.plain_result("该功能仅支持群聊。")
             return
@@ -8797,11 +9022,13 @@ class KirbyCatalogPlugin(Star):
             if amount_match and amount_match.group(1) != target_id:
                 amount = int(amount_match.group(1))
         else:
-            match = re.fullmatch(r"\s*(\d+)(?:\s+([+-]?\d+))?\s*", remainder)
+            id_pattern = r"[A-Za-z0-9_-]{1,128}" if is_qq_official(event) else r"\d+"
+            match = re.fullmatch(rf"\s*({id_pattern})(?:\s+([+-]?\d+))?\s*", remainder)
             if match:
                 target_id = match.group(1)
                 amount = int(match.group(2) or 1)
-        if not target_id.isdigit() or amount <= 0:
+        valid_target = bool(re.fullmatch(r"[A-Za-z0-9_-]{1,128}", target_id)) if is_qq_official(event) else target_id.isdigit()
+        if not valid_target or amount <= 0:
             yield event.plain_result(
                 "用法：增加今日抽取次数 @群友 [次数]；"
                 "也可以使用：增加今日抽取次数 用户ID [次数]。"
@@ -8811,6 +9038,7 @@ class KirbyCatalogPlugin(Star):
         today = get_today()
         base_limit = max(1, int(self._config_value("daily_draw_limit", 3)))
         async with self._draw_lock:
+            group_id, target_id = self._data_context(event, target_id)
             total_bonus = self.store.add_draw_bonus(
                 group_id, target_id, amount=amount, today=today
             )
@@ -8849,13 +9077,18 @@ class KirbyCatalogPlugin(Star):
     @filter.event_message_type(EventMessageType.ALL)
     async def query_ally(self, event: AstrMessageEvent):
         """精准查看图鉴条目，或查看自己/指定成员今天的盟友。"""
-        group_id = self._group_id(event)
+        group_id = self._collection_group_id(event)
         if not group_id:
             yield event.plain_result("该功能仅支持群聊。")
             return
         remainder = self._command_remainder(event, {"查盟友", "我的盟友"})
-        config = self.store.load_group(group_id)
         target_id = self._at_target(event)
+        if target_id:
+            target_group, mapped_id = self._data_context(event, target_id)
+            target_id = mapped_id if target_group == group_id else target_id
+        elif not remainder:
+            group_id, target_id = self._data_context(event)
+        config = self.store.load_group(group_id)
         if remainder and not target_id:
             member_target = remainder in config
             if not member_target:
@@ -9054,7 +9287,7 @@ class KirbyCatalogPlugin(Star):
     @filter.event_message_type(EventMessageType.ALL)
     async def group_gallery(self, event: AstrMessageEvent):
         """查看本群带编号、带名字的盟友图鉴。"""
-        group_id = self._group_id(event)
+        group_id = self._collection_group_id(event)
         if not group_id:
             yield event.plain_result("该功能仅支持群聊。")
             return
@@ -9101,11 +9334,10 @@ class KirbyCatalogPlugin(Star):
     @filter.event_message_type(EventMessageType.ALL)
     async def personal_gallery(self, event: AstrMessageEvent):
         """查看自己的盟友收藏图鉴。"""
-        group_id = self._group_id(event)
+        group_id, user_id = self._data_context(event)
         if not group_id:
             yield event.plain_result("请在群聊或 QQ 官方 Bot 单聊中使用此功能。")
             return
-        user_id = self._sender_id(event)
         config = self.store.load_group(group_id)
         user = config.get(user_id)
         progress = self.store.user_progress(user or {})
@@ -9118,7 +9350,7 @@ class KirbyCatalogPlugin(Star):
             / f"personal_{Path(group_id).name}_{Path(user_id).name}.png"
         )
         title = (
-            f"{self._sender_name(event)} 的盟友图鉴  "
+            f"{self._data_name(event)} 的盟友图鉴  "
             f"已解锁 {progress['unlocked']}/{progress['total']}"
         )
         try:
@@ -9168,11 +9400,10 @@ class KirbyCatalogPlugin(Star):
     @filter.event_message_type(EventMessageType.ALL)
     async def personal_progress(self, event: AstrMessageEvent):
         """查看自己的有效图鉴数量、完成率和剩余数量。"""
-        group_id = self._group_id(event)
+        group_id, user_id = self._data_context(event)
         if not group_id:
             yield event.plain_result("请在群聊或 QQ 官方 Bot 单聊中使用此功能。")
             return
-        user_id = self._sender_id(event)
         user = self.store.load_group(group_id).get(user_id, {})
         progress = self.store.user_progress(user)
         total = int(progress["total"])
@@ -9186,7 +9417,7 @@ class KirbyCatalogPlugin(Star):
         bar = "█" * filled + "░" * (20 - filled)
         status = "已经完成全图鉴！" if remaining == 0 else f"还差 {remaining} 个盟友"
         text = (
-            f"{self._sender_name(event)} 的图鉴进度\n"
+            f"{self._data_name(event)} 的图鉴进度\n"
             f"{bar} {percent:.1f}%\n"
             f"已解锁：{unlocked}/{total}\n"
             f"{status}"
@@ -9312,7 +9543,7 @@ class KirbyCatalogPlugin(Star):
     @filter.event_message_type(EventMessageType.GROUP_MESSAGE)
     async def leaderboard(self, event: AstrMessageEvent):
         """查看本群盟友解锁数量排行榜。"""
-        group_id = self._group_id(event)
+        group_id = self._collection_group_id(event)
         excluded = ()
         if not self._bool_value(
             self._config_value("bot_show_in_leaderboard", False)
@@ -9370,6 +9601,7 @@ class KirbyCatalogPlugin(Star):
                 "也可发送：查盟友 <编号或名字>、素材 <编号>、查看简介 <编号>。\n"
                 "卡比百科 / 卡比F / 卡比真格 <页面名>：查询三个百科。\n"
                 "长资料和多张图鉴通过上一页 / 下一页继续阅读。"
+                "\n迁移旧收藏：盟友身份 → 旧 Bot 私聊领取专属码 → 绑定盟友。"
             )
             result = await self._chain_result_with_media(
                 event, [Comp.Plain(text)], qq_view=QQPresentation("⭐ 星之卡比图鉴", actions=(
@@ -9378,6 +9610,7 @@ class KirbyCatalogPlugin(Star):
                     QQAction("收藏进度", "我的图鉴进度", owner_only=True),
                     QQAction("随机盟友", "随机盟友"),
                     QQAction("Bot今日盟友", "Bot今日盟友"),
+                    QQAction("迁移收藏", "盟友身份", owner_only=True),
                 )),
             )
             if result is not None:
@@ -9391,6 +9624,7 @@ class KirbyCatalogPlugin(Star):
             "素材：引用盟友卡片回复“素材”，发送对应角色素材\n"
             "我的盟友图鉴：查看个人收藏\n"
             "我的图鉴进度：查看有效解锁数、完成率和剩余数量\n"
+            "迁移到官方 Bot：盟友身份；旧 Bot 私聊用盟友绑定码 旧群号 目标身份码\n"
             "星之卡比图鉴：查看本群图鉴（编号和名字）\n"
             "随机盟友：随机查看一位盟友，不计入抽取记录\n"
             "Bot今日盟友：让 Bot 使用独立身份抽取当天盟友\n"
