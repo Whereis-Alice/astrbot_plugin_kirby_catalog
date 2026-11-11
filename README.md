@@ -137,6 +137,8 @@ python -m pip install -r requirements.txt
 
 ## 文档
 
+命令前缀跟随 AstrBot 当前会话配置。例如旧 Bot 配置 `/`、新 Bot 配置 `#` 时，各自处理自己的指令；插件不会额外接受另一 Bot 的 `/` 前缀。引用 Bot 消息和私聊沿用 AstrBot 的唤醒规则。
+
 | 文档 | 内容 |
 | --- | --- |
 | [命令手册](docs/commands.md) | 普通用户与管理员的全部命令、别名与用法 |

@@ -11,9 +11,6 @@ from unittest.mock import AsyncMock
 from astrbot.api import message_components as Comp
 from astrbot.core.star.filter.regex import RegexFilter
 from astrbot.core.star.star_handler import star_handlers_registry
-from mcp.types import CallToolResult, ImageContent, TextContent
-from PIL import Image
-
 from astrbot_plugin_kirby_catalog.catalog_core import get_today
 from astrbot_plugin_kirby_catalog.main import (
     MAX_SHINKAKU_TABLE_ICON_CACHE_BYTES,
@@ -21,6 +18,8 @@ from astrbot_plugin_kirby_catalog.main import (
     KirbyCatalogPlugin,
 )
 from astrbot_plugin_kirby_catalog.media_delivery import stage_local_image
+from mcp.types import CallToolResult, ImageContent, TextContent
+from PIL import Image
 
 
 class FakeStore:
@@ -1369,14 +1368,14 @@ class DrawHandlerRegistrationTests(unittest.TestCase):
         command_pattern = regex_filters[0].regex
         for message in (
             "今日盟友",
-            "/今日盟友",
             "抽盟友",
-            "/抽盟友",
             "抽取盟友",
-            "/抽取盟友",
         ):
             with self.subTest(message=message):
                 self.assertIsNotNone(command_pattern.fullmatch(message))
+        for message in ("/今日盟友", "/抽盟友", "/抽取盟友"):
+            with self.subTest(foreign_prefix=message):
+                self.assertIsNone(command_pattern.fullmatch(message))
 
         old_handler_name = f"{KirbyCatalogPlugin.draw_ally.__module__}_draw_ally_plain"
         self.assertIsNone(

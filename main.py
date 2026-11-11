@@ -40,6 +40,7 @@ from .catalog_core import (
     get_today,
     plain_text_from_component,
 )
+from .command_filter import AstrBotCommandFilter
 from .daily_ally_intro import (
     IntroductionState,
     intro_sessions,
@@ -267,7 +268,7 @@ class WikiTranslationIncompleteError(RuntimeError):
     PLUGIN_ID,
     "Whereis-Alice",
     "星之卡比盟友抽取、收藏图鉴与三百科查询插件",
-    "4.13.1",
+    "4.13.2",
     "https://github.com/Whereis-Alice/astrbot_plugin_kirby_catalog",
 )
 class KirbyCatalogPlugin(Star):
@@ -2946,6 +2947,15 @@ class KirbyCatalogPlugin(Star):
         if explicit_mode == "text":
             return "forward" if self._wiki_text_command_use_forward() else "text"
         return explicit_mode or configured_mode
+
+    @staticmethod
+    def _ignore_official_wiki_document(event: AstrMessageEvent) -> bool:
+        """Leave HTML document commands to platforms that can send files."""
+        command = str(event.message_str or "").strip().split(maxsplit=1)
+        if not is_qq_official(event) or not command or not command[0].endswith("文档"):
+            return False
+        event.stop_event()
+        return True
 
     def _wikirby_output_mode(self) -> str:
         return self._wiki_output_mode(
@@ -8764,10 +8774,11 @@ class KirbyCatalogPlugin(Star):
         if result is not None:
             yield result
 
-    @filter.regex(r"^/?(?:今日盟友|抽盟友|抽取盟友)$")
+    @filter.regex(r"^(?:今日盟友|抽盟友|抽取盟友)$")
+    @filter.custom_filter(AstrBotCommandFilter)
     @filter.event_message_type(EventMessageType.ALL)
     async def draw_ally(self, event: AstrMessageEvent):
-        """统一处理带斜杠和纯文本的盟友抽取，避免双 Handler 重复抽取。"""
+        """按 AstrBot 会话的唤醒配置处理盟友抽取，避免重复抽取。"""
         async for result in self._draw_ally_impl(event):
             yield result
 
@@ -8943,7 +8954,8 @@ class KirbyCatalogPlugin(Star):
             identity_resolver=lambda: (self._collection_group_id(event), self._bot_identity(event), nickname),
         )
 
-    @filter.regex(r"(?i)^/?(?:bot今日盟友|机器人今日盟友|bot抽盟友)$")
+    @filter.regex(r"(?i)^(?:bot今日盟友|机器人今日盟友|bot抽盟友)$")
+    @filter.custom_filter(AstrBotCommandFilter)
     @filter.event_message_type(EventMessageType.ALL)
     async def draw_bot_ally(self, event: AstrMessageEvent):
         """让 Bot 使用独立身份抽取并展示当天盟友。"""
@@ -9473,7 +9485,8 @@ class KirbyCatalogPlugin(Star):
         if result is not None:
             yield result
 
-    @filter.regex(r"^/?素材(?:\s+.+)?$")
+    @filter.regex(r"^素材(?:\s+.+)?$")
+    @filter.custom_filter(AstrBotCommandFilter)
     @filter.event_message_type(EventMessageType.ALL)
     async def view_ally_asset(self, event: AstrMessageEvent) -> AsyncIterator[Any]:
         """引用盟友卡片回复“素材”，发送对应条目的素材图片。"""
@@ -9495,7 +9508,8 @@ class KirbyCatalogPlugin(Star):
         if result is not None:
             yield result
 
-    @filter.regex(r"^/?(?:查看简介|查看盟友简介)(?:\s+.+)?$")
+    @filter.regex(r"^(?:查看简介|查看盟友简介)(?:\s+.+)?$")
+    @filter.custom_filter(AstrBotCommandFilter)
     @filter.event_message_type(EventMessageType.ALL)
     async def view_ally_description(self, event: AstrMessageEvent):
         """查看引用盟友或指定图鉴条目的简介。"""
@@ -9561,37 +9575,46 @@ class KirbyCatalogPlugin(Star):
             yield event.plain_result(text)
 
     @filter.regex(
-        r"(?i)^/?(?:卡比百科(?:名称|名|译名|文本|卡片|文档)?|"
+        r"(?i)^(?:卡比百科(?:名称|名|译名|文本|卡片|文档)?|"
         r"wikirby(?:文本|卡片|文档)?)(?:\s+.+)?$"
     )
+    @filter.custom_filter(AstrBotCommandFilter)
     @filter.event_message_type(EventMessageType.ALL)
     async def wikirby_query_plain(self, event: AstrMessageEvent):
-        """统一处理带斜杠和纯文本的 WiKirby 查询，避免双 Handler 重复回复。"""
+        """按 AstrBot 会话的唤醒配置处理 WiKirby 查询，避免重复回复。"""
+        if self._ignore_official_wiki_document(event):
+            return
         async for result in self._wikirby_query_impl(event):
             yield result
 
     @filter.regex(
-        r"(?i)^/?(?:卡比f(?:名称|章节|文本|卡片|文档)?|"
+        r"(?i)^(?:卡比f(?:名称|章节|文本|卡片|文档)?|"
         r"卡比fandom(?:名称|章节|文本|卡片|文档)?|"
         r"卡比社区百科(?:名称|章节|文本|卡片|文档)?|"
         r"kirbyfandom(?:文本|卡片|文档)?)(?:\s+.+)?$"
     )
+    @filter.custom_filter(AstrBotCommandFilter)
     @filter.event_message_type(EventMessageType.ALL)
     async def fandom_query_plain(self, event: AstrMessageEvent):
         """统一处理 Kirby Fandom 的页面、名称和章节查询。"""
+        if self._ignore_official_wiki_document(event):
+            return
         async for result in self._fandom_query_impl(event):
             yield result
 
     @filter.regex(
-        r"(?i)^/?(?:卡比真格(?:名称表|速查图?|目录图?|名称|名|章节|文本|卡片|文档)?|"
+        r"(?i)^(?:卡比真格(?:名称表|速查图?|目录图?|名称|名|章节|文本|卡片|文档)?|"
         r"卡比真格斗(?:名称表|速查图?|目录图?|名称|名|章节|文本|卡片|文档)?|"
         r"卡比真格Wiki(?:名称表|速查图?|目录图?|名称|名|章节|文本|卡片|文档)?|"
         r"真格攻略(?:名称表|速查图?|目录图?|名称|名|章节|文本|卡片|文档)?|"
         r"真格Wiki(?:名称表|速查图?|目录图?|名称|名|章节|文本|卡片|文档)?)(?:\s+.+)?$"
     )
+    @filter.custom_filter(AstrBotCommandFilter)
     @filter.event_message_type(EventMessageType.ALL)
     async def shinkaku_query_plain(self, event: AstrMessageEvent):
         """统一处理真格攻略 Wiki 的页面、日英用语和章节查询。"""
+        if self._ignore_official_wiki_document(event):
+            return
         async for result in self._shinkaku_query_impl(event):
             yield result
 
@@ -9747,7 +9770,8 @@ class KirbyCatalogPlugin(Star):
         else:
             yield event.plain_result(text)
 
-    @filter.regex(r"^/?卡比翻页\s+([0-9a-f]{16})\s+([0-9]{1,4})$")
+    @filter.regex(r"^卡比翻页\s+([0-9a-f]{16})\s+([0-9]{1,4})$")
+    @filter.custom_filter(AstrBotCommandFilter)
     @filter.event_message_type(EventMessageType.ALL)
     async def qq_reading_page(self, event: AstrMessageEvent):
         """Read a saved QQ page; never draw or change collection state."""
