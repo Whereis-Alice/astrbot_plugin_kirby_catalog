@@ -3,6 +3,12 @@
     "description": "抽取与图鉴设置",
     "type": "object",
     "items": {
+        "daily_ally_group_whitelist": {
+          "description": "今日盟友群白名单",
+          "type": "list",
+          "default": [],
+          "hint": "留空对所有群开放。填写后，只有名单内的群响应今日盟友及其别名、Bot今日盟友和 Bot 抽取工具，名单外不抽取、不扣次数；私聊也不抽取。OneBot 填 QQ 群号，官方 Bot 填群 OpenID，已关联旧群时也可填旧群号。只限制抽卡，资料查询与图鉴不受影响。"
+        },
         "daily_draw_limit": {
           "description": "每个身份每日抽取次数",
           "type": "int",

@@ -257,7 +257,7 @@ class WikiTranslationIncompleteError(RuntimeError):
     PLUGIN_ID,
     "Whereis-Alice",
     "星之卡比盟友抽取、收藏图鉴与三百科查询插件",
-    "4.12.1",
+    "4.12.2",
     "https://github.com/Whereis-Alice/astrbot_plugin_kirby_catalog",
 )
 class KirbyCatalogPlugin(Star):
@@ -8621,8 +8621,26 @@ class KirbyCatalogPlugin(Star):
             None,
         )
 
+    def _daily_draw_group_allowed(self, event: AstrMessageEvent) -> bool:
+        """Restrict only daily draws, before identity recovery or counters run."""
+        raw = self._config_value("daily_ally_group_whitelist", [])
+        if not raw:
+            return True
+        if not isinstance(raw, (list, tuple, set)):
+            return False
+        groups = {str(group).strip() for group in raw if str(group).strip()}
+        if not groups:
+            return True
+        group = self._group_id(event)
+        return bool(group and (group in groups or self._collection_group_id(event) in groups))
+
     async def _draw_ally_impl(self, event: AstrMessageEvent):
         """每天抽取盟友，重复时使用连续未出新保底。"""
+        if not self._daily_draw_group_allowed(event):
+            stop = getattr(event, "stop_event", None)
+            if callable(stop):
+                stop()
+            return
         group_id, user_id = self._data_context(event)
         if not group_id:
             yield event.plain_result("该功能仅支持群聊。")
@@ -8860,6 +8878,8 @@ class KirbyCatalogPlugin(Star):
     async def _draw_bot_ally(
         self, event: AstrMessageEvent
     ) -> Tuple[AllyDrawOutcome | None, str | None]:
+        if not self._daily_draw_group_allowed(event):
+            return None, "当前群不在今日盟友白名单，未抽取或发送。"
         if not self._bool_value(self._config_value("bot_draw_enabled", True)):
             return None, "Bot 抽盟友功能当前已关闭。"
         group_id = self._collection_group_id(event)
@@ -8890,6 +8910,11 @@ class KirbyCatalogPlugin(Star):
     @filter.event_message_type(EventMessageType.ALL)
     async def draw_bot_ally(self, event: AstrMessageEvent):
         """让 Bot 使用独立身份抽取并展示当天盟友。"""
+        if not self._daily_draw_group_allowed(event):
+            stop = getattr(event, "stop_event", None)
+            if callable(stop):
+                stop()
+            return
         outcome, error = await self._draw_bot_ally(event)
         if error or outcome is None:
             yield event.plain_result(error or "Bot 抽取盟友失败，请稍后再试。")
