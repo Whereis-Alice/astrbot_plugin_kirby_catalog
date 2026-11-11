@@ -14,6 +14,7 @@ import secrets
 import time
 import uuid
 from copy import deepcopy
+from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -31,6 +32,27 @@ from .catalog_core import (
 IDENTITY_LINKS_FILENAME = "identity_links.json"
 CODE_TTL = 20 * 60
 MAX_PENDING_CODES = 500
+
+
+@dataclass(frozen=True)
+class MigrationResult:
+    status: str
+
+    @property
+    def message(self) -> str:
+        messages = {
+            "bound": "已恢复你的旧收藏，之后会自动关联。",
+            "group_unlinked": "当前群尚未关联旧群，请管理员先设置新旧群对应关系。",
+            "name_missing": "官方 Bot 本次没有提供可用于匹配的资料名称，暂时无法自动恢复旧收藏。",
+            "legacy_names_missing": "旧群数据尚未采集 QQ 资料昵称，请管理员在旧 OneBot 执行「采集盟友迁移资料」后迁移数据。",
+            "name_not_found": "没有找到与当前资料名称一致的旧收藏记录。",
+            "ambiguous": "旧群中有多个相同资料昵称，无法确定你的旧收藏。",
+            "claimed": "匹配到的旧收藏已关联其他官方身份，无法自动认领。",
+        }
+        message = messages.get(self.status, "")
+        if message and self.status != "bound":
+            message += "\n当前使用新身份记录；可发送「盟友身份」按提示绑定旧账号。"
+        return message
 
 
 def digest(*parts: str) -> str:
@@ -333,29 +355,57 @@ class IdentityLinks:
         *,
         source_scope: str = "",
     ) -> bool:
+        return (
+            self.try_auto_bind_by_name(
+                bot, scope, user, profile_name, source_scope=source_scope
+            ).status
+            == "bound"
+        )
+
+    def try_auto_bind_by_name(
+        self,
+        bot: str,
+        scope: str,
+        user: str,
+        profile_name: str,
+        *,
+        source_scope: str = "",
+    ) -> MigrationResult:
         """Opt-in heuristic: exact unique profile name in an admin-linked group.
 
         Names are not account proof. The explicit configuration is the
         administrator's decision to allow this convenience heuristic.
         """
         name = str(profile_name or "").strip()
-        if not name or name in {user, "用户", "unknown", "qq_official"}:
-            return False
         with self.store._lock:
             state = self._state()
             key, skey = member_key(bot, scope, user), scope_key(bot, scope)
-            if key in state["users"] or skey not in state["groups"]:
-                return False
+            if key in state["users"]:
+                return MigrationResult("already_bound")
+            if skey not in state["groups"]:
+                return MigrationResult("group_unlinked")
+            if not name or name in {user, "用户", "unknown", "qq_official"}:
+                return MigrationResult("name_missing")
             group = state["groups"][skey]["group"]
+            config = self.store.load_group(group)
+            if not any(
+                uid.isdigit()
+                and isinstance(record.get("identity_names"), dict)
+                and record["identity_names"].get("profile")
+                for uid, record in config.items()
+            ):
+                return MigrationResult("legacy_names_missing")
             matches = [
                 uid
-                for uid, record in self.store.load_group(group).items()
+                for uid, record in config.items()
                 if uid.isdigit()
                 and isinstance(record.get("identity_names"), dict)
                 and record["identity_names"].get("profile") == name
             ]
-            if len(matches) != 1:
-                return False
+            if not matches:
+                return MigrationResult("name_not_found")
+            if len(matches) > 1:
+                return MigrationResult("ambiguous")
             old_user = matches[0]
             subject = digest(bot, user)
             if any(
@@ -364,7 +414,7 @@ class IdentityLinks:
                 and link.get("subject") != subject
                 for link in state["users"].values()
             ):
-                return False
+                return MigrationResult("claimed")
             code = secrets.token_hex(12).upper()
             state["codes"][digest(code)] = {
                 "kind": "user",
@@ -384,7 +434,7 @@ class IdentityLinks:
                 state=state,
                 method="profile_name",
             )
-            return True
+            return MigrationResult("bound")
 
     def bind(
         self,

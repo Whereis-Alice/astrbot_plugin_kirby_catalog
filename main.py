@@ -13,7 +13,7 @@ import uuid
 from collections import Counter
 from collections.abc import AsyncIterator, Callable, Iterable
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -40,6 +40,7 @@ from .catalog_core import (
     get_today,
     plain_text_from_component,
 )
+from .identity_capture import parse_member_names, save_member_names
 from .identity_links import IdentityLinks
 from .identity_links import member_key as identity_member_key
 from .kirby_fandom import (
@@ -250,7 +251,7 @@ class WikiTranslationIncompleteError(RuntimeError):
     PLUGIN_ID,
     "Whereis-Alice",
     "星之卡比盟友抽取、收藏图鉴与三百科查询插件",
-    "4.10.0",
+    "4.12.0",
     "https://github.com/Whereis-Alice/astrbot_plugin_kirby_catalog",
 )
 class KirbyCatalogPlugin(Star):
@@ -621,6 +622,70 @@ class KirbyCatalogPlugin(Star):
             if isinstance(data, dict) and isinstance(data.get("author"), dict):
                 name = data["author"].get("username", "")
         return str(name or "").strip()
+
+    @filter.command("采集盟友迁移资料", alias={"采集迁移资料"})
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.event_message_type(EventMessageType.ALL)
+    async def capture_ally_identity_names(self, event: AstrMessageEvent):
+        """旧 OneBot 管理员一次采集有收藏成员的资料昵称与群名片。"""
+        if not event.is_admin():
+            yield event.plain_result("此操作仅限 AstrBot 管理员。")
+            return
+        try:
+            platform = event.get_platform_name()
+        except AttributeError:
+            platform = ""
+        bot = getattr(event, "bot", None)
+        if platform != "aiocqhttp" or not callable(getattr(bot, "call_action", None)):
+            yield event.plain_result("请在旧服务器的 OneBot 连接中执行此指令。")
+            return
+        target = self._command_remainder(event, {"采集盟友迁移资料", "采集迁移资料"})
+        if target == "全部":
+            groups = [group for group in self.store.group_ids() if group.isdigit()]
+        elif target.isdigit():
+            groups = [target]
+        elif not target and self._group_id(event).isdigit():
+            groups = [self._group_id(event)]
+        else:
+            yield event.plain_result("用法：采集盟友迁移资料（当前群）／采集盟友迁移资料 群号／采集盟友迁移资料 全部。")
+            return
+        groups = [group for group in groups if any(user.isdigit() for user in self.store.load_group(group))]
+        if not groups:
+            yield event.plain_result("没有需要采集资料的旧收藏记录。")
+            return
+        lock = getattr(self, "_identity_capture_lock", None)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._identity_capture_lock = lock
+        if lock.locked():
+            yield event.plain_result("已有迁移资料采集任务正在运行，请等待完成。")
+            return
+        async with lock:
+            yield event.plain_result(f"正在采集 {len(groups)} 个旧群的 QQ 资料昵称与群名片。")
+            totals = {"captured": 0, "updated": 0, "missing": 0}
+            failed = []
+            completed = 0
+            for index, group in enumerate(groups, 1):
+                try:
+                    payload = await asyncio.wait_for(bot.call_action("get_group_member_list", group_id=int(group)), timeout=20)
+                    names = parse_member_names(payload)
+                    async with self._draw_lock:
+                        stats = save_member_names(self.store, group, names)
+                    for key in totals:
+                        totals[key] += stats[key]
+                    completed += 1
+                except Exception as exc:  # noqa: BLE001 - external OneBot API boundary
+                    logger.warning("[%s] 旧群 %s 迁移资料采集失败: %s", PLUGIN_ID, group, type(exc).__name__)
+                    failed.append(group)
+                if index % 10 == 0 and index < len(groups):
+                    yield event.plain_result(f"迁移资料采集进度：{index}/{len(groups)} 个群。")
+            text = (f"迁移资料采集完成：成功 {completed}/{len(groups)} 个群，"
+                    f"采集 {totals['captured']} 位有收藏成员，更新 {totals['updated']} 条；"
+                    f"{totals['missing']} 位未获取到有效资料（可能已离群）。\n"
+                    "收藏、今日盟友和抽取次数保持不变。将插件数据目录搬到新服务器，关联新旧群并开启自动迁移即可。")
+            if failed:
+                text += "\n采集失败的群：" + "、".join(failed[:8]) + ("等" if len(failed) > 8 else "") + "；请检查旧 OneBot 是否仍在群内后重试。"
+            yield event.plain_result(text)
 
     @staticmethod
     def _private_identity_event(event: AstrMessageEvent) -> bool:
@@ -8370,6 +8435,7 @@ class KirbyCatalogPlugin(Star):
         reuse_today: bool = False,
         identity_resolver: Callable[[], tuple[str, str, str]] | None = None,
         identity_names: dict[str, str] | None = None,
+        migration_attempt: dict[str, str] | None = None,
     ) -> tuple[AllyDrawOutcome | None, str | None]:
         async with self._draw_lock:
             if identity_resolver is not None:
@@ -8390,6 +8456,11 @@ class KirbyCatalogPlugin(Star):
             today = get_today()
             config = self.store.load_group(group_id)
             user = self._user_data(config, user_id, nickname)
+            if migration_attempt and migration_attempt.get("status") not in {None, "already_bound", "bound"}:
+                status = migration_attempt["status"]
+                if user.get("migration_notice") != status:
+                    migration_attempt["notice"] = migration_attempt["message"]
+                    user["migration_notice"] = status
             count = self.store.draw_count(group_id, user_id, today)
             bonus = (
                 self.store.draw_bonus(group_id, user_id, today) if include_bonus else 0
@@ -8418,8 +8489,9 @@ class KirbyCatalogPlugin(Star):
                             None,
                         )
             if count >= limit:
-                if identity_names:
-                    user["identity_names"] = identity_names
+                if identity_names or (migration_attempt and migration_attempt.get("notice")):
+                    if identity_names:
+                        user["identity_names"] = identity_names
                     config[user_id] = user
                     self.store.save_group(group_id, config)
                 return None, (
@@ -8486,12 +8558,16 @@ class KirbyCatalogPlugin(Star):
             return
 
         started_at = time.monotonic()
+        migration_attempt: dict[str, str] = {}
         def resolve_identity() -> tuple[str, str, str]:
             nonlocal group_id, user_id, nickname
             links = self._identity_links()
             if links and is_qq_official(event) and self._bool_value(self._config_value("qq_official_auto_migrate_by_name", False)):
-                links.auto_bind_by_name(qq_identity_key(event), self._identity_scope(event), self._sender_id(event),
-                                        self._official_profile_name(event), source_scope=self._group_id(event))
+                migration = links.try_auto_bind_by_name(qq_identity_key(event), self._identity_scope(event), self._sender_id(event),
+                                                       self._official_profile_name(event), source_scope=self._group_id(event))
+                migration_attempt.update(status=migration.status, message=migration.message)
+                if migration.status == "bound":
+                    migration_attempt["notice"] = migration.message
             group_id, user_id = self._data_context(event)
             nickname = self._data_name(event)
             return group_id, user_id, nickname
@@ -8506,9 +8582,13 @@ class KirbyCatalogPlugin(Star):
             ),
             identity_resolver=resolve_identity,
             identity_names=self._identity_names(event),
+            migration_attempt=migration_attempt,
         )
         if error or outcome is None:
-            yield event.plain_result(error or "盟友抽取失败，请稍后再试。")
+            text = error or "盟友抽取失败，请稍后再试。"
+            if migration_attempt.get("notice"):
+                text += "\n" + migration_attempt["notice"]
+            yield event.plain_result(text)
             return
 
         selection_seconds = time.monotonic() - started_at
@@ -8518,13 +8598,19 @@ class KirbyCatalogPlugin(Star):
             entry, self._draw_message(entry, nickname, outcome.remaining, flags)
         )
         asset_started_at = time.monotonic()
-        chain = await self._daily_ally_chain(outcome, nickname, text, event=event)
+        chain = list(await self._daily_ally_chain(outcome, nickname, text, event=event))
+        note = migration_attempt.get("notice", "")
+        if note:
+            chain.append(Comp.Plain("\n" + note))
+        qq_view = self._qq_draw_view(outcome, nickname, chain) if is_qq_official(event) else None
+        if note and qq_view and qq_view.replace_caption:
+            qq_view = replace(qq_view, summary=qq_view.summary + "\n\n" + note)
         asset_seconds = time.monotonic() - asset_started_at
         delivery_timing: Dict[str, Any] = {}
         try:
             result = await self._chain_result_with_media(
                 event, chain, timing=delivery_timing,
-                qq_view=self._qq_draw_view(outcome, nickname, chain) if is_qq_official(event) else None,
+                qq_view=qq_view,
             )
         except (RuntimeError, aiohttp.ClientError, OSError, ValueError) as exc:
             if not is_qq_official(event):
