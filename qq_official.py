@@ -113,6 +113,7 @@ class Presentation:
     actions: tuple[Action, ...] = ()
     replace_caption: bool = False
     paragraphs: bool = False
+    card_image: bool = False
 
 
 def character_actions(
@@ -167,6 +168,7 @@ def draw_presentation(
         summary=summary,
         actions=tuple(actions),
         replace_caption=True,
+        card_image=True,
     )
 
 
@@ -701,6 +703,9 @@ class QQOfficialDelivery:
         images: dict[int, tuple[str, int, int]],
         page: int,
         total: int,
+        *,
+        card_display_width: int = 240,
+        card_display_height: int = 420,
     ) -> str:
         lines = []
         if view.intro:
@@ -717,8 +722,15 @@ class QQOfficialDelivery:
                     )
             elif index in images:
                 url, width, height = images[index]
-                printed_width = min(width, 480)
-                printed_height = max(1, round(height * printed_width / width))
+                if view.card_image:
+                    scale = min(
+                        1, card_display_width / width, card_display_height / height
+                    )
+                    printed_width = max(1, round(width * scale))
+                    printed_height = max(1, round(height * scale))
+                else:
+                    printed_width = min(width, 480)
+                    printed_height = max(1, round(height * printed_width / width))
                 lines.append(
                     f"![盟友卡牌 #{printed_width}px #{printed_height}px]({url})"
                 )
@@ -772,6 +784,8 @@ class QQOfficialDelivery:
         template_key: str = "content",
         buttons_enabled: bool = True,
         keyboard_template: str = "",
+        card_display_width: int = 240,
+        card_display_height: int = 420,
         page: int = 1,
         token: str = "",
     ) -> list[str] | None:
@@ -844,7 +858,15 @@ class QQOfficialDelivery:
                                 type(exc).__name__,
                             )
                             attachment = True
-                body = self._markdown(view, current, references, page, len(pages))
+                body = self._markdown(
+                    view,
+                    current,
+                    references,
+                    page,
+                    len(pages),
+                    card_display_width=card_display_width,
+                    card_display_height=card_display_height,
+                )
                 commands = fallback_commands(actions)
                 raw_text = "\n".join(
                     str(item.text) for item in current if isinstance(item, Comp.Plain)

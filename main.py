@@ -267,7 +267,7 @@ class WikiTranslationIncompleteError(RuntimeError):
     PLUGIN_ID,
     "Whereis-Alice",
     "星之卡比盟友抽取、收藏图鉴与三百科查询插件",
-    "4.13.0",
+    "4.13.1",
     "https://github.com/Whereis-Alice/astrbot_plugin_kirby_catalog",
 )
 class KirbyCatalogPlugin(Star):
@@ -1906,6 +1906,8 @@ class KirbyCatalogPlugin(Star):
             "template_key": str(self._config_value("qq_official_markdown_template_key", "content") or "content").strip(),
             "buttons_enabled": self._bool_value(self._config_value("qq_official_buttons_enabled", True)),
             "keyboard_template": str(self._config_value("qq_official_keyboard_template_id", "") or "").strip(),
+            "card_display_width": self._bounded_int(self._config_value("qq_official_card_display_width", 240), 240, 120, 480),
+            "card_display_height": self._bounded_int(self._config_value("qq_official_card_display_height", 420), 420, 200, 1200),
         }
 
     async def _qq_text_results(self, event: AstrMessageEvent, text: str) -> AsyncIterator[Any]:
@@ -1952,7 +1954,7 @@ class KirbyCatalogPlugin(Star):
             for item in chain
         )
         if mode == "卡片＋文字" or not has_card:
-            return QQPresentation(view.heading, actions=view.actions)
+            return QQPresentation(view.heading, actions=view.actions, card_image=has_card)
         return view
 
     async def _ally_chain(
@@ -9062,7 +9064,7 @@ class KirbyCatalogPlugin(Star):
         try:
             await self._chain_result_with_media(
                 event, chain, send_immediately=True,
-                qq_view=QQPresentation(actions=qq_character_actions(entry)),
+                qq_view=QQPresentation(actions=qq_character_actions(entry), card_image=True),
             )
             if self._is_scheduled_event(event) and hasattr(event, "context_obj") and not getattr(event, "_has_send_oper", False):
                 raise RuntimeError("Scheduled card delivery returned no confirmation")

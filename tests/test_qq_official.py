@@ -99,7 +99,7 @@ class RichDeliveryTests(unittest.IsolatedAsyncioTestCase):
         self.delivery = qq.QQOfficialDelivery(self.root)
         self.event = OfficialEvent()
         self.image_path = self.root / "card.png"
-        Image.new("RGB", (200, 310), "pink").save(self.image_path)
+        Image.new("RGB", (1200, 2400), "pink").save(self.image_path)
         self.image = Comp.Image.fromFileSystem(str(self.image_path))
         self.outcome = AllyDrawOutcome(
             ENTRY, 4, False, False, collected=37, total=1353, daily_limit=5
@@ -147,6 +147,7 @@ class RichDeliveryTests(unittest.IsolatedAsyncioTestCase):
             cos.put.call_args.kwargs["headers"], {"Content-Type": "image/png"}
         )
         self.assertFalse(cos.put.call_args.kwargs["allow_redirects"])
+        self.assertEqual(cos.put.call_args.kwargs["data"], data)
         payload = calls[2][2]["json"]
         self.assertIn("qqbot-media://image/v1/example", payload["markdown"]["content"])
         self.assertNotIn("旧配文", payload["markdown"]["content"])
@@ -154,7 +155,7 @@ class RichDeliveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             payload["markdown"]["content"],
             "> 狐狸，你今天的盟友是\n\n> 瓦豆鲁迪（NEW）\n\n"
-            "![盟友卡牌 #200px #310px](qqbot-media://image/v1/example)\n\n"
+            "![盟友卡牌 #210px #420px](qqbot-media://image/v1/example)\n\n"
             "> 今日剩余4/5 次",
         )
         self.assertNotIn("##", payload["markdown"]["content"])
@@ -857,12 +858,18 @@ class PluginOfficialFlowTests(unittest.IsolatedAsyncioTestCase):
             str(self.plugin.store.root / "kirby-ally-card-test.png")
         )
         self.plugin.config = {"ally_draw_output_mode": "卡片＋文字"}
+        self.assertTrue(self.plugin._qq_draw_view(outcome, "狐狸", [card]).card_image)
         self.assertFalse(
             self.plugin._qq_draw_view(
                 outcome, "狐狸", [Comp.Plain("自定义文本"), card]
             ).replace_caption
         )
         self.plugin.config = {"ally_draw_output_mode": "精美卡片"}
+        self.assertFalse(
+            self.plugin._qq_draw_view(
+                outcome, "狐狸", [Comp.Plain("自定义文本")]
+            ).card_image
+        )
         self.assertFalse(
             self.plugin._qq_draw_view(
                 outcome, "狐狸", [Comp.Plain("自定义文本")]
