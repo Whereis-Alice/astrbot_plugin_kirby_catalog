@@ -925,7 +925,7 @@
         "default": 240,
         "min": 120,
         "max": 480,
-        "hint": "仅调整 QQ 官方 Markdown 中卡牌的展示尺寸，和高度限制一起等比缩放；上传图片保留现有分辨率，点开仍可放大查看。素材与图鉴图片保持原有展示尺寸。"
+        "hint": "仅调整 QQ 官方 Markdown 中卡牌的展示尺寸，和高度限制一起等比缩放；上传图片保留现有分辨率，点开仍可放大查看。其他图片使用下方独立的图片显示宽高限制。"
       },
       "qq_official_card_display_height": {
         "description": "卡牌在消息中的最大显示高度（px）",
@@ -934,6 +934,22 @@
         "min": 200,
         "max": 1200,
         "hint": "限制长卡牌的聊天占用高度，不裁剪、不拉伸。默认卡牌完整显示在 240×420 px 范围内；希望更大时同时提高宽高配置。"
+      },
+      "qq_official_image_display_width": {
+        "description": "其他图片在消息中的最大显示宽度（px）",
+        "type": "int",
+        "default": 480,
+        "min": 120,
+        "max": 960,
+        "hint": "用于猜盟友题目、角色素材、图鉴和百科等非卡牌图片。与高度一起等比缩放，不放大小图，不裁剪；仅调整 Markdown 展示尺寸。"
+      },
+      "qq_official_image_display_height": {
+        "description": "其他图片在消息中的最大显示高度（px）",
+        "type": "int",
+        "default": 420,
+        "min": 200,
+        "max": 1200,
+        "hint": "同时限制竖图和长图的聊天占用高度，默认完整显示在 480×420 px 范围内。上传图片保留现有分辨率，点开可放大查看。卡牌继续使用上方独立的卡牌宽高设置。"
       },
       "qq_official_markdown_mode": {
         "description": "Markdown 发送方式",
@@ -958,7 +974,7 @@
         "description": "附加操作按钮",
         "type": "bool",
         "default": true,
-        "hint": "抽卡提供再抽一次、我的图鉴、素材、简介和百科；长内容提供翻页。自定义按钮权限与 Markdown 权限独立，未开通会自动回退为可手动发送的简短指令。"
+        "hint": "抽卡提供再抽一次、我的图鉴、素材、简介和百科；猜盟友提供开始猜，点击后预填指令，补名字再发送；长内容提供翻页。自定义按钮权限与 Markdown 权限独立，未开通会自动回退为可手动发送的简短指令。"
       },
       "qq_official_keyboard_template_id": {
         "description": "可选按钮模板 ID",

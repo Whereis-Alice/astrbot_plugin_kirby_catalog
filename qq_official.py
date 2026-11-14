@@ -103,6 +103,8 @@ class Action:
     command: str
     primary: bool = False
     owner_only: bool = False
+    enter: bool = True
+    placeholder: str = ""
 
 
 @dataclass(frozen=True)
@@ -196,6 +198,22 @@ def description_presentation(
     return Presentation(intro=intro, actions=character_actions(entry), paragraphs=True)
 
 
+def guess_presentation(clue: str, timeout: int, command: str) -> Presentation:
+    """Keep the answer private; the button only prepares an editable command."""
+    return Presentation(
+        intro=f"**认得这位盟友吗？**\n\n> {escape(clue)}",
+        summary=(
+            f"> 本轮限时 {timeout} 秒\n\n"
+            "可点击「开始猜」填写名字并发送，中文名、英文名均可。\n\n"
+            "也可引用题目图片直接回复名字；猜错或超时会公布答案。"
+        ),
+        actions=(
+            Action("开始猜", command, primary=True, enter=False, placeholder="<名字>"),
+        ),
+        replace_caption=True,
+    )
+
+
 def paragraph_markdown(text: str) -> str:
     """Keep source paragraphs; break dense prose only at sentence boundaries."""
     blocks = []
@@ -258,9 +276,9 @@ def keyboard(
                         "type": 2,
                         "permission": permission,
                         "data": item.command,
-                        "enter": True,
+                        "enter": item.enter,
                         "reply": False,
-                        "unsupport_tips": f"请发送：{item.command}",
+                        "unsupport_tips": f"请发送：{item.command}{item.placeholder}",
                     },
                 }
             )
@@ -270,7 +288,9 @@ def keyboard(
 
 
 def fallback_commands(actions: tuple[Action, ...]) -> str:
-    return "\n".join(f"{item.label}：{item.command}" for item in actions)
+    return "\n".join(
+        f"{item.label}：{item.command}{item.placeholder}" for item in actions
+    )
 
 
 def flatten(components: list[Any], depth: int = 0) -> list[Any] | None:
@@ -706,6 +726,8 @@ class QQOfficialDelivery:
         *,
         card_display_width: int = 240,
         card_display_height: int = 420,
+        image_display_width: int = 480,
+        image_display_height: int = 420,
     ) -> str:
         lines = []
         if view.intro:
@@ -723,16 +745,15 @@ class QQOfficialDelivery:
             elif index in images:
                 url, width, height = images[index]
                 if view.card_image:
-                    scale = min(
-                        1, card_display_width / width, card_display_height / height
-                    )
-                    printed_width = max(1, round(width * scale))
-                    printed_height = max(1, round(height * scale))
+                    max_width, max_height = card_display_width, card_display_height
                 else:
-                    printed_width = min(width, 480)
-                    printed_height = max(1, round(height * printed_width / width))
+                    max_width, max_height = image_display_width, image_display_height
+                scale = min(1, max_width / width, max_height / height)
+                printed_width = max(1, round(width * scale))
+                printed_height = max(1, round(height * scale))
+                label = "盟友卡牌" if view.card_image else "图片"
                 lines.append(
-                    f"![盟友卡牌 #{printed_width}px #{printed_height}px]({url})"
+                    f"![{label} #{printed_width}px #{printed_height}px]({url})"
                 )
         if view.summary:
             if not view.replace_caption:
@@ -786,6 +807,8 @@ class QQOfficialDelivery:
         keyboard_template: str = "",
         card_display_width: int = 240,
         card_display_height: int = 420,
+        image_display_width: int = 480,
+        image_display_height: int = 420,
         page: int = 1,
         token: str = "",
     ) -> list[str] | None:
@@ -866,6 +889,8 @@ class QQOfficialDelivery:
                     len(pages),
                     card_display_width=card_display_width,
                     card_display_height=card_display_height,
+                    image_display_width=image_display_width,
+                    image_display_height=image_display_height,
                 )
                 commands = fallback_commands(actions)
                 raw_text = "\n".join(

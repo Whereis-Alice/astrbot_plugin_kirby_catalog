@@ -187,6 +187,85 @@ class RichDeliveryTests(unittest.IsolatedAsyncioTestCase):
                     await self.delivery._upload(self.event, self.image, [])
                 cos.assert_not_called()
 
+    async def test_guess_has_editable_public_button_and_no_answer_actions(self):
+        view = qq.guess_presentation("来源：星之卡比 Wii", 180, "#猜盟友 ")
+        original = self.image_path.read_bytes()
+        with (
+            patch.object(
+                self.delivery, "_post", AsyncMock(return_value={"id": "guess"})
+            ) as post,
+            patch.object(
+                self.delivery,
+                "_upload",
+                AsyncMock(return_value=("qqbot-media://image/v1/guess", 1200, 2400)),
+            ),
+        ):
+            self.assertEqual(
+                await self.delivery.send(self.event, self.chain, view), ["guess"]
+            )
+        payload = post.call_args.args[1]
+        body = payload["markdown"]["content"]
+        self.assertIn("**认得这位盟友吗？**", body)
+        self.assertIn("> 来源：星之卡比 Wii", body)
+        self.assertIn("> 本轮限时 180 秒", body)
+        self.assertIn("![图片 #210px #420px]", body)
+        for hidden in (
+            "瓦豆鲁迪",
+            "Waddle Dee",
+            "#12",
+            "旧配文",
+            "角色素材",
+            "查看简介",
+        ):
+            self.assertNotIn(hidden, body)
+        [row] = payload["keyboard"]["content"]["rows"]
+        [button] = row["buttons"]
+        self.assertEqual(button["render_data"]["label"], "开始猜")
+        self.assertEqual(button["action"]["data"], "#猜盟友 ")
+        self.assertFalse(button["action"]["enter"])
+        self.assertNotIn("<名字>", button["action"]["data"])
+        self.assertEqual(button["action"]["permission"], {"type": 2})
+        self.assertEqual(self.image_path.read_bytes(), original)
+
+    async def test_guess_button_rejection_keeps_full_manual_answer_format(self):
+        view = qq.guess_presentation("这位盟友正在等待被认出", 180, "#猜盟友 ")
+        with patch.object(
+            self.delivery,
+            "_post",
+            AsyncMock(side_effect=[qq.APIError(400), {"id": "manual"}]),
+        ) as post:
+            self.assertEqual(
+                await self.delivery.send(self.event, [Comp.Plain("旧题目")], view),
+                ["manual"],
+            )
+        payload = post.call_args.args[1]
+        self.assertNotIn("keyboard", payload)
+        self.assertIn(
+            qq.escape("开始猜：#猜盟友 <名字>"), payload["markdown"]["content"]
+        )
+
+    async def test_custom_image_bounds_reach_markdown_payload(self):
+        with (
+            patch.object(
+                self.delivery, "_post", AsyncMock(return_value={"id": "image"})
+            ) as post,
+            patch.object(
+                self.delivery,
+                "_upload",
+                AsyncMock(return_value=("qqbot-media://image/v1/tall", 1200, 2400)),
+            ),
+        ):
+            await self.delivery.send(
+                self.event,
+                [self.image],
+                qq.Presentation(),
+                image_display_width=160,
+                image_display_height=250,
+            )
+        self.assertIn(
+            "![图片 #125px #250px]", post.call_args.args[1]["markdown"]["content"]
+        )
+
     async def test_wrong_etag_never_completes(self):
         cos = MagicMock()
         cos.__aenter__ = AsyncMock(return_value=cos)
@@ -667,6 +746,42 @@ class RoutingAndReadingTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("完整简介 &lt;tag&gt;", text)
 
 
+class MarkdownImageBoundsTests(unittest.TestCase):
+    def test_wide_tall_small_and_gallery_images_fit_both_bounds(self):
+        for width, height, expected in (
+            (4000, 1000, (480, 120)),
+            (1000, 4000, (105, 420)),
+            (400, 8000, (21, 420)),
+            (40, 80, (40, 80)),
+            (480, 420, (480, 420)),
+        ):
+            with self.subTest(size=(width, height)):
+                body = qq.QQOfficialDelivery._markdown(
+                    qq.Presentation(),
+                    [Comp.Image.fromURL("https://example.com/image")],
+                    {0: ("qqbot-media://image/v1/image", width, height)},
+                    2,
+                    3,
+                )
+                self.assertIn(f"![图片 #{expected[0]}px #{expected[1]}px]", body)
+                self.assertIn("第 2 / 3 页", body)
+
+    def test_card_display_configuration_remains_independent(self):
+        image = Comp.Image.fromURL("https://example.com/card")
+        body = qq.QQOfficialDelivery._markdown(
+            qq.Presentation(card_image=True),
+            [image],
+            {0: ("qqbot-media://image/v1/card", 1000, 2000)},
+            1,
+            1,
+            card_display_width=128,
+            card_display_height=220,
+            image_display_width=480,
+            image_display_height=420,
+        )
+        self.assertIn("![盟友卡牌 #110px #220px]", body)
+
+
 class ScopedStore(FakeStore):
     def __init__(self, entry):
         super().__init__(entry)
@@ -691,6 +806,64 @@ class PluginOfficialFlowTests(unittest.IsolatedAsyncioTestCase):
             "qq_official_draw_card": False,
         }
         self.plugin._chain_result_with_media = AsyncMock(return_value=None)
+
+    async def test_guess_uses_session_prefix_and_does_not_draw_or_collect(self):
+        event = OfficialEvent("猜盟友")
+        self.plugin.context.get_config = MagicMock(return_value={"wake_prefix": ["#"]})
+        image = Comp.Image.fromFileSystem(str(self.plugin.store.root / "question.png"))
+        self.plugin._ally_chain = AsyncMock(return_value=[Comp.Plain("题目"), image])
+        self.plugin._schedule_guess_timeout = MagicMock()
+        self.assertEqual([item async for item in self.plugin.guess_ally(event)], [])
+        self.plugin.context.get_config.assert_called_once_with(event.unified_msg_origin)
+        call = self.plugin._chain_result_with_media.call_args
+        view = call.kwargs["qq_view"]
+        self.assertTrue(view.replace_caption)
+        self.assertEqual(view.actions[0].command, "#猜盟友 ")
+        self.assertIn(self.plugin._group_id(event), self.plugin._guess_sessions)
+        self.assertFalse(self.plugin.store.draws)
+        self.assertFalse(self.plugin.store.groups)
+
+    async def test_guess_missing_image_notice_is_not_swallowed(self):
+        self.plugin._schedule_guess_timeout = MagicMock()
+        self.assertEqual(
+            [item async for item in self.plugin.guess_ally(OfficialEvent("猜盟友"))], []
+        )
+        view = self.plugin._chain_result_with_media.call_args.kwargs["qq_view"]
+        self.assertIn("图片暂时不可用", view.summary)
+
+    def test_editable_command_follows_configured_prefix(self):
+        event = OfficialEvent()
+        for prefixes, expected in (
+            (["/"], "/猜盟友 "),
+            (["#", "/"], "#猜盟友 "),
+            ([""], "猜盟友 "),
+            ([], "猜盟友 "),
+        ):
+            with self.subTest(prefixes=prefixes):
+                self.plugin.context.get_config = MagicMock(
+                    return_value={"wake_prefix": prefixes}
+                )
+                self.assertEqual(
+                    self.plugin._qq_input_command(event, "猜盟友 "), expected
+                )
+
+    def test_image_options_preserve_card_bounds_and_accept_nested_config(self):
+        self.plugin.config = {
+            "qq_official_settings": {
+                "qq_official_card_display_width": 128,
+                "qq_official_card_display_height": 220,
+                "qq_official_image_display_width": 300,
+                "qq_official_image_display_height": 250,
+            }
+        }
+        options = self.plugin._qq_send_options()
+        self.assertEqual(
+            (options["card_display_width"], options["card_display_height"]), (128, 220)
+        )
+        self.assertEqual(
+            (options["image_display_width"], options["image_display_height"]),
+            (300, 250),
+        )
 
     async def test_official_description_uses_compact_metadata_and_complete_paragraphs(
         self,

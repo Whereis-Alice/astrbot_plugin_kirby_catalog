@@ -101,6 +101,9 @@ from .qq_official import (
     draw_presentation as qq_draw_presentation,
 )
 from .qq_official import (
+    guess_presentation as qq_guess_presentation,
+)
+from .qq_official import (
     identity_key as qq_identity_key,
 )
 from .qq_official import (
@@ -1909,7 +1912,21 @@ class KirbyCatalogPlugin(Star):
             "keyboard_template": str(self._config_value("qq_official_keyboard_template_id", "") or "").strip(),
             "card_display_width": self._bounded_int(self._config_value("qq_official_card_display_width", 240), 240, 120, 480),
             "card_display_height": self._bounded_int(self._config_value("qq_official_card_display_height", 420), 420, 200, 1200),
+            "image_display_width": self._bounded_int(self._config_value("qq_official_image_display_width", 480), 480, 120, 960),
+            "image_display_height": self._bounded_int(self._config_value("qq_official_image_display_height", 420), 420, 200, 1200),
         }
+
+    def _qq_input_command(self, event: AstrMessageEvent, command: str) -> str:
+        """Use this session's wake prefix for editable official Bot buttons."""
+        getter = getattr(self.context, "get_config", None)
+        config = getter(event.unified_msg_origin) if callable(getter) else {}
+        prefixes = config.get("wake_prefix", [])
+        if isinstance(prefixes, str):
+            prefixes = [prefixes]
+        if not isinstance(prefixes, (list, tuple)):
+            prefixes = []
+        prefix = next((value for value in prefixes if isinstance(value, str)), "")
+        return prefix + command
 
     async def _qq_text_results(self, event: AstrMessageEvent, text: str) -> AsyncIterator[Any]:
         if is_qq_official(event):
@@ -9854,7 +9871,16 @@ class KirbyCatalogPlugin(Star):
             f"题目编号不会显示，{timeout} 秒后失效。"
         )
         chain = await self._ally_chain(entry, text)
-        result = await self._chain_result_with_media(event, chain)
+        view = (
+            qq_guess_presentation(
+                clue, timeout, self._qq_input_command(event, "猜盟友 ")
+            )
+            if is_qq_official(event)
+            else None
+        )
+        if view is not None and not any(isinstance(item, Comp.Image) for item in chain):
+            view = replace(view, summary="图片暂时不可用，请管理员检查素材。\n\n" + view.summary)
+        result = await self._chain_result_with_media(event, chain, qq_view=view)
         if result is not None:
             yield result
 
